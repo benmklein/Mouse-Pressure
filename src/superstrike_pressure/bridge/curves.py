@@ -25,8 +25,8 @@ from dataclasses import dataclass
 @dataclass
 class PressureConfig:
     """Configuration for pressure mapping."""
-    raw_min: int = 78         # Minimum raw value from device (no press)
-    raw_max: int = 154        # Maximum raw value from device (full press)
+    raw_min: int = 80         # Minimum raw value from device (no press)
+    raw_max: int = 170        # Maximum raw value from device (full press)
     out_min: int = 0          # Minimum output pressure
     out_max: int = 1023       # Maximum output pressure (Wintab standard)
     deadzone_low: float = 0.05   # Ignore bottom 5% of range (noise floor)

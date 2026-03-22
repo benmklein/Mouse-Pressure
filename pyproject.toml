@@ -31,6 +31,7 @@ ss-sniff = "superstrike_pressure.cli:sniff"
 ss-bridge = "superstrike_pressure.cli:bridge"
 ss-visualize = "superstrike_pressure.cli:visualize"
 ss-pressure = "superstrike_pressure.cli:pressure"
+ss-tablet = "superstrike_pressure.cli:tablet"
 
 [build-system]
 requires = ["hatchling"]
