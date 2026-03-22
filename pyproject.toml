@@ -1,0 +1,37 @@
+[project]
+name = "superstrike-pressure"
+version = "0.1.0"
+description = "Bridge Logitech Superstrike HITS analog mouse buttons to drawing tablet pressure input"
+readme = "README.md"
+requires-python = ">=3.12"
+license = { text = "MIT" }
+
+dependencies = [
+    "hidapi>=0.14",
+    "numpy>=2.0",
+]
+
+[project.optional-dependencies]
+dev = [
+    "matplotlib>=3.9",
+    "ipython>=8.0",
+]
+usb = [
+    "pyusb>=1.2",
+]
+ui = [
+    "pyqt6>=6.7",
+]
+web = [
+    "websockets>=13.0",
+]
+
+[project.scripts]
+ss-sniff = "superstrike_pressure.cli:sniff"
+ss-bridge = "superstrike_pressure.cli:bridge"
+ss-visualize = "superstrike_pressure.cli:visualize"
+ss-pressure = "superstrike_pressure.cli:pressure"
+
+[build-system]
+requires = ["hatchling"]
+build-backend = "hatchling.build"

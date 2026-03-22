@@ -1,0 +1,21 @@
+READ-ONLY HID++ function0 probe begin
+OPEN Col02 path=b'\\\\?\\HID#VID_046D&PID_C54D&MI_02&Col02#7&20812e2d&0&0001#{4d1e55b2-f16f-11cf-88cb-001111000030}'
+MAP feature_id=0x80E0 -> index=0x0B
+MAP feature_id=0x8061 -> index=0x0D
+MAP feature_id=0x9403 -> index=0x19
+MAP feature_id=0x1890 -> index=0x1B
+MAP feature_id=0x18B1 -> index=0x23
+MAP feature_id=0x18A1 -> index=0x1C
+TX feature_id=0x80E0 index=0x0B wrote=20 11 01 0B 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00
+RX feature_id=0x80E0 index=0x0B t=11024.184349 len=20 11 01 0B 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00
+TX feature_id=0x8061 index=0x0D wrote=20 11 01 0D 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00
+RX feature_id=0x8061 index=0x0D t=11024.513375 len=20 11 01 0D 00 00 0F 00 00 00 00 00 00 00 00 00 00 00 00 00 00
+TX feature_id=0x9403 index=0x19 wrote=20 11 01 19 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00
+RX feature_id=0x9403 index=0x19 t=11024.866591 len=20 11 01 FF 19 00 05 00 00 00 00 00 00 00 00 00 00 00 00 00 00
+TX feature_id=0x1890 index=0x1B wrote=20 11 01 1B 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00
+RX feature_id=0x1890 index=0x1B t=11025.212077 len=20 11 01 FF 1B 00 05 00 00 00 00 00 00 00 00 00 00 00 00 00 00
+TX feature_id=0x18B1 index=0x23 wrote=20 11 01 23 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00
+RX feature_id=0x18B1 index=0x23 t=11025.564347 len=20 11 01 FF 23 00 05 00 00 00 00 00 00 00 00 00 00 00 00 00 00
+TX feature_id=0x18A1 index=0x1C wrote=20 11 01 1C 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00
+RX feature_id=0x18A1 index=0x1C t=11025.917408 len=20 11 01 FF 1C 00 05 00 00 00 00 00 00 00 00 00 00 00 00 00 00
+READ-ONLY HID++ function0 probe end

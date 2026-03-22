@@ -1,0 +1,36 @@
+Feature 0x0C read probes (functions 0-4, swid=0x08):
+func0 resp: 11 01 0C 08 00 03 28 14 14 01 00 00 00 00 00 00 00 00 00 00
+func1 error: 11 01 FF 0C 18 02 00 00 00 00 00 00 00 00 00 00 00 00 00 00
+func2 resp: 11 01 0C 28 00 04 05 14 00 00 00 00 00 00 00 00 00 00 00 00
+func3 resp: 11 01 0C 38 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00
+func4 resp: 11 01 0C 48 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00
+
+0x3C mode sweep summary (long command 11 01 0C 3C b4 3C b6 ...):
+b4=0x00 b6=0x00 total=1 addrs=['0x3C']
+  addr=0x3C count=1 b4:00-00 b5:3C-3C b6:00-00 b7:00-00 b8:00-00
+b4=0x01 b6=0x00 total=7 addrs=['0x00', '0x3C']
+  addr=0x00 count=6 b4:00-05 b5:00-00 b6:00-00 b7:00-00 b8:00-00
+  addr=0x3C count=1 b4:01-01 b5:3C-3C b6:00-00 b7:00-00 b8:00-00
+b4=0x02 b6=0x00 total=61 addrs=['0x10', '0x20', '0x30', '0x3C']
+  addr=0x10 count=20 b4:4E-4F b5:00-C0 b6:4E-4E b7:40-C0 b8:00-00
+  addr=0x20 count=20 b4:4F-4F b5:00-05 b6:4E-4E b7:41-4D b8:00-00
+  addr=0x30 count=20 b4:81-81 b5:40-45 b6:79-79 b7:01-0D b8:00-00
+  addr=0x3C count=1 b4:02-02 b5:3C-3C b6:00-00 b7:00-00 b8:00-00
+b4=0x03 b6=0x00 total=61 addrs=['0x10', '0x20', '0x30', '0x3C']
+  addr=0x10 count=20 b4:4E-4F b5:00-C0 b6:4E-4F b7:00-C0 b8:00-00
+  addr=0x20 count=20 b4:4E-4F b5:00-FE b6:4E-4E b7:4E-71 b8:00-00
+  addr=0x30 count=20 b4:81-81 b5:3E-45 b6:79-79 b7:0E-31 b8:00-00
+  addr=0x3C count=1 b4:03-03 b5:3C-3C b6:00-00 b7:00-00 b8:00-00
+b4=0x04 b6=0x00 total=2 addrs=['0x3C', '0x3F']
+  addr=0x3C count=1 b4:04-04 b5:3C-3C b6:00-00 b7:00-00 b8:00-00
+  addr=0x3F count=1 b4:01-01 b5:3C-3C b6:00-00 b7:00-00 b8:00-00
+b4=0x02 b6=0x01 total=61 addrs=['0x10', '0x20', '0x30', '0x3C']
+  addr=0x10 count=20 b4:4E-4F b5:00-C0 b6:4E-51 b7:00-C0 b8:00-00
+  addr=0x20 count=20 b4:4E-4F b5:00-FF b6:4E-4E b7:A3-B1 b8:00-00
+  addr=0x30 count=20 b4:81-81 b5:3B-40 b6:79-79 b7:63-71 b8:00-00
+  addr=0x3C count=1 b4:02-02 b5:3C-3C b6:00-00 b7:00-00 b8:00-00
+b4=0x03 b6=0x01 total=61 addrs=['0x10', '0x20', '0x30', '0x3C']
+  addr=0x10 count=20 b4:4E-4F b5:00-C0 b6:4E-4E b7:00-C0 b8:00-00
+  addr=0x20 count=20 b4:4E-4E b5:F0-FF b6:4E-4E b7:7F-99 b8:00-00
+  addr=0x30 count=20 b4:81-81 b5:30-3F b6:79-79 b7:3F-59 b8:00-00
+  addr=0x3C count=1 b4:03-03 b5:3C-3C b6:00-00 b7:00-00 b8:00-00

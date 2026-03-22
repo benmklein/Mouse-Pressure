@@ -1,0 +1,36 @@
+HID++ write probe log
+start_utc=2026-03-21T21:27:31.284144+00:00
+col01_path=b'\\\\?\\HID#VID_046D&PID_C54D&MI_02&Col01#7&20812e2d&0&0000#{4d1e55b2-f16f-11cf-88cb-001111000030}'
+col02_path=b'\\\\?\\HID#VID_046D&PID_C54D&MI_02&Col02#7&20812e2d&0&0001#{4d1e55b2-f16f-11cf-88cb-001111000030}'
+
+=== MI_02_COL01 ===
+OPEN OK
+TX ROOT.GET_PROTOCOL_VERSION.short wrote=7 len=7 10 01 00 18 00 00 00
+RX ROOT.GET_PROTOCOL_VERSION.short <no response in window>
+TX ROOT.GET_PROTOCOL_VERSION.long wrote=-1 len=20 11 01 00 18 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00
+RX ROOT.GET_PROTOCOL_VERSION.long <no response in window>
+TX ROOT.GET_FEATURE(0x0000).short wrote=7 len=7 10 01 00 08 00 00 00
+RX ROOT.GET_FEATURE(0x0000).short <no response in window>
+TX ROOT.GET_FEATURE(0x0001).short wrote=7 len=7 10 01 00 08 00 01 00
+RX ROOT.GET_FEATURE(0x0001).short <no response in window>
+TX ROOT.GET_FEATURE(0x0001).long wrote=-1 len=20 11 01 00 08 00 01 00 00 00 00 00 00 00 00 00 00 00 00 00 00
+RX ROOT.GET_FEATURE(0x0001).long <no response in window>
+FEATURE_SET index not discovered from response.
+Listening for spontaneous frames (3s)...
+
+=== MI_02_COL02 ===
+OPEN OK
+TX ROOT.GET_PROTOCOL_VERSION.short wrote=-1 len=7 10 01 00 18 00 00 00
+RX ROOT.GET_PROTOCOL_VERSION.short <no response in window>
+TX ROOT.GET_PROTOCOL_VERSION.long wrote=20 len=20 11 01 00 18 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00
+RX ROOT.GET_PROTOCOL_VERSION.long +0.0075s len=20 rep=0x11 dev=0x01 sub=0x00 addr=0x18 p0=0x04 p1=0x02 p2=0x00 11 01 00 18 04 02 00 00 00 00 00 00 00 00 00 00 00 00 00 00
+TX ROOT.GET_FEATURE(0x0000).short wrote=-1 len=7 10 01 00 08 00 00 00
+RX ROOT.GET_FEATURE(0x0000).short <no response in window>
+TX ROOT.GET_FEATURE(0x0001).short wrote=-1 len=7 10 01 00 08 00 01 00
+RX ROOT.GET_FEATURE(0x0001).short <no response in window>
+TX ROOT.GET_FEATURE(0x0001).long wrote=20 len=20 11 01 00 08 00 01 00 00 00 00 00 00 00 00 00 00 00 00 00 00
+RX ROOT.GET_FEATURE(0x0001).long +0.0198s len=20 rep=0x11 dev=0x01 sub=0x00 addr=0x08 p0=0x01 p1=0x00 p2=0x02 11 01 00 08 01 00 02 00 00 00 00 00 00 00 00 00 00 00 00 00
+FEATURE_SET index not discovered from response.
+Listening for spontaneous frames (3s)...
+
+end_utc=2026-03-21T21:27:44.302382+00:00
