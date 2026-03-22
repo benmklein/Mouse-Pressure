@@ -162,6 +162,12 @@ def parse_args() -> argparse.Namespace:
         default="lmb_and_pressure",
         help="Contact gating source (default: lmb_and_pressure).",
     )
+    p.add_argument(
+        "--pressure-mode",
+        choices=["absolute", "stroke_relative"],
+        default="absolute",
+        help="Pressure mapping mode (default: absolute).",
+    )
     p.add_argument("--duration", type=float, default=None, help="Optional runtime duration (seconds).")
     p.add_argument(
         "--suppress-lmb",
@@ -190,6 +196,24 @@ def parse_args() -> argparse.Namespace:
         type=int,
         default=12,
         help="Max mapped pressure allowed for passthrough click (default: 12).",
+    )
+    p.add_argument(
+        "--rise-per-frame",
+        type=int,
+        default=256,
+        help="Max pressure rise per decoded frame (0..1024, default: 256).",
+    )
+    p.add_argument(
+        "--fall-per-frame",
+        type=int,
+        default=512,
+        help="Max pressure fall per decoded frame (0..1024, default: 512).",
+    )
+    p.add_argument(
+        "--min-contact-pressure",
+        type=int,
+        default=0,
+        help="Minimum pen pressure while in contact (0..1024, default: 0).",
     )
     p.add_argument(
         "--log-file",
@@ -332,6 +356,7 @@ class MouseLmbSuppressor:
         self._stop = threading.Event()
         self._ready = threading.Event()
         self._proc = None
+        self._lmb_down = False
 
         self.user32.SetWindowsHookExW.argtypes = [ctypes.c_int, ctypes.c_void_p, ctypes.c_void_p, ctypes.c_uint32]
         self.user32.SetWindowsHookExW.restype = ctypes.c_void_p
@@ -364,6 +389,10 @@ class MouseLmbSuppressor:
         if self._thread is not None:
             self._thread.join(timeout=2.0)
             self._thread = None
+        self._lmb_down = False
+
+    def is_lmb_down(self) -> bool:
+        return self._lmb_down
 
     def _run(self) -> None:
         hook_proc_t = ctypes.WINFUNCTYPE(ctypes.c_longlong, ctypes.c_int, ctypes.c_size_t, ctypes.c_void_p)
@@ -372,6 +401,10 @@ class MouseLmbSuppressor:
         def _hook_proc(nCode: int, wParam: int, lParam: int) -> int:
             if nCode == HC_ACTION and self.enabled:
                 msg = int(wParam)
+                if msg in (WM_LBUTTONDOWN, WM_NCLBUTTONDOWN):
+                    self._lmb_down = True
+                elif msg in (WM_LBUTTONUP, WM_NCLBUTTONUP):
+                    self._lmb_down = False
                 if msg in (WM_LBUTTONDOWN, WM_LBUTTONUP, WM_LBUTTONDBLCLK, WM_NCLBUTTONDOWN, WM_NCLBUTTONUP):
                     try:
                         info = ctypes.cast(lParam, ctypes.POINTER(MSLLHOOKSTRUCT)).contents
@@ -404,6 +437,7 @@ class MouseLmbSuppressor:
         if self.hook:
             self.user32.UnhookWindowsHookEx(self.hook)
             self.hook = ctypes.c_void_p()
+        self._lmb_down = False
         self.log("LMB suppressor stopped")
 
 
@@ -486,6 +520,7 @@ def main() -> int:
         precontact_x = 0
         precontact_y = 0
         precontact_t = 0.0
+        stroke_base_mapped = 0
         click_candidate_active = False
         click_start_t = 0.0
         click_start_x = 0
@@ -503,6 +538,10 @@ def main() -> int:
         click_max_s = max(0.01, float(args.click_max_ms) / 1000.0)
         click_move_px = max(0, int(args.click_move_px))
         click_pressure_max = clamp_i(args.click_pressure_max, 0, 1023)
+        rise_per_frame = clamp_i(args.rise_per_frame, 0, 1024)
+        fall_per_frame = clamp_i(args.fall_per_frame, 0, 1024)
+        min_contact_pressure = clamp_i(args.min_contact_pressure, 0, 1024)
+        precontact_required = 1 if args.pressure_mode == "stroke_relative" else 2
 
         def contact_requested(lmb_down: bool, mapped: int) -> bool:
             if args.contact_source == "pressure_only":
@@ -513,6 +552,11 @@ def main() -> int:
             if args.contact_source == "pressure_only":
                 return mapped <= release_threshold
             return not lmb_down
+
+        def read_lmb_state() -> bool:
+            if lmb_suppressor is not None:
+                return lmb_suppressor.is_lmb_down()
+            return pen.is_lmb_down()
 
         try:
             pen.open()
@@ -526,7 +570,10 @@ def main() -> int:
                 f"deadzone=[{cfg.deadzone_low:.3f},{cfg.deadzone_high:.3f}] threshold={args.contact_threshold} "
                 f"release_threshold={release_threshold} contact_source={args.contact_source} "
                 f"suppress_lmb={int(args.suppress_lmb)} click_through={int(click_through_enabled)} "
-                f"click_max_ms={args.click_max_ms} click_move_px={click_move_px} click_pressure_max={click_pressure_max}"
+                f"click_max_ms={args.click_max_ms} click_move_px={click_move_px} click_pressure_max={click_pressure_max} "
+                f"rise_per_frame={rise_per_frame} fall_per_frame={fall_per_frame} "
+                f"min_contact_pressure={min_contact_pressure} pressure_mode={args.pressure_mode} "
+                f"precontact_required={precontact_required}"
             )
 
             while not stop_requested:
@@ -538,7 +585,7 @@ def main() -> int:
                 decoded_raws = _drain_mode3_left_raws(session)
                 frames_decoded += len(decoded_raws)
 
-                lmb_down_state = pen.is_lmb_down()
+                lmb_down_state = read_lmb_state()
 
                 # LMB is authoritative for pen lift: release immediately on button-up.
                 if state == "contact" and contact_released(lmb_down_state, latest_mapped):
@@ -575,8 +622,15 @@ def main() -> int:
                     latest_raw = raw
                     norm = normalize_raw_pressure(latest_raw, cfg.raw_min, cfg.raw_max)
                     latest_mapped = map_normalized_pressure(norm, cfg)
-                    actual_pen_pressure = map_1023_to_1024(latest_mapped)
-                    lmb_down = pen.is_lmb_down()
+                    pressure_mapped = latest_mapped
+                    if args.pressure_mode == "stroke_relative" and state == "contact":
+                        if pressure_mapped <= stroke_base_mapped:
+                            pressure_mapped = 0
+                        else:
+                            denom = max(1, 1023 - stroke_base_mapped)
+                            pressure_mapped = ((pressure_mapped - stroke_base_mapped) * 1023) // denom
+                    actual_pen_pressure = map_1023_to_1024(pressure_mapped)
+                    lmb_down = read_lmb_state()
                     lmb_down_state = lmb_down
                     x, y = pen.get_cursor_pos()
 
@@ -601,21 +655,14 @@ def main() -> int:
                             precontact_x = x
                             precontact_y = y
                             precontact_t = 0.0
+                            stroke_base_mapped = 0
                         else:
                             contact_frame_no += 1
-                            moved = abs(x - contact_start_x) + abs(y - contact_start_y)
-                            if not contact_warmup_done:
-                                if moved < 12 and contact_frame_no <= 16:
-                                    inject_pressure = 0
-                                else:
-                                    contact_warmup_done = True
-                                    inject_pressure = min(actual_pen_pressure, max(32, prev_contact_pressure + 48))
-                            elif contact_frame_no <= 10:
-                                inject_pressure = min(actual_pen_pressure, prev_contact_pressure + 64)
-                            else:
-                                inject_pressure = actual_pen_pressure
-                            if moved < 6 and contact_frame_no <= 14:
-                                inject_pressure = min(inject_pressure, 64)
+                            lo = max(0, prev_contact_pressure - fall_per_frame)
+                            hi = min(1024, prev_contact_pressure + rise_per_frame)
+                            inject_pressure = clamp_i(actual_pen_pressure, lo, hi)
+                            if min_contact_pressure > 0 and inject_pressure > 0:
+                                inject_pressure = max(inject_pressure, min_contact_pressure)
                             prev_contact_pressure = inject_pressure
                             inject_flags = POINTER_FLAG_UPDATE | POINTER_FLAG_INRANGE | POINTER_FLAG_INCONTACT
                             next_state = "contact"
@@ -628,14 +675,15 @@ def main() -> int:
                                 precontact_y = y
                                 precontact_t = time.perf_counter()
                             moved_from_arm = abs(x - precontact_x) + abs(y - precontact_y)
-                            if precontact_frames >= 2:
+                            if precontact_frames >= precontact_required:
                                 contact_frame_no = 1
-                                inject_pressure = 0
+                                inject_pressure = min(actual_pen_pressure, max(8, rise_per_frame))
                                 prev_contact_pressure = inject_pressure
                                 contact_start_t = time.perf_counter()
                                 contact_start_x = x
                                 contact_start_y = y
                                 contact_warmup_done = False
+                                stroke_base_mapped = latest_mapped
                                 inject_flags = POINTER_FLAG_NEW | POINTER_FLAG_DOWN | POINTER_FLAG_INRANGE | POINTER_FLAG_INCONTACT
                                 next_state = "contact"
                                 transition = "contact_down"
@@ -645,6 +693,7 @@ def main() -> int:
                                 contact_frame_no = 0
                                 prev_contact_pressure = 0
                                 contact_start_t = 0.0
+                                stroke_base_mapped = 0
                                 next_state = "hovering" if latest_mapped > 0 else "idle"
                                 transition = "precontact_arm"
                         elif latest_mapped > 0:
@@ -657,6 +706,7 @@ def main() -> int:
                             contact_warmup_done = False
                             precontact_frames = 0
                             precontact_t = 0.0
+                            stroke_base_mapped = 0
                             if state != "hovering":
                                 transition = "hover_enter"
                         else:
@@ -667,6 +717,7 @@ def main() -> int:
                             contact_warmup_done = False
                             precontact_frames = 0
                             precontact_t = 0.0
+                            stroke_base_mapped = 0
                             if state != "idle":
                                 transition = "idle_enter"
 

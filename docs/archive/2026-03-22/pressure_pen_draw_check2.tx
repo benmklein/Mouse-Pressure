@@ -1,0 +1,179 @@
+SYNTH open handle=0x21C screen=1920x1080 dpi=96
+OPEN Col02 path=b'\\\\?\\HID#VID_046D&PID_C54D&MI_02&Col02#7&20812e2d&0&0001#{4d1e55b2-f16f-11cf-88cb-001111000030}'
+TX PRESSURE.enable.short(mode=0x03,arg=0x00) write()=-1 10 01 0C 3C 03 3C 00
+TX PRESSURE.enable.short(mode=0x03,arg=0x00) send_feature_report()=-1
+TX PRESSURE.enable.long_fallback(mode=0x03,arg=0x00) write()=20 11 01 0C 3C 03 3C 00 00 00 00 00 00 00 00 00 00 00 00 00 00
+RX PRESSURE.enable.long_fallback(mode=0x03,arg=0x00) len=20 11 01 0C 3C 03 3C 00 00 00 00 00 00 00 00 00 00 00 00 00 00
+RX PRESSURE.enable.long_fallback(mode=0x03,arg=0x00) len=20 11 01 0C 10 4F 00 4E C0 00 00 00 00 00 00 00 00 00 00 00 00
+RX PRESSURE.enable.long_fallback(mode=0x03,arg=0x00) len=20 11 01 0C 20 4F 00 4E C1 00 00 00 00 00 00 00 00 00 00 00 00
+RX PRESSURE.enable.long_fallback(mode=0x03,arg=0x00) len=20 11 01 0C 30 81 40 79 81 00 00 00 00 00 00 00 00 00 00 00 00
+RX PRESSURE.enable.long_fallback(mode=0x03,arg=0x00) len=20 11 01 0C 10 4F 40 4E 40 00 00 00 00 00 00 00 00 00 00 00 00
+RX PRESSURE.enable.long_fallback(mode=0x03,arg=0x00) len=20 11 01 0C 20 4F 01 4E C0 00 00 00 00 00 00 00 00 00 00 00 00
+RX PRESSURE.enable.long_fallback(mode=0x03,arg=0x00) len=20 11 01 0C 30 81 41 79 80 00 00 00 00 00 00 00 00 00 00 00 00
+RX PRESSURE.enable.long_fallback(mode=0x03,arg=0x00) len=20 11 01 0C 10 4F 00 4E C0 00 00 00 00 00 00 00 00 00 00 00 00
+RX PRESSURE.enable.long_fallback(mode=0x03,arg=0x00) len=20 11 01 0C 20 4F 03 4E C0 00 00 00 00 00 00 00 00 00 00 00 00
+RX PRESSURE.enable.long_fallback(mode=0x03,arg=0x00) len=20 11 01 0C 30 81 43 79 80 00 00 00 00 00 00 00 00 00 00 00 00
+RX PRESSURE.enable.long_fallback(mode=0x03,arg=0x00) len=20 11 01 0C 10 4F 40 4E C0 00 00 00 00 00 00 00 00 00 00 00 00
+RX PRESSURE.enable.long_fallback(mode=0x03,arg=0x00) len=20 11 01 0C 20 4F 01 4E C0 00 00 00 00 00 00 00 00 00 00 00 00
+RX PRESSURE.enable.long_fallback(mode=0x03,arg=0x00) len=20 11 01 0C 30 81 41 79 80 00 00 00 00 00 00 00 00 00 00 00 00
+RX PRESSURE.enable.long_fallback(mode=0x03,arg=0x00) len=20 11 01 0C 10 4F 40 4E 80 00 00 00 00 00 00 00 00 00 00 00 00
+RX PRESSURE.enable.long_fallback(mode=0x03,arg=0x00) len=20 11 01 0C 20 4F 01 4E C0 00 00 00 00 00 00 00 00 00 00 00 00
+RX PRESSURE.enable.long_fallback(mode=0x03,arg=0x00) len=20 11 01 0C 30 81 41 79 80 00 00 00 00 00 00 00 00 00 00 00 00
+RX PRESSURE.enable.long_fallback(mode=0x03,arg=0x00) len=20 11 01 0C 10 4F 00 4E C0 00 00 00 00 00 00 00 00 00 00 00 00
+RX PRESSURE.enable.long_fallback(mode=0x03,arg=0x00) len=20 11 01 0C 20 4F 01 4E C0 00 00 00 00 00 00 00 00 00 00 00 00
+RX PRESSURE.enable.long_fallback(mode=0x03,arg=0x00) len=20 11 01 0C 30 81 41 79 80 00 00 00 00 00 00 00 00 00 00 00 00
+RX PRESSURE.enable.long_fallback(mode=0x03,arg=0x00) len=20 11 01 0C 10 4F 00 4E C0 00 00 00 00 00 00 00 00 00 00 00 00
+RX PRESSURE.enable.long_fallback(mode=0x03,arg=0x00) len=20 11 01 0C 20 4F 01 4E C0 00 00 00 00 00 00 00 00 00 00 00 00
+RX PRESSURE.enable.long_fallback(mode=0x03,arg=0x00) len=20 11 01 0C 30 81 41 79 80 00 00 00 00 00 00 00 00 00 00 00 00
+RX PRESSURE.enable.long_fallback(mode=0x03,arg=0x00) len=20 11 01 0C 10 4F 00 4E 80 00 00 00 00 00 00 00 00 00 00 00 00
+RX PRESSURE.enable.long_fallback(mode=0x03,arg=0x00) len=20 11 01 0C 20 4F 02 4E BF 00 00 00 00 00 00 00 00 00 00 00 00
+RX PRESSURE.enable.long_fallback(mode=0x03,arg=0x00) len=20 11 01 0C 30 81 42 79 7F 00 00 00 00 00 00 00 00 00 00 00 00
+RX PRESSURE.enable.long_fallback(mode=0x03,arg=0x00) len=20 11 01 0C 10 4F 40 4E 80 00 00 00 00 00 00 00 00 00 00 00 00
+RX PRESSURE.enable.long_fallback(mode=0x03,arg=0x00) len=20 11 01 0C 20 4F 00 4E BF 00 00 00 00 00 00 00 00 00 00 00 00
+RX PRESSURE.enable.long_fallback(mode=0x03,arg=0x00) len=20 11 01 0C 30 81 40 79 7F 00 00 00 00 00 00 00 00 00 00 00 00
+RX PRESSURE.enable.long_fallback(mode=0x03,arg=0x00) len=20 11 01 0C 10 4F 40 4E 80 00 00 00 00 00 00 00 00 00 00 00 00
+RX PRESSURE.enable.long_fallback(mode=0x03,arg=0x00) len=20 11 01 0C 20 4F 00 4E BD 00 00 00 00 00 00 00 00 00 00 00 00
+RX PRESSURE.enable.long_fallback(mode=0x03,arg=0x00) len=20 11 01 0C 30 81 40 79 7D 00 00 00 00 00 00 00 00 00 00 00 00
+RX PRESSURE.enable.long_fallback(mode=0x03,arg=0x00) len=20 11 01 0C 10 4F 00 4E 80 00 00 00 00 00 00 00 00 00 00 00 00
+RX PRESSURE.enable.long_fallback(mode=0x03,arg=0x00) len=20 11 01 0C 20 4F 00 4E BF 00 00 00 00 00 00 00 00 00 00 00 00
+RX PRESSURE.enable.long_fallback(mode=0x03,arg=0x00) len=20 11 01 0C 30 81 40 79 7F 00 00 00 00 00 00 00 00 00 00 00 00
+LMB suppressor active
+BRIDGE start decode_hz~60.00 inject_hz=240.00 mode=0x03 mode_arg=0x00 raw=[80,170] curve=s_curve strength=1.50 deadzone=[0.030,0.970] threshold=12 release_threshold=4 contact_source=pressure_only suppress_lmb=1 click_through=0 click_max_ms=220 click_move_px=6 click_pressure_max=12
+[  0.539s] raw= 80 mapped=   0 pen=   0 state=idle     lmb=0 decoded=0 injected=0 failed=0
+[  1.539s] raw= 79 mapped=   0 pen=   0 state=idle     lmb=0 decoded=60 injected=0 failed=0
+STATE idle -> hovering transition=hover_enter raw=103 mapped=170 pen=170 lmb=0
+STATE hovering -> contact transition=contact_down raw=128 mapped=564 pen=50 lmb=0
+STATE contact -> idle transition=release raw=80 mapped=0 pen=0 lmb=1
+STATE idle -> hovering transition=hover_enter raw=102 mapped=157 pen=157 lmb=0
+STATE hovering -> contact transition=contact_down raw=131 mapped=616 pen=50 lmb=0
+[  2.540s] raw=152 mapped= 911 pen= 912 state=contact  lmb=1 decoded=120 injected=99 failed=0
+STATE contact -> idle transition=release raw=80 mapped=0 pen=0 lmb=1
+STATE idle -> hovering transition=hover_enter raw=95 mapped=80 pen=80 lmb=0
+STATE hovering -> contact transition=contact_down raw=124 mapped=493 pen=50 lmb=0
+STATE contact -> idle transition=release raw=80 mapped=0 pen=0 lmb=1
+[  3.540s] raw= 79 mapped=   0 pen=   0 state=idle     lmb=0 decoded=180 injected=230 failed=0
+STATE idle -> hovering transition=hover_enter raw=93 mapped=61 pen=61 lmb=0
+STATE hovering -> contact transition=contact_down raw=125 mapped=511 pen=50 lmb=0
+STATE contact -> idle transition=release raw=80 mapped=0 pen=0 lmb=1
+[  4.544s] raw= 80 mapped=   0 pen=   0 state=idle     lmb=0 decoded=240 injected=304 failed=0
+STATE idle -> hovering transition=hover_enter raw=93 mapped=61 pen=61 lmb=0
+STATE hovering -> contact transition=contact_down raw=103 mapped=170 pen=50 lmb=0
+STATE contact -> idle transition=release raw=81 mapped=0 pen=0 lmb=1
+STATE idle -> hovering transition=hover_enter raw=88 mapped=22 pen=22 lmb=0
+STATE hovering -> contact transition=contact_down raw=114 mapped=325 pen=50 lmb=0
+[  5.548s] raw=148 mapped= 865 pen= 866 state=contact  lmb=1 decoded=300 injected=397 failed=0
+STATE contact -> idle transition=release raw=81 mapped=0 pen=0 lmb=1
+[  6.552s] raw= 79 mapped=   0 pen=   0 state=idle     lmb=0 decoded=360 injected=462 failed=0
+STATE idle -> hovering transition=hover_enter raw=92 mapped=52 pen=52 lmb=0
+STATE hovering -> contact transition=contact_down raw=112 mapped=294 pen=50 lmb=0
+STATE contact -> idle transition=release raw=80 mapped=0 pen=0 lmb=1
+[  7.552s] raw= 79 mapped=   0 pen=   0 state=idle     lmb=0 decoded=420 injected=543 failed=0
+STATE idle -> hovering transition=hover_enter raw=85 mapped=6 pen=6 lmb=0
+STATE hovering -> contact transition=contact_down raw=106 mapped=209 pen=50 lmb=0
+STATE contact -> idle transition=release raw=81 mapped=0 pen=0 lmb=1
+STATE idle -> hovering transition=hover_enter raw=86 mapped=11 pen=11 lmb=0
+STATE hovering -> contact transition=contact_down raw=117 mapped=373 pen=50 lmb=0
+[  8.556s] raw=132 mapped= 633 pen= 634 state=contact  lmb=1 decoded=480 injected=616 failed=0
+STATE contact -> idle transition=release raw=81 mapped=0 pen=0 lmb=1
+STATE idle -> hovering transition=hover_enter raw=97 mapped=100 pen=100 lmb=0
+STATE hovering -> contact transition=contact_down raw=124 mapped=493 pen=50 lmb=0
+[  9.556s] raw=138 mapped= 728 pen= 729 state=contact  lmb=1 decoded=540 injected=685 failed=0
+STATE contact -> idle transition=release raw=80 mapped=0 pen=0 lmb=1
+STATE idle -> hovering transition=hover_enter raw=97 mapped=100 pen=100 lmb=0
+STATE hovering -> contact transition=contact_down raw=125 mapped=511 pen=50 lmb=0
+[ 10.560s] raw=148 mapped= 865 pen= 866 state=contact  lmb=1 decoded=600 injected=794 failed=0
+STATE contact -> idle transition=release raw=81 mapped=0 pen=0 lmb=1
+STATE idle -> hovering transition=hover_enter raw=93 mapped=61 pen=61 lmb=0
+STATE hovering -> contact transition=contact_down raw=113 mapped=310 pen=50 lmb=0
+[ 11.560s] raw= 82 mapped=   0 pen=   0 state=contact  lmb=1 decoded=660 injected=932 failed=0
+STATE contact -> idle transition=release raw=81 mapped=0 pen=0 lmb=1
+STATE idle -> hovering transition=hover_enter raw=106 mapped=209 pen=209 lmb=0
+STATE hovering -> contact transition=contact_down raw=126 mapped=529 pen=50 lmb=0
+STATE contact -> idle transition=release raw=79 mapped=0 pen=0 lmb=1
+[ 12.565s] raw= 79 mapped=   0 pen=   0 state=idle     lmb=0 decoded=720 injected=1015 failed=0
+STATE idle -> hovering transition=hover_enter raw=88 mapped=22 pen=22 lmb=0
+STATE hovering -> contact transition=contact_down raw=102 mapped=157 pen=50 lmb=0
+STATE contact -> idle transition=release raw=81 mapped=0 pen=0 lmb=1
+STATE idle -> hovering transition=hover_enter raw=84 mapped=2 pen=2 lmb=0
+STATE hovering -> contact transition=contact_down raw=120 mapped=423 pen=50 lmb=0
+[ 13.569s] raw=149 mapped= 877 pen= 878 state=contact  lmb=1 decoded=781 injected=1092 failed=0
+STATE contact -> idle transition=release raw=82 mapped=0 pen=0 lmb=1
+STATE idle -> hovering transition=hover_enter raw=85 mapped=6 pen=6 lmb=0
+STATE hovering -> contact transition=contact_down raw=107 mapped=222 pen=50 lmb=0
+[ 14.569s] raw= 91 mapped=  44 pen=  44 state=contact  lmb=1 decoded=841 injected=1257 failed=0
+STATE contact -> idle transition=release raw=81 mapped=0 pen=0 lmb=1
+STATE idle -> hovering transition=hover_enter raw=88 mapped=22 pen=22 lmb=0
+STATE hovering -> contact transition=contact_down raw=111 mapped=279 pen=50 lmb=0
+STATE contact -> idle transition=release raw=81 mapped=0 pen=0 lmb=1
+[ 15.573s] raw= 79 mapped=   0 pen=   0 state=idle     lmb=0 decoded=901 injected=1345 failed=0
+STATE idle -> hovering transition=hover_enter raw=101 mapped=145 pen=145 lmb=0
+STATE hovering -> contact transition=contact_down raw=121 mapped=440 pen=50 lmb=0
+STATE contact -> idle transition=release raw=81 mapped=0 pen=0 lmb=1
+STATE idle -> hovering transition=hover_enter raw=97 mapped=100 pen=100 lmb=0
+STATE hovering -> contact transition=contact_down raw=117 mapped=373 pen=50 lmb=0
+[ 16.573s] raw=125 mapped= 511 pen= 511 state=contact  lmb=1 decoded=961 injected=1467 failed=0
+STATE contact -> idle transition=release raw=81 mapped=0 pen=0 lmb=1
+STATE idle -> hovering transition=hover_enter raw=90 mapped=36 pen=36 lmb=0
+STATE hovering -> contact transition=contact_down raw=103 mapped=170 pen=50 lmb=0
+STATE contact -> idle transition=release raw=81 mapped=0 pen=0 lmb=1
+[ 17.577s] raw= 79 mapped=   0 pen=   0 state=idle     lmb=0 decoded=1021 injected=1556 failed=0
+STATE idle -> hovering transition=hover_enter raw=93 mapped=61 pen=61 lmb=0
+STATE hovering -> contact transition=contact_down raw=109 mapped=250 pen=50 lmb=0
+STATE contact -> idle transition=release raw=81 mapped=0 pen=0 lmb=1
+STATE idle -> hovering transition=hover_enter raw=112 mapped=294 pen=294 lmb=0
+STATE hovering -> contact transition=contact_down raw=130 mapped=599 pen=50 lmb=0
+[ 18.577s] raw=119 mapped= 406 pen= 406 state=contact  lmb=1 decoded=1081 injected=1663 failed=0
+STATE contact -> idle transition=release raw=81 mapped=0 pen=0 lmb=1
+STATE idle -> hovering transition=hover_enter raw=99 mapped=122 pen=122 lmb=0
+STATE hovering -> contact transition=contact_down raw=126 mapped=529 pen=50 lmb=0
+STATE contact -> idle transition=release raw=81 mapped=0 pen=0 lmb=1
+[ 19.581s] raw= 79 mapped=   0 pen=   0 state=idle     lmb=0 decoded=1141 injected=1743 failed=0
+STATE idle -> hovering transition=hover_enter raw=104 mapped=182 pen=182 lmb=0
+STATE hovering -> contact transition=contact_down raw=126 mapped=529 pen=50 lmb=0
+STATE contact -> idle transition=release raw=81 mapped=0 pen=0 lmb=1
+Duration reached
+LMB suppressor stopped
+CLEANUP begin
+TX CLEANUP.PRESSURE.disable[1].short write()=-1 10 01 0C 3C 00 3C 00
+TX CLEANUP.PRESSURE.disable[1].short send_feature_report()=-1
+RX CLEANUP.PRESSURE.disable[1].short len=20 11 01 0C 20 4F 4D 4F 59 00 00 00 00 00 00 00 00 00 00 00 00
+RX CLEANUP.PRESSURE.disable[1].short len=20 11 01 0C 30 81 8D 7A 19 00 00 00 00 00 00 00 00 00 00 00 00
+RX CLEANUP.PRESSURE.disable[1].short len=20 11 01 0C 10 4F C0 51 40 00 00 00 00 00 00 00 00 00 00 00 00
+RX CLEANUP.PRESSURE.disable[1].short len=20 11 01 0C 20 4F 4F 4F 5B 00 00 00 00 00 00 00 00 00 00 00 00
+RX CLEANUP.PRESSURE.disable[1].short len=20 11 01 0C 30 81 8F 7A 1B 00 00 00 00 00 00 00 00 00 00 00 00
+RX CLEANUP.PRESSURE.disable[1].short len=20 11 01 0C 10 4F 80 51 80 00 00 00 00 00 00 00 00 00 00 00 00
+RX CLEANUP.PRESSURE.disable[1].short len=20 11 01 0C 20 4F 4F 4F 5D 00 00 00 00 00 00 00 00 00 00 00 00
+RX CLEANUP.PRESSURE.disable[1].short len=20 11 01 0C 30 81 8F 7A 1D 00 00 00 00 00 00 00 00 00 00 00 00
+RX CLEANUP.PRESSURE.disable[1].short len=20 11 01 0C 10 4F 80 51 40 00 00 00 00 00 00 00 00 00 00 00 00
+RX CLEANUP.PRESSURE.disable[1].short len=20 11 01 0C 20 4F 51 4F 5F 00 00 00 00 00 00 00 00 00 00 00 00
+RX CLEANUP.PRESSURE.disable[1].short len=20 11 01 0C 30 81 91 7A 1F 00 00 00 00 00 00 00 00 00 00 00 00
+RX CLEANUP.PRESSURE.disable[1].short len=20 11 01 0C 10 4F 80 51 40 00 00 00 00 00 00 00 00 00 00 00 00
+RX CLEANUP.PRESSURE.disable[1].short len=20 11 01 0C 20 4F 53 4F 61 00 00 00 00 00 00 00 00 00 00 00 00
+RX CLEANUP.PRESSURE.disable[1].short len=20 11 01 0C 30 81 93 7A 21 00 00 00 00 00 00 00 00 00 00 00 00
+RX CLEANUP.PRESSURE.disable[1].short len=20 11 01 0C 10 4F 00 50 C0 00 00 00 00 00 00 00 00 00 00 00 00
+RX CLEANUP.PRESSURE.disable[1].short len=20 11 01 0C 20 4F 52 4F 62 00 00 00 00 00 00 00 00 00 00 00 00
+RX CLEANUP.PRESSURE.disable[1].short len=20 11 01 0C 30 81 92 7A 22 00 00 00 00 00 00 00 00 00 00 00 00
+RX CLEANUP.PRESSURE.disable[1].short len=20 11 01 0C 10 4F 40 50 40 00 00 00 00 00 00 00 00 00 00 00 00
+RX CLEANUP.PRESSURE.disable[1].short len=20 11 01 0C 20 4F 50 4F 64 00 00 00 00 00 00 00 00 00 00 00 00
+RX CLEANUP.PRESSURE.disable[1].short len=20 11 01 0C 30 81 90 7A 24 00 00 00 00 00 00 00 00 00 00 00 00
+TX CLEANUP.PRESSURE.disable[1].long_fallback write()=20 11 01 0C 3C 00 3C 00 00 00 00 00 00 00 00 00 00 00 00 00 00
+RX CLEANUP.PRESSURE.disable[1].long_fallback len=20 11 01 0C 3C 00 3C 00 00 00 00 00 00 00 00 00 00 00 00 00 00
+RX CLEANUP.PRESSURE.disable[1].long_fallback len=20 11 01 0F 00 00 01 00 00 00 00 00 00 00 00 00 00 00 00 00 00
+TX CLEANUP.PRESSURE.disable[2].short write()=-1 10 01 0C 3C 00 00 00
+TX CLEANUP.PRESSURE.disable[2].short send_feature_report()=-1
+TX CLEANUP.PRESSURE.disable[2].long_fallback write()=20 11 01 0C 3C 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00
+RX CLEANUP.PRESSURE.disable[2].long_fallback len=20 11 01 0C 3C 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00
+TX CLEANUP.MouseButtonSpy.func2.disable write()=20 11 01 0F 28 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00
+RX CLEANUP.MouseButtonSpy.func2.disable len=20 11 01 0F 28 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00
+TX CLEANUP.MouseButtonSpy.func1.disable write()=20 11 01 0F 18 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00
+RX CLEANUP.MouseButtonSpy.func1.disable len=20 11 01 0F 18 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00
+TX CLEANUP.MouseButtonSpy.func0.status write()=20 11 01 0F 08 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00
+RX CLEANUP.MouseButtonSpy.func0.status len=20 11 01 0F 08 05 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00
+CLEANUP end
+
+SUMMARY
+elapsed=20.676s
+decoded_frames=1168 (56.49 Hz)
+injected_frames=1783 (86.24 Hz)
+failed_injects=0
+log_file=docs\pressure_pen_draw_check2.tx

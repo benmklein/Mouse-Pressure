@@ -6,3 +6,8 @@ build/
 .venv/
 *.log
 .DS_Store
+
+# Runtime experiment logs (keep docs root clean)
+docs/pressure_pen_*.txt
+docs/tablet_synth_*.txt
+docs/latency_profile_*.txt
