@@ -19,3 +19,59 @@ RX feature_id=0x18B1 index=0x23 t=11025.564347 len=20 11 01 FF 23 00 05 00 00 00
 TX feature_id=0x18A1 index=0x1C wrote=20 11 01 1C 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00
 RX feature_id=0x18A1 index=0x1C t=11025.917408 len=20 11 01 FF 1C 00 05 00 00 00 00 00 00 00 00 00 00 00 00 00 00
 READ-ONLY HID++ function0 probe end
+=== ROUND 2 ===
+ROUND2 mode=READ_ONLY exact_packet_set=7
+OPEN Col02 path=b'\\\\?\\HID#VID_046D&PID_C54D&MI_02&Col02#7&20812e2d&0&0001#{4d1e55b2-f16f-11cf-88cb-001111000030}'
+TX feature_id=0x8061 index=0x0D function=1 wrote=20 bytes=11 01 0D 10 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00
+RX feature_id=0x8061 index=0x0D function=1 t=11924.741645 len=20 bytes=11 01 0D 10 00 7F 00 00 00 00 00 00 00 00 00 00 00 00 00 00
+TX feature_id=0x8061 index=0x0D function=2 wrote=20 bytes=11 01 0D 20 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00
+RX feature_id=0x8061 index=0x0D function=2 t=11925.142172 len=20 bytes=11 01 0D 20 03 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00
+TX feature_id=0x8061 index=0x0D function=3 wrote=20 bytes=11 01 0D 30 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00
+RX feature_id=0x8061 index=0x0D function=3 t=11925.551029 len=20 bytes=11 01 0D 00 01 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00
+RX feature_id=0x8061 index=0x0D function=3 t=11925.558832 len=20 bytes=11 01 0D 30 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00
+TX feature_id=0x9403 index=0x19 function=1 wrote=20 bytes=11 01 19 10 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00
+RX feature_id=0x9403 index=0x19 function=1 t=11925.950004 len=20 bytes=11 01 FF 19 10 05 00 00 00 00 00 00 00 00 00 00 00 00 00 00
+TX feature_id=0x1890 index=0x1B function=1 wrote=20 bytes=11 01 1B 10 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00
+RX feature_id=0x1890 index=0x1B function=1 t=11926.350861 len=20 bytes=11 01 FF 1B 10 05 00 00 00 00 00 00 00 00 00 00 00 00 00 00
+TX feature_id=0x18B1 index=0x23 function=1 wrote=20 bytes=11 01 23 10 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00
+RX feature_id=0x18B1 index=0x23 function=1 t=11926.758817 len=20 bytes=11 01 FF 23 10 07 00 00 00 00 00 00 00 00 00 00 00 00 00 00
+TX feature_id=0x18A1 index=0x1C function=1 wrote=20 bytes=11 01 1C 10 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00
+RX feature_id=0x18A1 index=0x1C function=1 t=11927.158570 len=20 bytes=11 01 FF 1C 10 05 00 00 00 00 00 00 00 00 00 00 00 00 00 00
+=== ROUND 3 ===
+ROUND3 mode=READ_ONLY exact_packet_set=6
+OPEN Col02 path=b'\\\\?\\HID#VID_046D&PID_C54D&MI_02&Col02#7&20812e2d&0&0001#{4d1e55b2-f16f-11cf-88cb-001111000030}'
+TX feature_id=0x8061 index=0x0D function=1 wrote=20 bytes=11 01 0D 10 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00
+RX feature_id=0x8061 index=0x0D function=1 t=12342.564610 len=20 bytes=11 01 0D 10 00 7F 00 00 00 00 00 00 00 00 00 00 00 00 00 00
+TX feature_id=0x8061 index=0x0D function=4 wrote=20 bytes=11 01 0D 40 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00
+RX feature_id=0x8061 index=0x0D function=4 t=12342.964984 len=20 bytes=11 01 FF 0D 40 07 00 00 00 00 00 00 00 00 00 00 00 00 00 00
+TX feature_id=0x8061 index=0x0D function=5 wrote=20 bytes=11 01 0D 50 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00
+RX feature_id=0x8061 index=0x0D function=5 t=12343.363461 len=20 bytes=11 01 FF 0D 50 07 00 00 00 00 00 00 00 00 00 00 00 00 00 00
+TX feature_id=0x18B1 index=0x23 function=0 wrote=20 bytes=11 01 23 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00
+RX feature_id=0x18B1 index=0x23 function=0 t=12343.772291 len=20 bytes=11 01 FF 23 00 05 00 00 00 00 00 00 00 00 00 00 00 00 00 00
+TX feature_id=0x18B1 index=0x23 function=2 wrote=20 bytes=11 01 23 20 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00
+RX feature_id=0x18B1 index=0x23 function=2 t=12344.171462 len=20 bytes=11 01 FF 23 20 07 00 00 00 00 00 00 00 00 00 00 00 00 00 00
+TX feature_id=0x18B1 index=0x23 function=3 wrote=20 bytes=11 01 23 30 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00
+RX feature_id=0x18B1 index=0x23 function=3 t=12344.572408 len=20 bytes=11 01 FF 23 30 07 00 00 00 00 00 00 00 00 00 00 00 00 00 00
+=== ROUND 4 (G Hub intensity changed to 1/5) ===
+ROUND4 mode=READ_ONLY exact_packet_set=1
+OPEN Col02 path=b'\\\\?\\HID#VID_046D&PID_C54D&MI_02&Col02#7&20812e2d&0&0001#{4d1e55b2-f16f-11cf-88cb-001111000030}'
+TX feature_id=0x8061 index=0x0D function=1 wrote=20 bytes=11 01 0D 10 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00
+RX feature_id=0x8061 index=0x0D function=1 t=12601.259764 len=20 bytes=11 01 0D 10 00 7F 00 00 00 00 00 00 00 00 00 00 00 00 00 00
+=== ROUND 5 ===
+ROUND5 mode=READ_ONLY exact_packet_set=5
+OPEN Col02 path=b'\\\\?\\HID#VID_046D&PID_C54D&MI_02&Col02#7&20812e2d&0&0001#{4d1e55b2-f16f-11cf-88cb-001111000030}'
+TX feature_id=0x8061 index=0x0D function=2 note=Test1 fn2 re-read wrote=20 bytes=11 01 0D 20 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00
+RX feature_id=0x8061 index=0x0D function=2 note=Test1 fn2 re-read t=13991.298379 len=20 bytes=11 01 0D 20 03 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00
+TX feature_id=0x8061 index=0x0D function=2 note=Test2 fn2 param button=0x00 wrote=20 bytes=11 01 0D 20 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00
+RX feature_id=0x8061 index=0x0D function=2 note=Test2 fn2 param button=0x00 t=13991.728757 len=20 bytes=11 01 0D 20 03 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00
+TX feature_id=0x8061 index=0x0D function=2 note=Test2 fn2 param button=0x01 wrote=20 bytes=11 01 0D 20 01 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00
+RX feature_id=0x8061 index=0x0D function=2 note=Test2 fn2 param button=0x01 t=13992.185502 len=20 bytes=11 01 0D 20 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00
+TX feature_id=0x8061 index=0x0D function=6 note=Test3 fn6 wrote=20 bytes=11 01 0D 60 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00
+RX feature_id=0x8061 index=0x0D function=6 note=Test3 fn6 t=13992.633817 len=20 bytes=11 01 FF 0D 60 07 00 00 00 00 00 00 00 00 00 00 00 00 00 00
+TX feature_id=0x8061 index=0x0D function=7 note=Test3 fn7 wrote=20 bytes=11 01 0D 70 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00
+RX feature_id=0x8061 index=0x0D function=7 note=Test3 fn7 t=13993.080755 len=20 bytes=11 01 FF 0D 70 07 00 00 00 00 00 00 00 00 00 00 00 00 00 00
+=== ROUND 5b (G Hub restored to 5/5) ===
+ROUND5b mode=READ_ONLY exact_packet_set=1
+OPEN Col02 path=b'\\\\?\\HID#VID_046D&PID_C54D&MI_02&Col02#7&20812e2d&0&0001#{4d1e55b2-f16f-11cf-88cb-001111000030}'
+TX feature_id=0x8061 index=0x0D function=2 note=fn2 re-read after restore wrote=20 bytes=11 01 0D 20 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00
+RX feature_id=0x8061 index=0x0D function=2 note=fn2 re-read after restore t=14059.854791 len=20 bytes=11 01 0D 20 03 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00
