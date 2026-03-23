@@ -11,7 +11,11 @@ from dataclasses import dataclass
 from multiprocessing.connection import Listener
 from pathlib import Path
 
-from superstrike_pressure.bridge.curves import PressureConfig, map_normalized_pressure
+from superstrike_pressure.bridge.curves import (
+    PressureConfig,
+    map_normalized_pressure,
+    normalize_curve_name,
+)
 from superstrike_pressure.sniff.hidpp_pressure import (
     PressureHidppSession,
     extract_mode3_lr_pressure_raw,
@@ -136,11 +140,21 @@ def parse_args() -> argparse.Namespace:
     )
     p.add_argument("--mode", type=int, default=3, help="Feature 0x0C mode (default: 3)")
     p.add_argument("--mode-arg", type=int, default=0, help="Mode arg byte (default: 0)")
+    curve_choices = [
+        "linear",
+        "soft",
+        "hard",
+        "scurve",
+        # Deprecated legacy aliases
+        "ease_in",
+        "ease_out",
+        "s_curve",
+    ]
     p.add_argument(
         "--curve",
-        choices=["linear", "ease_in", "ease_out", "s_curve"],
-        default="s_curve",
-        help="Pressure curve (default: s_curve)",
+        choices=curve_choices,
+        default="scurve",
+        help="Pressure curve (default: scurve)",
     )
     p.add_argument(
         "--curve-strength",
@@ -183,6 +197,7 @@ def run_bridge() -> int:
     args = parse_args()
     right_raw_min = args.right_raw_min
     right_raw_max = args.right_raw_max
+    curve_name = normalize_curve_name(args.curve)
 
     left_cfg = PressureConfig(
         raw_min=args.raw_min,
@@ -191,7 +206,7 @@ def run_bridge() -> int:
         out_max=1023,
         deadzone_low=args.deadzone_low,
         deadzone_high=args.deadzone_high,
-        curve=args.curve,
+        curve=curve_name,
         curve_strength=args.curve_strength,
     )
     right_cfg = PressureConfig(
@@ -201,7 +216,7 @@ def run_bridge() -> int:
         out_max=1023,
         deadzone_low=args.deadzone_low,
         deadzone_high=args.deadzone_high,
-        curve=args.curve,
+        curve=curve_name,
         curve_strength=args.curve_strength,
     )
 
@@ -234,7 +249,7 @@ def run_bridge() -> int:
                 f"BRIDGE running mode=0x{args.mode:02X} "
                 f"left_range=[{left_cfg.raw_min},{left_cfg.raw_max}] "
                 f"right_range=[{right_cfg.raw_min},{right_cfg.raw_max}] "
-                f"curve={args.curve} strength={args.curve_strength:.2f}"
+                f"curve={curve_name} strength={args.curve_strength:.2f}"
             )
             while True:
                 now = time.perf_counter()

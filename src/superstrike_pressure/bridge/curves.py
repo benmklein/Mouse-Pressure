@@ -21,6 +21,17 @@ what the Superstrike actually reports (Phase 1 discovery).
 import numpy as np
 from dataclasses import dataclass
 
+_CURVE_ALIASES = {
+    "linear": "linear",
+    "soft": "ease_in",
+    "hard": "ease_out",
+    "scurve": "s_curve",
+    # Legacy aliases (deprecated at CLI boundary, still accepted)
+    "ease_in": "ease_in",
+    "ease_out": "ease_out",
+    "s_curve": "s_curve",
+}
+
 
 @dataclass
 class PressureConfig:
@@ -35,6 +46,13 @@ class PressureConfig:
     curve_strength: float = 2.0  # How aggressive the curve is (1.0 = mild)
 
 
+def normalize_curve_name(name: str) -> str:
+    normalized = _CURVE_ALIASES.get(str(name).lower())
+    if normalized is None:
+        raise ValueError(f"Unknown curve name: {name!r}")
+    return normalized
+
+
 def apply_curve(normalized: float, config: PressureConfig) -> float:
     """Apply pressure curve to a 0-1 normalized value.
     
@@ -47,19 +65,20 @@ def apply_curve(normalized: float, config: PressureConfig) -> float:
     """
     t = np.clip(normalized, 0.0, 1.0)
     gamma = config.curve_strength
-    
-    if config.curve == "linear":
+    curve = normalize_curve_name(config.curve)
+
+    if curve == "linear":
         return float(t)
-    
-    elif config.curve == "ease_in":
+
+    elif curve == "ease_in":
         # Power curve — slow start, fast finish
         return float(t ** gamma)
-    
-    elif config.curve == "ease_out":
+
+    elif curve == "ease_out":
         # Inverse power — fast start, slow finish
         return float(1.0 - (1.0 - t) ** gamma)
-    
-    elif config.curve == "s_curve":
+
+    elif curve == "s_curve":
         # Hermite-style S-curve — soft start and end
         if t < 0.5:
             return float(0.5 * (2.0 * t) ** gamma)

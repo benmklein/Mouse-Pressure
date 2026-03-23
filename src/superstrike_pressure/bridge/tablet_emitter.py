@@ -15,7 +15,15 @@ from typing import Callable, Literal
 
 import hid
 
-from superstrike_pressure.bridge.curves import PressureConfig, map_normalized_pressure
+from superstrike_pressure.bridge.curves import (
+    PressureConfig,
+    map_normalized_pressure,
+    normalize_curve_name,
+)
+from superstrike_pressure.bridge.synthetic_pen import (
+    SyntheticPenConfig as CanonicalSyntheticPenConfig,
+    SyntheticPenEmitter as CanonicalSyntheticPenEmitter,
+)
 from superstrike_pressure.sniff.hidpp_pressure import (
     PressureHidppSession,
     normalize_raw_pressure,
@@ -648,115 +656,20 @@ class VMultiPenEmitter:
 
 
 class SyntheticPenEmitter:
-    """Emit synthetic pen input via InjectSyntheticPointerInput (Windows userspace API)."""
+    """Adapter over canonical synthetic pen module (no local state machine)."""
 
     def __init__(self, *, log: Callable[[str], None], contact_threshold: int = 10) -> None:
         self.log = log
-        self.contact_threshold = max(0, int(contact_threshold))
-        self.user32 = ctypes.WinDLL("user32", use_last_error=True)
-        self.device = ctypes.c_void_p()
-        self.dpi = 96
-        self.screen_w = 1
-        self.screen_h = 1
-        self.state = "idle"  # idle, hovering, contact
-        self.contact_frame_no = 0
-        self.prev_contact_pressure = 0
-        self.contact_start_t = 0.0
-        self.contact_start_x = 0
-        self.contact_start_y = 0
-        self.contact_warmup_done = False
-        self.precontact_frames = 0
-        self.precontact_x = 0
-        self.precontact_y = 0
-        self.precontact_t = 0.0
-        self.pointer_id = 1
-        self.pti = POINTER_TYPE_INFO()
-        self.pti.type = PT_PEN
-
-        self.user32.CreateSyntheticPointerDevice.argtypes = [ctypes.c_uint32, ctypes.c_ulong, ctypes.c_uint32]
-        self.user32.CreateSyntheticPointerDevice.restype = ctypes.c_void_p
-        self.user32.InjectSyntheticPointerInput.argtypes = [
-            ctypes.c_void_p,
-            ctypes.POINTER(POINTER_TYPE_INFO),
-            ctypes.c_uint32,
-        ]
-        self.user32.InjectSyntheticPointerInput.restype = ctypes.c_int
-
-        destroy = getattr(self.user32, "DestroySyntheticPointerDevice", None)
-        self._destroy = destroy
-        if destroy is not None:
-            destroy.argtypes = [ctypes.c_void_p]
-            destroy.restype = None
-
-        if hasattr(self.user32, "GetDpiForSystem"):
-            self.user32.GetDpiForSystem.argtypes = []
-            self.user32.GetDpiForSystem.restype = ctypes.c_uint32
-
-    def open(self) -> None:
-        ctypes.set_last_error(0)
-        dev = self.user32.CreateSyntheticPointerDevice(PT_PEN, 1, POINTER_FEEDBACK_DEFAULT)
-        err = ctypes.get_last_error()
-        if not dev:
-            raise RuntimeError(f"CreateSyntheticPointerDevice failed err={err}")
-        self.device = ctypes.c_void_p(dev)
-        if hasattr(self.user32, "GetDpiForSystem"):
-            dpi = int(self.user32.GetDpiForSystem())
-            if dpi > 0:
-                self.dpi = dpi
-        self.screen_w, self.screen_h = get_screen_size()
-        self.log(
-            f"SYNTH open handle=0x{int(dev):X} screen={self.screen_w}x{self.screen_h} "
-            f"dpi={self.dpi} threshold={self.contact_threshold}"
+        self._core = CanonicalSyntheticPenEmitter(
+            config=CanonicalSyntheticPenConfig(contact_threshold=contact_threshold),
+            log=log,
         )
 
+    def open(self) -> None:
+        self._core.open()
+
     def close(self) -> None:
-        if self.device and self._destroy is not None:
-            try:
-                self._destroy(self.device)
-            except Exception:
-                pass
-        self.device = ctypes.c_void_p()
-
-    def _to_himetric(self, px: int) -> int:
-        return int(round(float(px) * 2540.0 / float(max(1, self.dpi))))
-
-    def _inject(self, *, flags: int, x: int, y: int, pressure_1024: int, label: str) -> bool:
-        pi = self.pti.penInfo.pointerInfo
-        pi.pointerType = PT_PEN
-        pi.pointerId = self.pointer_id
-        pi.frameId = 0
-        pi.pointerFlags = flags
-        pi.sourceDevice = None
-        pi.hwndTarget = None
-        pi.ptPixelLocation = wintypes.POINT(x, y)
-        pi.ptPixelLocationRaw = wintypes.POINT(x, y)
-        hx = self._to_himetric(x)
-        hy = self._to_himetric(y)
-        pi.ptHimetricLocation = wintypes.POINT(hx, hy)
-        pi.ptHimetricLocationRaw = wintypes.POINT(hx, hy)
-        pi.dwTime = 0
-        pi.historyCount = 1
-        pi.InputData = 0
-        pi.dwKeyStates = 0
-        pi.PerformanceCount = 0
-        pi.ButtonChangeType = 0
-
-        self.pti.penInfo.penFlags = PEN_FLAG_NONE
-        self.pti.penInfo.penMask = PEN_MASK_PRESSURE
-        self.pti.penInfo.pressure = clamp_i(pressure_1024, 0, 1024)
-        self.pti.penInfo.rotation = 0
-        self.pti.penInfo.tiltX = 0
-        self.pti.penInfo.tiltY = 0
-
-        ctypes.set_last_error(0)
-        ok = bool(self.user32.InjectSyntheticPointerInput(self.device, ctypes.byref(self.pti), 1))
-        if not ok:
-            err = ctypes.get_last_error()
-            self.log(
-                f"SYNTH inject failed label={label} err={err} flags=0x{flags:08X} "
-                f"x={x} y={y} pressure={int(self.pti.penInfo.pressure)}"
-            )
-        return ok
+        self._core.close()
 
     def emit_from_state(
         self,
@@ -767,120 +680,16 @@ class SyntheticPenEmitter:
         report_format: ReportFormat | None = None,
         write_method: WriteMode | None = None,
     ) -> TabletEmission:
+        _ = left_down
+        _ = sample_fresh
         _ = report_format
         _ = write_method
-        x, y = get_cursor_pos()
-
-        left_mapped_1023 = clamp_i(left_mapped_1023, 0, 1023)
-        pressure_1024_actual = map_1023_to_1024(left_mapped_1023)
-        should_start_contact = sample_fresh and left_down and left_mapped_1023 > self.contact_threshold
-
-        flags: int | None = None
-        status = 0
-        emitted_pressure = 0
-        next_state = self.state
-        if self.state == "contact":
-            if not left_down:
-                # LMB is authoritative for pen lift.
-                flags = POINTER_FLAG_UP
-                status = flags
-                emitted_pressure = 0
-                next_state = "idle"
-                self.contact_frame_no = 0
-                self.prev_contact_pressure = 0
-                self.contact_start_t = 0.0
-                self.contact_start_x = x
-                self.contact_start_y = y
-                self.contact_warmup_done = False
-                self.precontact_frames = 0
-                self.precontact_x = x
-                self.precontact_y = y
-                self.precontact_t = 0.0
-            else:
-                # Keep contact alive while LMB is held; do not wait for pressure decay.
-                self.contact_frame_no += 1
-                moved = abs(x - self.contact_start_x) + abs(y - self.contact_start_y)
-                if not self.contact_warmup_done:
-                    if moved < 12 and self.contact_frame_no <= 16:
-                        emitted_pressure = 0
-                    else:
-                        self.contact_warmup_done = True
-                        emitted_pressure = min(pressure_1024_actual, max(32, self.prev_contact_pressure + 48))
-                elif self.contact_frame_no <= 10:
-                    emitted_pressure = min(pressure_1024_actual, self.prev_contact_pressure + 64)
-                else:
-                    emitted_pressure = pressure_1024_actual
-                if moved < 6 and self.contact_frame_no <= 14:
-                    emitted_pressure = min(emitted_pressure, 64)
-                self.prev_contact_pressure = emitted_pressure
-                flags = POINTER_FLAG_UPDATE | POINTER_FLAG_INRANGE | POINTER_FLAG_INCONTACT
-                status = flags
-                next_state = "contact"
-                self.precontact_frames = 0
-        else:
-            if should_start_contact:
-                self.precontact_frames += 1
-                if self.precontact_frames == 1:
-                    self.precontact_x = x
-                    self.precontact_y = y
-                    self.precontact_t = time.perf_counter()
-                moved_from_arm = abs(x - self.precontact_x) + abs(y - self.precontact_y)
-                if self.precontact_frames >= 2:
-                    # Attack limiter frame 1.
-                    self.contact_frame_no = 1
-                    emitted_pressure = 0
-                    self.prev_contact_pressure = emitted_pressure
-                    self.contact_start_t = time.perf_counter()
-                    self.contact_start_x = x
-                    self.contact_start_y = y
-                    self.contact_warmup_done = False
-                    flags = POINTER_FLAG_NEW | POINTER_FLAG_DOWN | POINTER_FLAG_INRANGE | POINTER_FLAG_INCONTACT
-                    status = flags
-                    next_state = "contact"
-                    self.precontact_frames = 0
-                    self.precontact_t = 0.0
-                else:
-                    self.contact_frame_no = 0
-                    self.prev_contact_pressure = 0
-                    self.contact_start_t = 0.0
-                    flags = None
-                    status = 0
-                    emitted_pressure = 0
-                    next_state = "hovering" if left_mapped_1023 > 0 else "idle"
-            elif left_mapped_1023 > 0:
-                self.contact_frame_no = 0
-                self.prev_contact_pressure = 0
-                self.contact_start_t = 0.0
-                self.contact_warmup_done = False
-                self.precontact_frames = 0
-                self.precontact_t = 0.0
-                flags = None
-                status = 0
-                emitted_pressure = 0
-                next_state = "hovering"
-            else:
-                self.contact_frame_no = 0
-                self.prev_contact_pressure = 0
-                self.contact_start_t = 0.0
-                self.contact_warmup_done = False
-                self.precontact_frames = 0
-                self.precontact_t = 0.0
-                next_state = "idle"
-
-        if flags is not None:
-            self._inject(
-                flags=flags,
-                x=x,
-                y=y,
-                pressure_1024=emitted_pressure,
-                label=next_state,
-            )
-        self.state = next_state
+        sample = self._core.update(left_mapped_1023, 0)
         return TabletEmission(
-            x=x,
-            y=y,
-            pressure_8191=emitted_pressure,  # synthetic backend uses 0..1024
-            status=status,
+            x=sample.x,
+            y=sample.y,
+            pressure_8191=sample.pen_1024,
+            status=sample.status,
             left_mapped_1023=left_mapped_1023,
         )
 
@@ -892,26 +701,7 @@ class SyntheticPenEmitter:
     ) -> None:
         _ = report_format
         _ = write_method
-        x, y = get_cursor_pos()
-        if self.state == "contact":
-            self._inject(
-                flags=POINTER_FLAG_UP,
-                x=x,
-                y=y,
-                pressure_1024=0,
-                label="final_up",
-            )
-        self.state = "idle"
-        self.contact_frame_no = 0
-        self.prev_contact_pressure = 0
-        self.contact_start_t = 0.0
-        self.contact_start_x = x
-        self.contact_start_y = y
-        self.contact_warmup_done = False
-        self.precontact_frames = 0
-        self.precontact_x = x
-        self.precontact_y = y
-        self.precontact_t = 0.0
+        self._core.release()
 
 
 class PipePressureSource:
@@ -950,6 +740,16 @@ def parse_args() -> argparse.Namespace:
             "Supports --test mode for VMulti diagnostics."
         )
     )
+    curve_choices = [
+        "linear",
+        "soft",
+        "hard",
+        "scurve",
+        # Deprecated legacy aliases
+        "ease_in",
+        "ease_out",
+        "s_curve",
+    ]
     p.add_argument(
         "--backend",
         choices=["vmulti", "synthetic"],
@@ -1002,9 +802,9 @@ def parse_args() -> argparse.Namespace:
     p.add_argument("--hz", type=float, default=60.0, help="Target update rate (default: 60Hz).")
     p.add_argument(
         "--curve",
-        choices=["linear", "ease_in", "ease_out", "s_curve"],
-        default="s_curve",
-        help="Pressure curve (default: s_curve).",
+        choices=curve_choices,
+        default="scurve",
+        help="Pressure curve (default: scurve).",
     )
     p.add_argument("--curve-strength", type=float, default=2.0, help="Curve gamma (default: 2.0).")
     p.add_argument("--deadzone-low", type=float, default=0.05, help="Deadzone low (default: 0.05).")
@@ -1173,6 +973,7 @@ def run_tablet_bridge() -> int:
     log_path = Path(log_file)
     log_path.parent.mkdir(parents=True, exist_ok=True)
 
+    curve_name = normalize_curve_name(args.curve)
     left_cfg = PressureConfig(
         raw_min=args.raw_min,
         raw_max=args.raw_max,
@@ -1180,7 +981,7 @@ def run_tablet_bridge() -> int:
         out_max=1023,
         deadzone_low=args.deadzone_low,
         deadzone_high=args.deadzone_high,
-        curve=args.curve,
+        curve=curve_name,
         curve_strength=args.curve_strength,
     )
 
@@ -1231,7 +1032,7 @@ def run_tablet_bridge() -> int:
                 log(
                     f"PIPELINE backend={args.backend} source=direct "
                     f"mode=0x{args.mode:02X} mode_arg=0x{args.mode_arg:02X} "
-                    f"curve={left_cfg.curve} strength={left_cfg.curve_strength:.2f} "
+                    f"curve={curve_name} strength={left_cfg.curve_strength:.2f} "
                     f"raw_range=[{left_cfg.raw_min},{left_cfg.raw_max}]"
                 )
             else:
