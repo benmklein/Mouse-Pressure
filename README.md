@@ -41,3 +41,24 @@ This tool reads that data and re-emits it as virtual tablet pressure events,
 making any drawing application think you have a pressure-sensitive tablet.
 
 See [CONTEXT.md](CONTEXT.md) for full technical details and research notes.
+
+## Synthetic Pen Release Notes
+
+When using Windows synthetic pen injection with Krita, a plain release frame
+(`UP | INRANGE`) can leave a short perceived tail/lag at stroke end. The bridge
+supports an optional teardown sequence that fully closes the in-range session:
+
+1. `UP | INRANGE`
+2. `UPDATE | INRANGE` (hover)
+3. `UPDATE` (out-of-range/end-hover)
+
+Use `--release-teardown` with `scripts/pressure_to_pen.py` while testing or if
+you observe end-of-stroke lag.
+
+Regression tests:
+
+```bash
+uv run python -m unittest tests.test_synthetic_pen_release
+```
+
+Detailed note: [docs/release_teardown.md](docs/release_teardown.md)

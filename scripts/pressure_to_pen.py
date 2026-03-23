@@ -116,6 +116,11 @@ def parse_args() -> argparse.Namespace:
         help="Minimum pen pressure while in contact (0..1024, default: 0).",
     )
     p.add_argument(
+        "--release-teardown",
+        action="store_true",
+        help="After pen UP, also emit hover+end-hover frames to end in-range session cleanly.",
+    )
+    p.add_argument(
         "--log-file",
         default="docs/pressure_pen_bridge.txt",
         help="Log file path (default: docs/pressure_pen_bridge.txt).",
@@ -153,6 +158,7 @@ def main() -> int:
         click_max_ms=args.click_max_ms,
         click_move_px=args.click_move_px,
         click_pressure_max=args.click_pressure_max,
+        release_teardown=args.release_teardown,
     )
     return run_synthetic_pen_bridge(
         emitter_config=emitter_cfg,
@@ -167,4 +173,3 @@ def main() -> int:
 
 if __name__ == "__main__":
     raise SystemExit(main())
-

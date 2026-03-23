@@ -26,6 +26,7 @@ VK_LBUTTON = 0x01
 POINTER_FLAG_NEW = 0x00000001
 POINTER_FLAG_INRANGE = 0x00000002
 POINTER_FLAG_INCONTACT = 0x00000004
+POINTER_FLAG_FIRSTBUTTON = 0x00000010
 POINTER_FLAG_DOWN = 0x00010000
 POINTER_FLAG_UPDATE = 0x00020000
 POINTER_FLAG_UP = 0x00040000
@@ -59,6 +60,7 @@ class SyntheticPenConfig:
     click_max_ms: int = 220
     click_move_px: int = 6
     click_pressure_max: int = 12
+    release_teardown: bool = False
 
 
 @dataclass(frozen=True)
@@ -69,6 +71,7 @@ class SyntheticPenSample:
     pen_1024: int
     state: str
     lmb_down: bool
+    lmb_physical: bool
     status: int
     injected: bool
     failed: bool
@@ -325,17 +328,21 @@ class _MouseLmbSuppressor:
         def _hook_proc(n_code: int, w_param: int, l_param: int) -> int:
             if n_code == HC_ACTION and self.enabled:
                 msg = int(w_param)
-                if msg in (WM_LBUTTONDOWN, WM_NCLBUTTONDOWN):
-                    self._lmb_down = True
-                elif msg in (WM_LBUTTONUP, WM_NCLBUTTONUP):
-                    self._lmb_down = False
-
                 if msg in (WM_LBUTTONDOWN, WM_LBUTTONUP, WM_LBUTTONDBLCLK, WM_NCLBUTTONDOWN, WM_NCLBUTTONUP):
                     try:
                         info = ctypes.cast(l_param, ctypes.POINTER(MSLLHOOKSTRUCT)).contents
-                        if (int(info.flags) & LLMHF_INJECTED) == 0:
-                            return 1
+                        injected = (int(info.flags) & LLMHF_INJECTED) != 0
                     except Exception:
+                        return 1
+
+                    # IMPORTANT: only hardware events may mutate hook button state.
+                    # Injected mouse events (from synthetic pointer promotion, etc.)
+                    # must not arm/disarm contact or we can get stuck-down lag.
+                    if not injected:
+                        if msg in (WM_LBUTTONDOWN, WM_NCLBUTTONDOWN):
+                            self._lmb_down = True
+                        elif msg in (WM_LBUTTONUP, WM_NCLBUTTONUP):
+                            self._lmb_down = False
                         return 1
             return int(self.user32.CallNextHookEx(self.hook, n_code, w_param, l_param))
 
@@ -357,7 +364,7 @@ class _MouseLmbSuppressor:
             while self.user32.PeekMessageW(ctypes.byref(msg), None, 0, 0, PM_REMOVE):
                 self.user32.TranslateMessage(ctypes.byref(msg))
                 self.user32.DispatchMessageW(ctypes.byref(msg))
-            time.sleep(0.005)
+            time.sleep(0.001)
 
         if self.hook:
             self.user32.UnhookWindowsHookEx(self.hook)
@@ -375,9 +382,12 @@ class SyntheticPenEmitter:
         self.state = "idle"
         self.contact_frame_no = 0
         self.prev_contact_pressure = 0
+        self.contact_warmup_done = False
         self.precontact_frames = 0
         self.precontact_x = 0
         self.precontact_y = 0
+        self.contact_start_x = 0
+        self.contact_start_y = 0
         self.stroke_base_mapped = 0
 
         self.click_candidate_active = False
@@ -399,23 +409,58 @@ class SyntheticPenEmitter:
     def release(self) -> None:
         if self.state == "contact":
             x, y = self.pen.get_cursor_pos()
-            self.pen.inject(flags=POINTER_FLAG_UP, x=x, y=y, pressure_1024=0, tag="release")
+            self._emit_release_teardown(x=x, y=y)
         self.state = "idle"
         self.contact_frame_no = 0
         self.prev_contact_pressure = 0
+        self.contact_warmup_done = False
         self.precontact_frames = 0
         self.stroke_base_mapped = 0
 
     def _read_lmb(self) -> bool:
+        # When suppressing native LMB, some systems don't update GetAsyncKeyState
+        # reliably for the blocked click. Use hook state for contact gating.
         if self._suppressor is not None:
             return self._suppressor.is_lmb_down()
         return self.pen.is_lmb_down()
+
+    def _emit_release_teardown(self, *, x: int, y: int) -> tuple[bool, bool]:
+        # Optional post-UP teardown for apps that keep a lingering in-range pen.
+        # Sequence: UP|INRANGE -> UPDATE|INRANGE -> UPDATE(out-of-range).
+        ok1, _ = self.pen.inject(
+            flags=POINTER_FLAG_UP | POINTER_FLAG_INRANGE,
+            x=x,
+            y=y,
+            pressure_1024=0,
+            tag="release_up",
+        )
+        if not self.config.release_teardown:
+            return ok1, not ok1
+
+        ok2, _ = self.pen.inject(
+            flags=POINTER_FLAG_UPDATE | POINTER_FLAG_INRANGE,
+            x=x,
+            y=y,
+            pressure_1024=0,
+            tag="release_hover",
+        )
+        ok3, _ = self.pen.inject(
+            flags=POINTER_FLAG_UPDATE,
+            x=x,
+            y=y,
+            pressure_1024=0,
+            tag="release_endhover",
+        )
+        ok = ok1 and ok2 and ok3
+        return ok, not ok
 
     def update(self, left_mapped: int, right_mapped: int) -> SyntheticPenSample:
         # TODO: right channel injection — eraser mode / haptics / symmetry control
         # Currently telemetry + config only. See thread_backend_v2.md decision 2.
         _ = right_mapped
+        prev_state = self.state
         mapped = clamp_i(int(left_mapped), 0, 1023)
+        lmb_physical = self.pen.is_lmb_down()
         lmb_down = self._read_lmb()
         x, y = self.pen.get_cursor_pos()
 
@@ -442,7 +487,15 @@ class SyntheticPenEmitter:
         def contact_released() -> bool:
             if self.config.contact_source == "pressure_only":
                 return mapped <= release_threshold
-            return not lmb_down
+            # Primary release is button-up. Add pressure fallback to avoid
+            # lingering contact if hook-up is delayed/missed under suppression.
+            if not lmb_down:
+                return True
+            if mapped <= release_threshold:
+                return True
+            # Fast-release fallback: when hook state is stuck down, don't wait for
+            # deep pressure decay; drop at/under contact threshold.
+            return mapped <= int(self.config.contact_threshold)
 
         injected = False
         failed = False
@@ -450,25 +503,49 @@ class SyntheticPenEmitter:
         inject_flags: int | None = None
         inject_pressure = 0
         next_state = self.state
+        moved_from_contact = 0
 
         if self.state == "contact":
             if contact_released():
-                inject_flags = POINTER_FLAG_UP
                 inject_pressure = 0
                 next_state = "idle"
                 self.contact_frame_no = 0
                 self.prev_contact_pressure = 0
+                self.contact_warmup_done = False
                 self.precontact_frames = 0
                 self.stroke_base_mapped = 0
+                ok, fail = self._emit_release_teardown(x=x, y=y)
+                injected = ok
+                failed = fail
             else:
                 self.contact_frame_no += 1
-                lo = max(0, self.prev_contact_pressure - fall_per_frame)
-                hi = min(1024, self.prev_contact_pressure + rise_per_frame)
-                inject_pressure = clamp_i(actual_pen_pressure, lo, hi)
-                if min_contact_pressure > 0 and inject_pressure > 0:
+                moved_from_contact = abs(x - self.contact_start_x) + abs(y - self.contact_start_y)
+
+                # Keep startup pressure at zero until there is a minimum cursor movement.
+                # This prevents stationary "stamp" blobs caused by click-force transients.
+                if not self.contact_warmup_done:
+                    if moved_from_contact < 12 and self.contact_frame_no <= 16:
+                        inject_pressure = 0
+                    else:
+                        self.contact_warmup_done = True
+                        inject_pressure = min(actual_pen_pressure, max(32, self.prev_contact_pressure + 48))
+                elif self.contact_frame_no <= 10:
+                    inject_pressure = min(actual_pen_pressure, self.prev_contact_pressure + 64)
+                else:
+                    lo = max(0, self.prev_contact_pressure - fall_per_frame)
+                    hi = min(1024, self.prev_contact_pressure + rise_per_frame)
+                    inject_pressure = clamp_i(actual_pen_pressure, lo, hi)
+
+                # Extra guard while near start: keep pressure low for tiny movement.
+                if self.contact_frame_no <= 14 and moved_from_contact < 10:
+                    inject_pressure = min(inject_pressure, 64)
+
+                if self.contact_warmup_done and min_contact_pressure > 0 and inject_pressure > 0:
                     inject_pressure = max(inject_pressure, min_contact_pressure)
                 self.prev_contact_pressure = inject_pressure
-                inject_flags = POINTER_FLAG_UPDATE | POINTER_FLAG_INRANGE | POINTER_FLAG_INCONTACT
+                inject_flags = (
+                    POINTER_FLAG_UPDATE | POINTER_FLAG_INRANGE | POINTER_FLAG_INCONTACT | POINTER_FLAG_FIRSTBUTTON
+                )
                 next_state = "contact"
                 self.precontact_frames = 0
         else:
@@ -479,26 +556,38 @@ class SyntheticPenEmitter:
                     self.precontact_y = y
                 if self.precontact_frames >= precontact_required:
                     self.contact_frame_no = 1
-                    inject_pressure = min(actual_pen_pressure, max(8, rise_per_frame))
+                    inject_pressure = 0
                     self.prev_contact_pressure = inject_pressure
+                    self.contact_start_x = x
+                    self.contact_start_y = y
+                    self.contact_warmup_done = False
                     self.stroke_base_mapped = mapped
-                    inject_flags = POINTER_FLAG_NEW | POINTER_FLAG_DOWN | POINTER_FLAG_INRANGE | POINTER_FLAG_INCONTACT
+                    inject_flags = (
+                        POINTER_FLAG_NEW
+                        | POINTER_FLAG_DOWN
+                        | POINTER_FLAG_INRANGE
+                        | POINTER_FLAG_INCONTACT
+                        | POINTER_FLAG_FIRSTBUTTON
+                    )
                     next_state = "contact"
                     self.precontact_frames = 0
                 else:
                     self.contact_frame_no = 0
                     self.prev_contact_pressure = 0
+                    self.contact_warmup_done = False
                     self.stroke_base_mapped = 0
                     next_state = "hovering" if mapped > 0 else "idle"
             elif mapped > 0:
                 self.contact_frame_no = 0
                 self.prev_contact_pressure = 0
+                self.contact_warmup_done = False
                 self.precontact_frames = 0
                 self.stroke_base_mapped = 0
                 next_state = "hovering"
             else:
                 self.contact_frame_no = 0
                 self.prev_contact_pressure = 0
+                self.contact_warmup_done = False
                 self.precontact_frames = 0
                 self.stroke_base_mapped = 0
                 next_state = "idle"
@@ -516,6 +605,18 @@ class SyntheticPenEmitter:
             failed = not ok
 
         self.state = next_state
+
+        if self.state != prev_state:
+            self.log(
+                f"STATE {prev_state} -> {self.state} mapped={mapped} pen={inject_pressure} "
+                f"lmb={int(lmb_down)} phys={int(lmb_physical)} frame={self.contact_frame_no}"
+            )
+        elif self.state == "contact" and self.contact_frame_no <= 12:
+            self.log(
+                f"CONTACT frame={self.contact_frame_no} mapped={mapped} actual={actual_pen_pressure} "
+                f"sent={inject_pressure} moved={moved_from_contact} warmup={int(self.contact_warmup_done)} "
+                f"lmb={int(lmb_down)} phys={int(lmb_physical)}"
+            )
 
         if self.config.suppress_lmb and (not self.config.no_click_through):
             now = time.perf_counter()
@@ -553,6 +654,7 @@ class SyntheticPenEmitter:
             pen_1024=inject_pressure if inject_flags is not None else actual_pen_pressure,
             state=self.state,
             lmb_down=lmb_down,
+            lmb_physical=lmb_physical,
             status=status,
             injected=injected,
             failed=failed,
@@ -620,7 +722,12 @@ def run_synthetic_pen_bridge(
             log(
                 f"BRIDGE start hz={hz:.2f} mode=0x{mode:02X} mode_arg=0x{mode_arg:02X} "
                 f"raw=[{pressure_config.raw_min},{pressure_config.raw_max}] "
-                f"curve={pressure_config.curve} strength={pressure_config.curve_strength:.2f}"
+                f"curve={pressure_config.curve} strength={pressure_config.curve_strength:.2f} "
+                f"contact_source={emitter_config.contact_source} pressure_mode={emitter_config.pressure_mode} "
+                f"threshold={emitter_config.contact_threshold}/{emitter_config.release_threshold} "
+                f"suppress_lmb={int(emitter_config.suppress_lmb)} "
+                f"click_through={int(not emitter_config.no_click_through)} "
+                f"release_teardown={int(emitter_config.release_teardown)}"
             )
             while True:
                 now = time.perf_counter()
@@ -653,7 +760,7 @@ def run_synthetic_pen_bridge(
                     log(
                         f"[{now-start:7.3f}s] raw={latest_raw:3d} mapped={latest_mapped:4d} "
                         f"pen={sample.pen_1024:4d} state={sample.state:8s} "
-                        f"lmb={int(sample.lmb_down)} decoded={frames_decoded} "
+                        f"lmb={int(sample.lmb_down)} phys={int(sample.lmb_physical)} decoded={frames_decoded} "
                         f"injected={frames_injected} failed={failed_injects}"
                     )
 
@@ -683,4 +790,3 @@ def run_synthetic_pen_bridge(
         log(f"failed_injects={failed_injects}")
         log(f"log_file={log_path}")
     return 0
-
