@@ -76,7 +76,7 @@ end;
 
 procedure CurStepChanged(CurStep: TSetupStep);
 begin
-  if (CurStep = ssPostInstall) and not VMultiDetected() then
+  if (CurStep = ssPostInstall) and not WizardSilent() and not VMultiDetected() then
     MsgBox(
       'A compatible VMulti virtual tablet was not detected.' + #13#10 + #13#10 +
       'Superstrike Pressure will use its synthetic Windows Ink fallback. ' +
