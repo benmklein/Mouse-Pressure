@@ -48,7 +48,7 @@ class RuntimeConfig:
     # Experimental: keep LMB as pen pressure and publish RMB pressure as X-Tilt.
     rmb_aux_xtilt: bool = False
     # Capture detailed per-stroke traces and verbose input diagnostics.
-    debug_mode: bool = False
+    debug_mode: bool = True
     # Hide the desktop control panel in the notification area when minimized.
     minimize_to_tray: bool = True
     release_teardown: bool = False

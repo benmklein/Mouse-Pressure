@@ -53,7 +53,6 @@ class StrokeTraceRecorder:
         if not any(event["kind"] == "inject" for event in self._events):
             return None
 
-        self.directory.mkdir(parents=True, exist_ok=True)
         stamp = datetime.now().strftime("%Y%m%d-%H%M%S-%f")[:-3]
         path = self.directory / f"stroke-{stamp}.json"
         payload = {
@@ -63,7 +62,16 @@ class StrokeTraceRecorder:
             "events": self._events,
         }
         temporary = path.with_suffix(".json.tmp")
-        temporary.write_text(json.dumps(payload, indent=2), encoding="utf-8")
-        temporary.replace(path)
+        try:
+            self.directory.mkdir(parents=True, exist_ok=True)
+            temporary.write_text(json.dumps(payload, indent=2), encoding="utf-8")
+            temporary.replace(path)
+        except (OSError, TypeError, ValueError) as exc:
+            try:
+                temporary.unlink(missing_ok=True)
+            except OSError:
+                pass
+            self.log(f"TRACE write failed for {path}: {exc}")
+            return None
         self.log(f"TRACE saved {path.resolve()}")
         return path

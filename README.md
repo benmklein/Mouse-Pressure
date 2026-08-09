@@ -189,11 +189,11 @@ restores the independent right-pressure stroke workflow.
 
 The global **Debug mode** toggle appears in Advanced settings and defaults to
 on for the current development phase. It records the detailed per-stroke JSON
-files under `work/stroke_traces` and prints verbose `RAW`, `CONTACT`, `RELEASE`,
-and motion-diagnostic messages used by the analyzer. Turning it off bypasses the
-trace recorder entirely while preserving startup, safety, recovery, error, and
-cleanup logging, which makes it useful for comparing input latency without the
-diagnostic overhead.
+files under `~/.superstrike/stroke_traces` and prints verbose `RAW`, `CONTACT`,
+`RELEASE`, and motion-diagnostic messages used by the analyzer. Turning it off
+bypasses the trace recorder entirely while preserving startup, safety, recovery,
+error, and cleanup logging, which makes it useful for comparing input latency
+without the diagnostic overhead.
 
 ## Krita raster ink experiment
 
@@ -251,7 +251,8 @@ Useful diagnostic commands:
 - `ss-tablet` — legacy VMulti and synthetic-backend experiments
 - `ss-bridge-ws` — experimental WebSocket service
 
-Each Dev Panel stroke is also saved under `work/stroke_traces`. Analyze the
+Each traced desktop-app stroke is saved under
+`~/.superstrike/stroke_traces`. Analyze the
 newest real stroke with:
 
 ```powershell

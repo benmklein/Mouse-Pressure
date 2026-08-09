@@ -74,7 +74,7 @@ class ConfigStoreTests(unittest.TestCase):
             self.assertEqual(loaded.left.curve, "soft")
             self.assertEqual(loaded.left.curve_strength, 3.0)
             self.assertEqual(loaded.right.curve_strength, 3.1)
-            self.assertFalse(loaded.debug_mode)
+            self.assertTrue(loaded.debug_mode)
             self.assertTrue(loaded.minimize_to_tray)
             self.assertTrue(loaded.session_device_settings_follow_normal)
 
@@ -150,7 +150,7 @@ class ConfigStoreTests(unittest.TestCase):
             self.assertTrue(loaded.left_enabled)
             self.assertFalse(loaded.right_enabled)
             self.assertFalse(loaded.rmb_aux_xtilt)
-            self.assertFalse(loaded.debug_mode)
+            self.assertTrue(loaded.debug_mode)
             self.assertTrue(loaded.minimize_to_tray)
             self.assertFalse(loaded.release_teardown)
             self.assertEqual(loaded.session_dpi, 800)

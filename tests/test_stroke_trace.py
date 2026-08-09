@@ -42,3 +42,16 @@ def test_trace_without_injection_is_discarded(tmp_path: Path) -> None:
 
     assert recorder.finish("no_contact") is None
     assert list(tmp_path.iterdir()) == []
+
+
+def test_trace_write_failure_does_not_escape_stroke_cleanup(tmp_path: Path) -> None:
+    blocked_directory = tmp_path / "not-a-directory"
+    blocked_directory.write_text("occupied", encoding="utf-8")
+    lines: list[str] = []
+    recorder = StrokeTraceRecorder(str(blocked_directory), lines.append)
+    recorder.begin()
+    recorder.record("inject", x=1, y=2, pressure=300, flags=4, ok=True)
+
+    assert recorder.finish("release") is None
+    assert recorder.active is False
+    assert any("TRACE write failed" in line for line in lines)

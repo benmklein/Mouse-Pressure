@@ -291,7 +291,7 @@ class RuntimeServiceTests(unittest.IsolatedAsyncioTestCase):
         restored = service.restore_defaults(defaults)
 
         self.assertFalse(restored.linked)
-        self.assertFalse(restored.debug_mode)
+        self.assertTrue(restored.debug_mode)
         self.assertTrue(restored.minimize_to_tray)
         self.assertEqual(restored.session_dpi, 1200)
         self.assertEqual(restored.app_profiles, {})

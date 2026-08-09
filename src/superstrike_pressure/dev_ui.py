@@ -1714,8 +1714,8 @@ class DevPanel:
             self._stroke_analysis = None
             self.stroke_analysis_summary.configure(
                 text=(
-                    "No traces found. Enable Debug mode, start the bridge, and "
-                    "draw a stroke."
+                    f"No traces found in {directory}. Enable Debug mode, start "
+                    "the bridge, and draw a stroke."
                 )
             )
             self._draw_stroke_analysis()
@@ -2431,12 +2431,13 @@ def main() -> int:
         # Prefer the virtual HID tablet when its signed driver is installed,
         # while keeping the driverless Windows synthetic pointer as a fallback.
         backend = "vmulti" if enumerate_vmulti_candidates() else "synthetic"
+        config_store = ConfigStore()
         service = RuntimeService(
             launch_config=LaunchConfig(
                 backend=backend,
-                trace_dir="work/stroke_traces",
+                trace_dir=str(config_store.config_dir / "stroke_traces"),
             ),
-            config_store=ConfigStore(),
+            config_store=config_store,
             log_bus=log_bus,
         )
         controller = BridgeController(service)

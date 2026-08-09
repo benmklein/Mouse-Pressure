@@ -358,7 +358,11 @@ def render_plot(payload: dict[str, Any], output: Path) -> None:
 
 def main() -> int:
     parser = argparse.ArgumentParser(description=__doc__)
-    parser.add_argument("path", nargs="?", default="work/stroke_traces")
+    parser.add_argument(
+        "path",
+        nargs="?",
+        default=Path.home() / ".superstrike" / "stroke_traces",
+    )
     args = parser.parse_args()
 
     trace_path = _latest_trace(Path(args.path))
