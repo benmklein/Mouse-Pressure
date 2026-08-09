@@ -6,7 +6,13 @@ param(
 $ErrorActionPreference = 'Stop'
 $repoRoot = Split-Path -Parent $PSScriptRoot
 if (-not $InstallerPath) {
-    $InstallerPath = Join-Path $repoRoot 'dist\installer\SuperstrikePressure-0.1.0-Setup.exe'
+    $InstallerPath = Get-ChildItem -LiteralPath (Join-Path $repoRoot 'dist\installer') `
+        -Filter 'SuperstrikePressure-*-Setup.exe' -File |
+        Sort-Object LastWriteTimeUtc -Descending |
+        Select-Object -First 1 -ExpandProperty FullName
+}
+if (-not $InstallerPath) {
+    throw 'No Superstrike Pressure installer was found.'
 }
 $InstallerPath = (Resolve-Path -LiteralPath $InstallerPath).Path
 $smokeRoot = Join-Path $repoRoot ('work\installer-smoke\' + [guid]::NewGuid().ToString('N'))
@@ -18,9 +24,13 @@ function Invoke-CheckedProcess {
         [string]$FilePath,
         [Parameter(Mandatory = $true)]
         [string[]]$Arguments,
-        [int[]]$AllowedExitCodes = @(0)
+        [int[]]$AllowedExitCodes = @(0),
+        [int]$TimeoutSeconds = 180,
+        [string]$Phase = 'Process'
     )
 
+    Write-Host "$Phase started: $FilePath"
+    $stopwatch = [System.Diagnostics.Stopwatch]::StartNew()
     $startInfo = [System.Diagnostics.ProcessStartInfo]::new()
     $startInfo.FileName = $FilePath
     $startInfo.UseShellExecute = $false
@@ -28,10 +38,19 @@ function Invoke-CheckedProcess {
         $startInfo.ArgumentList.Add($argument)
     }
     $process = [System.Diagnostics.Process]::Start($startInfo)
-    $process.WaitForExit()
-    if ($process.ExitCode -notin $AllowedExitCodes) {
-        throw "$FilePath exited with code $($process.ExitCode)."
+    if (-not $process.WaitForExit($TimeoutSeconds * 1000)) {
+        try {
+            $process.Kill($true)
+        } catch {
+            $process.Kill()
+        }
+        throw "$Phase timed out after $TimeoutSeconds seconds."
     }
+    $stopwatch.Stop()
+    if ($process.ExitCode -notin $AllowedExitCodes) {
+        throw "$Phase exited with code $($process.ExitCode)."
+    }
+    Write-Host ("$Phase completed in {0:n1}s." -f $stopwatch.Elapsed.TotalSeconds)
     return $process.ExitCode
 }
 
@@ -45,7 +64,7 @@ function Invoke-CheckedProcess {
     '/COMPONENTS=application',
     '/TASKS=',
     "/DIR=$installRoot"
-))
+) -Phase 'Silent install')
 
 $application = Join-Path $installRoot 'SuperstrikePressure.exe'
 $uninstaller = Join-Path $installRoot 'unins000.exe'
@@ -64,13 +83,13 @@ if (-not (Test-Path -LiteralPath $uninstaller -PathType Leaf)) {
     '2147483647',
     '--state-file',
     (Join-Path $smokeRoot 'missing-state.json')
-) -AllowedExitCodes @(1))
+) -AllowedExitCodes @(1) -TimeoutSeconds 30 -Phase 'Packaged watchdog dispatch')
 
 [void](Invoke-CheckedProcess -FilePath $uninstaller -Arguments @(
     '/VERYSILENT',
     '/SUPPRESSMSGBOXES',
     '/NORESTART'
-))
+) -Phase 'Silent uninstall')
 
 if (Test-Path -LiteralPath $application) {
     throw "Uninstall left the application behind: $application"
