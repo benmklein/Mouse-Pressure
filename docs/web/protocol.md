@@ -96,7 +96,7 @@ Apply a partial config update. Backend validates and applies live.
 ```json
 payload: {
   "linked": true,
-  "left": { "raw_min": 80, "curve": "linear" }
+  "left": { "raw_min": 320, "curve": "linear" }
 }
 ```
 Response: `ack { "config": <ConfigObject> }` (full effective config echoed back)
@@ -110,7 +110,7 @@ payload: {
 }
 ```
 Response: sequence of `calibrate.progress` events (see Events), then final
-`ack { "result": { "left": { "raw_min": 79, "raw_max": 157 }, "right": { "raw_min": 78, "raw_max": 162 } } }`
+`ack { "result": { "left": { "raw_min": 316, "raw_max": 628 }, "right": { "raw_min": 312, "raw_max": 648 } } }`
 
 ### profiles.list
 List all saved profiles.
@@ -215,8 +215,11 @@ Sent during calibration sequence.
   "payload": {
     "event": "calibrate.progress",
     "channel": "left" | "right",
-    "phase": "idle" | "light" | "heavy" | "done",
-    "value": 95
+    "phase": "prepare" | "countdown" | "idle" | "light" | "heavy" | "done",
+    "value": 95,
+    "instruction": "Hold a light, comfortable press.",
+    "next_phase": "light",
+    "countdown": 3
   }
 }
 ```
@@ -258,22 +261,30 @@ Sent immediately when a loggable event occurs.
   "schema_version": 1,
   "linked": true,
   "left": {
-    "raw_min": 80,
-    "raw_max": 185,
+    "raw_min": 320,
+    "raw_max": 740,
     "deadzone_low": 0,
     "deadzone_high": 0,
     "curve": "linear" | "soft" | "hard" | "scurve",
     "curve_strength": 1.0,
-    "contact_preset": "light" | "medium" | "firm"
+    "contact_preset": "light" | "medium" | "firm",
+    "pressure_floor": 12,
+    "path_stabilization": 0,
+    "pressure_influence": 85,
+    "onset_buffer": false
   },
   "right": {
-    "raw_min": 80,
-    "raw_max": 185,
+    "raw_min": 320,
+    "raw_max": 740,
     "deadzone_low": 0,
     "deadzone_high": 0,
     "curve": "linear" | "soft" | "hard" | "scurve",
     "curve_strength": 1.0,
-    "contact_preset": "light" | "medium" | "firm"
+    "contact_preset": "light" | "medium" | "firm",
+    "pressure_floor": 12,
+    "path_stabilization": 0,
+    "pressure_influence": 85,
+    "onset_buffer": false
   },
   "app_profiles": {
     "krita.exe": "krita",
@@ -287,6 +298,8 @@ Rules:
 - `raw_min` must be strictly less than `raw_max`. Backend rejects otherwise.
 - `deadzone_low` and `deadzone_high` are percentages: 0–20 (integer).
 - `curve_strength` is float 0.5–2.0.
+- `pressure_floor`, `path_stabilization`, and `pressure_influence` are integer percentages: 0–100.
+- `onset_buffer` enables an optional one-pressure-sample start delay.
 - `schema_version` is always `1` for this iteration. Increment if breaking changes occur.
 
 ---

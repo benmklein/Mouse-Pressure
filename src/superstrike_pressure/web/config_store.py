@@ -52,14 +52,31 @@ def _channel_from_dict(raw: Any) -> ChannelConfig:
     if not isinstance(raw, dict):
         raise ValidationError("channel config must be an object")
 
+    raw_min = int(raw.get("raw_min", ChannelConfig.raw_min))
+    raw_max = int(raw.get("raw_max", ChannelConfig.raw_max))
+    # Version-1 configs originally stored only the high byte of each ADC word.
+    # A real Superstrike rest value is above 255 in the decoded 10-bit space,
+    # so a pair wholly in the byte range can be upgraded without ambiguity.
+    if raw_min <= 0xFF and raw_max <= 0xFF:
+        raw_min *= 4
+        raw_max *= 4
+
     channel = ChannelConfig(
-        raw_min=int(raw.get("raw_min", ChannelConfig.raw_min)),
-        raw_max=int(raw.get("raw_max", ChannelConfig.raw_max)),
+        raw_min=raw_min,
+        raw_max=raw_max,
         deadzone_low=int(raw.get("deadzone_low", ChannelConfig.deadzone_low)),
         deadzone_high=int(raw.get("deadzone_high", ChannelConfig.deadzone_high)),
         curve=str(raw.get("curve", ChannelConfig.curve)),
         curve_strength=float(raw.get("curve_strength", ChannelConfig.curve_strength)),
         contact_preset=str(raw.get("contact_preset", ChannelConfig.contact_preset)),
+        pressure_floor=int(raw.get("pressure_floor", ChannelConfig.pressure_floor)),
+        path_stabilization=int(
+            raw.get("path_stabilization", ChannelConfig.path_stabilization)
+        ),
+        pressure_influence=int(
+            raw.get("pressure_influence", ChannelConfig.pressure_influence)
+        ),
+        onset_buffer=raw.get("onset_buffer", ChannelConfig.onset_buffer),
     )
     errors = validate_channel_config(asdict(channel))
     if errors:
@@ -81,9 +98,24 @@ def runtime_config_from_dict(raw: Any) -> RuntimeConfig:
     if not isinstance(linked, bool):
         raise ValidationError("linked must be a boolean")
 
+    suppress_lmb = raw.get("suppress_lmb", False)
+    if not isinstance(suppress_lmb, bool):
+        raise ValidationError("suppress_lmb must be a boolean")
+
+    suppress_rmb = raw.get("suppress_rmb", False)
+    if not isinstance(suppress_rmb, bool):
+        raise ValidationError("suppress_rmb must be a boolean")
+
+    release_teardown = raw.get("release_teardown", False)
+    if not isinstance(release_teardown, bool):
+        raise ValidationError("release_teardown must be a boolean")
+
     return RuntimeConfig(
         schema_version=SCHEMA_VERSION,
         linked=linked,
+        suppress_lmb=suppress_lmb,
+        suppress_rmb=suppress_rmb,
+        release_teardown=release_teardown,
         left=_channel_from_dict(raw.get("left", {})),
         right=_channel_from_dict(raw.get("right", {})),
         app_profiles=_normalize_app_profiles(raw.get("app_profiles")),
@@ -95,6 +127,9 @@ def runtime_config_to_dict(config: RuntimeConfig) -> dict[str, Any]:
     return {
         "schema_version": config.schema_version,
         "linked": config.linked,
+        "suppress_lmb": config.suppress_lmb,
+        "suppress_rmb": config.suppress_rmb,
+        "release_teardown": config.release_teardown,
         "left": asdict(config.left),
         "right": asdict(config.right),
         "app_profiles": dict(config.app_profiles),

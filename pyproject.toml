@@ -15,6 +15,7 @@ dependencies = [
 dev = [
     "matplotlib>=3.9",
     "ipython>=8.0",
+    "pytest>=8.0",
 ]
 usb = [
     "pyusb>=1.2",
@@ -32,7 +33,12 @@ ss-bridge = "superstrike_pressure.cli:bridge"
 ss-visualize = "superstrike_pressure.cli:visualize"
 ss-pressure = "superstrike_pressure.cli:pressure"
 ss-tablet = "superstrike_pressure.cli:tablet"
+ss-pen = "superstrike_pressure.bridge.synthetic_pen_cli:main"
+ss-dev-ui = "superstrike_pressure.dev_ui:main"
 ss-bridge-ws = "superstrike_pressure.web.main:main"
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
 
 [build-system]
 requires = ["hatchling"]

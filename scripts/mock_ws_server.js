@@ -1,11 +1,11 @@
 #!/usr/bin/env node
 /**
- * mock_ws_server.js
+ * scripts/mock_ws_server.js
  * Fake Superstrike Bridge backend for UI development.
- * Implements the full protocol.md contract with realistic fake data.
+ * Implements the docs/web/protocol.md contract with realistic fake data.
  * The real Python backend is a drop-in replacement on the same protocol.
  *
- * Usage: node mock_ws_server.js [--port 27842]
+ * Usage: node scripts/mock_ws_server.js [--port 27842]
  *
  * Simulates:
  *   - Startup stdout handshake (printed immediately)
@@ -32,8 +32,8 @@ let config = {
   schema_version: 1,
   linked: true,
   left: {
-    raw_min: 80,
-    raw_max: 185,
+    raw_min: 320,
+    raw_max: 740,
     deadzone_low: 0,
     deadzone_high: 0,
     curve: 'linear',
@@ -41,8 +41,8 @@ let config = {
     contact_preset: 'medium',
   },
   right: {
-    raw_min: 80,
-    raw_max: 185,
+    raw_min: 320,
+    raw_max: 740,
     deadzone_low: 0,
     deadzone_high: 0,
     curve: 'linear',
@@ -85,10 +85,10 @@ let _t = 0;
 function makeTelemetryPayload() {
   _t += 1 / 60;
   const leftRaw = streamActive
-    ? Math.round(80 + 60 * Math.max(0, Math.sin(_t * 0.8) * Math.sin(_t * 0.3)))
+    ? Math.round(320 + 240 * Math.max(0, Math.sin(_t * 0.8) * Math.sin(_t * 0.3)))
     : 0;
   const rightRaw = streamActive
-    ? Math.round(80 + 45 * Math.max(0, Math.sin(_t * 0.6 + 1.2) * Math.sin(_t * 0.4)))
+    ? Math.round(320 + 180 * Math.max(0, Math.sin(_t * 0.6 + 1.2) * Math.sin(_t * 0.4)))
     : 0;
   const toNorm = (raw, mn, mx) => Math.max(0, Math.min(1, (raw - mn) / (mx - mn)));
   const toMapped = (norm) => Math.round(norm * 1023);
@@ -295,7 +295,7 @@ async function handleCalibrate(ws, request_id, payload) {
     }
 
     broadcastEvent({ event: 'calibrate.progress', channel: ch, phase: 'done', value: 0 });
-    result[ch] = { raw_min: 79, raw_max: ch === 'left' ? 157 : 162 };
+    result[ch] = { raw_min: 316, raw_max: ch === 'left' ? 628 : 648 };
 
     // Apply to config
     config[ch].raw_min = result[ch].raw_min;

@@ -4,6 +4,11 @@ __pycache__/
 dist/
 build/
 .venv/
+.pytest_cache/
+.mypy_cache/
+.ruff_cache/
+.coverage
+htmlcov/
 *.log
 .DS_Store
 
@@ -11,3 +16,4 @@ build/
 docs/pressure_pen_*.txt
 docs/tablet_synth_*.txt
 docs/latency_profile_*.txt
+/work/

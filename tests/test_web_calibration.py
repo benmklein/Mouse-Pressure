@@ -5,6 +5,7 @@ import sys
 import unittest
 from dataclasses import dataclass
 from pathlib import Path
+from unittest.mock import AsyncMock, patch
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "src"))
 
@@ -66,12 +67,18 @@ class CalibrationTests(unittest.IsolatedAsyncioTestCase):
     async def asyncSetUp(self) -> None:
         self._old_phase_duration = calibration.PHASE_DURATION_S
         self._old_progress_interval = calibration.PROGRESS_INTERVAL_S
+        self._old_settle = calibration.CALIBRATION_SETTLE_S
+        self._old_countdown = calibration.PHASE_COUNTDOWN_S
         calibration.PHASE_DURATION_S = 0.03
         calibration.PROGRESS_INTERVAL_S = 0.01
+        calibration.CALIBRATION_SETTLE_S = 0.0
+        calibration.PHASE_COUNTDOWN_S = 0
 
     async def asyncTearDown(self) -> None:
         calibration.PHASE_DURATION_S = self._old_phase_duration
         calibration.PROGRESS_INTERVAL_S = self._old_progress_interval
+        calibration.CALIBRATION_SETTLE_S = self._old_settle
+        calibration.PHASE_COUNTDOWN_S = self._old_countdown
 
     async def test_calibration_starts_and_stops_stream_when_inactive(self) -> None:
         runtime = _FakeRuntimeService(
@@ -107,6 +114,35 @@ class CalibrationTests(unittest.IsolatedAsyncioTestCase):
         self.assertIn("left", result)
         self.assertEqual(list(result.keys()), ["left"])
         self.assertEqual(runtime.apply_calls[0]["left"]["raw_min"], result["left"]["raw_min"])
+
+    def test_phase_range_ignores_idle_and_heavy_outliers(self) -> None:
+        raw_min, raw_max = calibration._calibrated_range(  # noqa: SLF001
+            {
+                "idle": [378, 379, 380, 380, 381] * 4 + [999],
+                "light": [430, 440, 450],
+                "heavy": [620, 625, 630, 632, 635] * 4 + [1000],
+            },
+            fallback_min=80,
+            fallback_max=180,
+        )
+
+        self.assertEqual(raw_min, 381)
+        self.assertEqual(raw_max, 635)
+
+    async def test_countdown_announces_each_second_before_sampling(self) -> None:
+        events: list[dict] = []
+        calibration.PHASE_COUNTDOWN_S = 3
+
+        with patch.object(calibration.asyncio, "sleep", new=AsyncMock()) as sleep:
+            await calibration._countdown_before_phase(  # noqa: SLF001
+                channel="left",
+                phase="light",
+                progress_cb=events.append,
+            )
+
+        self.assertEqual([event["countdown"] for event in events], [3, 2, 1])
+        self.assertTrue(all(event["next_phase"] == "light" for event in events))
+        self.assertEqual(sleep.await_count, 3)
 
 
 if __name__ == "__main__":

@@ -795,8 +795,8 @@ def parse_args() -> argparse.Namespace:
             "format_b(len=0x09,id=0x05,pad65), report06(len=0x0A,id=0x06)."
         ),
     )
-    p.add_argument("--raw-min", type=int, default=80, help="Left calibration min (default: 80).")
-    p.add_argument("--raw-max", type=int, default=170, help="Left calibration max (default: 170).")
+    p.add_argument("--raw-min", type=int, default=320, help="Left 10-bit ADC min (default: 320).")
+    p.add_argument("--raw-max", type=int, default=680, help="Left 10-bit ADC max (default: 680).")
     p.add_argument("--mode", type=int, default=3, help="Superstrike pressure mode byte (default: 3).")
     p.add_argument("--mode-arg", type=int, default=0, help="Superstrike pressure mode arg (default: 0).")
     p.add_argument("--hz", type=float, default=60.0, help="Target update rate (default: 60Hz).")
@@ -1048,6 +1048,7 @@ def run_tablet_bridge() -> int:
 
                 decoded_samples: list[tuple[int, int]] = []
                 if session is not None:
+                    session.maintain_pressure_stream()
                     # Drain nonblocking queue; keep all decoded samples for synthetic backend.
                     while True:
                         if session.dev is None:
@@ -1063,10 +1064,11 @@ def run_tablet_bridge() -> int:
                             len(data) >= 20
                             and data[0] == 0x11
                             and data[1] == 0x01
-                            and data[2] == 0x0C
+                            and data[2] == session.pressure_feature_index
                             and data[3] == 0x10
                         ):
-                            left_raw = int(data[4])
+                            raw_u16 = int.from_bytes(bytes(data[4:6]), byteorder="big")
+                            left_raw = raw_u16 >> 6
                             left_norm = normalize_raw_pressure(left_raw, left_cfg.raw_min, left_cfg.raw_max)
                             left_mapped = map_normalized_pressure(left_norm, left_cfg)
                             decoded_samples.append((left_raw, left_mapped))

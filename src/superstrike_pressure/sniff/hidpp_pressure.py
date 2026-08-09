@@ -20,13 +20,21 @@ REPORT_SHORT = 0x10
 REPORT_LONG = 0x11
 DEVICE_INDEX = 0x01
 PRESSURE_FEATURE_INDEX = 0x0C
+ANALOG_BUTTONS_FEATURE_ID = 0x1B0C
+RAW_ADC_MONITORING_FLAG = 0x02
+PRESSURE_LEASE_SECONDS = 8
+PRESSURE_LEASE_RENEW_INTERVAL_S = 2.0
+PRESSURE_RESTORE_LEASE_SECONDS = 60
 PRESSURE_FUNCTION_SWID = 0x3C
 PRESSURE_NOTIFICATION_SWID = 0x00
 PRESSURE_MODE3_ADDR = 0x10
-PRESSURE_MODE3_LEFT_PAYLOAD_INDEX = 0   # addr 0x10 byte4
-PRESSURE_MODE3_RIGHT_PAYLOAD_INDEX = 2  # addr 0x10 byte6
+PRESSURE_MODE3_LEFT_PAYLOAD_INDEX = 0
+PRESSURE_MODE3_RIGHT_PAYLOAD_INDEX = 2
 MOUSE_BUTTON_SPY_INDEX = 0x0F
 HIDPP_SW_ID = 0x08
+DEVICE_CONFIG_SW_ID = 0x0F
+EXTENDED_DPI_FEATURE_INDEX = 0x09
+CONFIG_WRAPPER_FEATURE_INDEX = 0x0F
 
 DISABLE_PRESSURE_STREAM_CANDIDATES = [
     [
@@ -74,16 +82,18 @@ def _short_to_long(short_report: list[int]) -> list[int]:
     )
 
 
-def build_enable_pressure_stream(mode: int = 0x01, mode_arg: int = 0x00) -> list[int]:
-    return [
-        REPORT_SHORT,
-        DEVICE_INDEX,
-        PRESSURE_FEATURE_INDEX,
-        PRESSURE_FUNCTION_SWID,
-        mode & 0xFF,
-        PRESSURE_FUNCTION_SWID,
-        mode_arg & 0xFF,
-    ]
+def build_monitoring_lease_report(
+    *,
+    feature_index: int,
+    flags: int,
+    lease_seconds: int,
+) -> list[int]:
+    """Build the HID++ 0x1B0C function-3 monitoring lease request."""
+    return _build_long_report(
+        sub_id=feature_index,
+        address=_function_to_address(3),
+        payload=[flags & 0x03, lease_seconds & 0xFF],
+    )
 
 
 @dataclass(frozen=True)
@@ -120,10 +130,15 @@ def parse_pressure_notification(data: list[int], timestamp_s: float) -> Pressure
     )
 
 
-def parse_feature_0c_frame(data: list[int], timestamp_s: float) -> Feature0CFrame | None:
+def parse_feature_0c_frame(
+    data: list[int],
+    timestamp_s: float,
+    *,
+    feature_index: int = PRESSURE_FEATURE_INDEX,
+) -> Feature0CFrame | None:
     if len(data) < 20:
         return None
-    if data[0] != REPORT_LONG or data[1] != DEVICE_INDEX or data[2] != PRESSURE_FEATURE_INDEX:
+    if data[0] != REPORT_LONG or data[1] != DEVICE_INDEX or data[2] != feature_index:
         return None
     return Feature0CFrame(
         timestamp_s=timestamp_s,
@@ -139,29 +154,39 @@ def extract_mode3_primary_pressure_raw(frame: Feature0CFrame) -> int | None:
 
 
 def extract_mode3_left_pressure_raw(frame: Feature0CFrame) -> int | None:
-    """Return mode-3 LEFT raw pressure (addr 0x10 byte4)."""
+    """Return the full 10-bit left ADC code from event 1 channel 0."""
     if frame.addr != PRESSURE_MODE3_ADDR:
         return None
-    if len(frame.payload) <= PRESSURE_MODE3_LEFT_PAYLOAD_INDEX:
+    if len(frame.payload) < PRESSURE_MODE3_LEFT_PAYLOAD_INDEX + 2:
         return None
-    return frame.payload[PRESSURE_MODE3_LEFT_PAYLOAD_INDEX]
+    offset = PRESSURE_MODE3_LEFT_PAYLOAD_INDEX
+    raw_u16 = int.from_bytes(bytes(frame.payload[offset : offset + 2]), byteorder="big")
+    return raw_u16 >> 6
 
 
 def extract_mode3_right_pressure_raw(frame: Feature0CFrame) -> int | None:
-    """Return mode-3 RIGHT raw pressure (addr 0x10 byte6)."""
+    """Return the full 10-bit right ADC code from event 1 channel 1."""
     if frame.addr != PRESSURE_MODE3_ADDR:
         return None
-    if len(frame.payload) <= PRESSURE_MODE3_RIGHT_PAYLOAD_INDEX:
+    if len(frame.payload) < PRESSURE_MODE3_RIGHT_PAYLOAD_INDEX + 2:
         return None
-    return frame.payload[PRESSURE_MODE3_RIGHT_PAYLOAD_INDEX]
+    offset = PRESSURE_MODE3_RIGHT_PAYLOAD_INDEX
+    raw_u16 = int.from_bytes(bytes(frame.payload[offset : offset + 2]), byteorder="big")
+    return raw_u16 >> 6
 
 
 def extract_mode3_lr_pressure_raw(frame: Feature0CFrame) -> tuple[int | None, int | None]:
     """Return (left_raw, right_raw) for mode-3 frames."""
-    return (
-        extract_mode3_left_pressure_raw(frame),
-        extract_mode3_right_pressure_raw(frame),
-    )
+    left = extract_mode3_left_pressure_raw(frame)
+    right = extract_mode3_right_pressure_raw(frame)
+    # The physical ADC channels rest around 300+, so a decoded zero is not a
+    # real button position. Short lease/monitor transitions can emit an empty
+    # event-1 payload; do not turn that transport artifact into pen release.
+    if left == 0:
+        left = None
+    if right == 0:
+        right = None
+    return left, right
 
 
 def normalize_raw_pressure(raw: int, raw_min: int, raw_max: int) -> float:
@@ -185,6 +210,11 @@ class PressureHidppSession:
         self._cleanup_done = False
         self._atexit_registered = False
         self._signal_handlers: dict[signal.Signals, object] = {}
+        self.pressure_feature_index = PRESSURE_FEATURE_INDEX
+        self._previous_monitoring_flags: int | None = None
+        self._active_monitoring_flags: int | None = None
+        self.lease_renew_interval_s = PRESSURE_LEASE_RENEW_INTERVAL_S
+        self._next_lease_renewal = 0.0
 
     def discover_col02_path(self) -> bytes | None:
         for d in hid.enumerate():
@@ -272,6 +302,7 @@ class PressureHidppSession:
     def read_next(self, timeout_s: float = 0.1) -> tuple[float, list[int]] | None:
         if self.dev is None:
             return None
+        self.maintain_pressure_stream()
         end = time.perf_counter() + timeout_s
         while time.perf_counter() < end:
             try:
@@ -312,22 +343,231 @@ class PressureHidppSession:
             self.log(f"RX {label} len={len(b)} {hex_bytes(b)}")
         return rows
 
+    def request_long(
+        self,
+        *,
+        feature_index: int,
+        address: int,
+        payload: list[int],
+        label: str,
+        timeout_s: float = 0.12,
+    ) -> list[int]:
+        """Send one HID++ long request and return its matching payload."""
+        if self.dev is None:
+            raise RuntimeError("Device not open")
+
+        report = _build_long_report(feature_index, address, payload)
+        wrote = self.dev.write(report)
+        self.log(f"TX {label} write()={wrote} {hex_bytes(report)}")
+        if wrote is None or wrote <= 0:
+            raise OSError(f"{label} was not accepted by the receiver")
+
+        end = time.perf_counter() + timeout_s
+        while time.perf_counter() < end:
+            data = self.dev.read(64)
+            if not data:
+                time.sleep(0.001)
+                continue
+            row = list(data)
+            if (
+                len(row) >= 6
+                and row[0] == REPORT_LONG
+                and row[1] == DEVICE_INDEX
+                and row[2] == 0xFF
+                and row[3] == feature_index
+                and row[4] == address
+            ):
+                self.log(f"RX {label} ERROR code=0x{row[5]:02X} {hex_bytes(row)}")
+                raise RuntimeError(f"{label} failed with HID++ error 0x{row[5]:02X}")
+            if (
+                len(row) >= 4
+                and row[0] == REPORT_LONG
+                and row[1] == DEVICE_INDEX
+                and row[2] == feature_index
+                and row[3] == address
+            ):
+                self.log(f"RX {label} len={len(row)} {hex_bytes(row)}")
+                return row[4:20]
+
+        raise TimeoutError(f"Timed out waiting for {label} response")
+
+    def set_haptic_levels(self, *, left: int, right: int) -> tuple[int, int]:
+        """Set click haptics 0..5 while preserving actuation/rapid-trigger."""
+        if not 0 <= left <= 5 or not 0 <= right <= 5:
+            raise ValueError("Haptic levels must be in 0..5")
+
+        current: dict[int, list[int]] = {}
+        for button in (0, 1):
+            values = self.request_long(
+                feature_index=self.pressure_feature_index,
+                address=(2 << 4) | DEVICE_CONFIG_SW_ID,
+                payload=[button],
+                label=f"HAPTIC.read[{button}]",
+            )
+            if len(values) < 4 or values[0] != button:
+                raise RuntimeError(f"Unexpected HITS settings response for button {button}")
+            current[button] = values
+
+        self.request_long(
+            feature_index=CONFIG_WRAPPER_FEATURE_INDEX,
+            address=0x00,
+            payload=[0x00, 0x01, 0x00],
+            label="HAPTIC.unlock",
+        )
+        try:
+            for button, level in ((0, left), (1, right)):
+                values = current[button]
+                self.request_long(
+                    feature_index=self.pressure_feature_index,
+                    address=(1 << 4) | DEVICE_CONFIG_SW_ID,
+                    payload=[button, values[1], values[2], level * 4],
+                    label=f"HAPTIC.write[{button}]={level}",
+                )
+        finally:
+            self.request_long(
+                feature_index=CONFIG_WRAPPER_FEATURE_INDEX,
+                address=0x00,
+                payload=[0x00, 0x00, 0x00],
+                label="HAPTIC.commit_lock",
+            )
+        return left, right
+
+    def set_dpi(self, dpi: int) -> int:
+        """Set equal X/Y DPI using feature 0x2202 (index 0x09)."""
+        if not 100 <= dpi <= 32000 or dpi % 50 != 0:
+            raise ValueError("DPI must be 100..32000 in 50-DPI increments")
+
+        current = self.request_long(
+            feature_index=EXTENDED_DPI_FEATURE_INDEX,
+            address=(5 << 4) | DEVICE_CONFIG_SW_ID,
+            payload=[0x00],
+            label="DPI.read",
+        )
+        if len(current) < 10:
+            raise RuntimeError("Extended DPI response was too short")
+        lod = current[9]
+        high, low = divmod(dpi, 256)
+        self.request_long(
+            feature_index=EXTENDED_DPI_FEATURE_INDEX,
+            address=(6 << 4) | DEVICE_CONFIG_SW_ID,
+            payload=[0x00, high, low, high, low, lod],
+            label=f"DPI.write={dpi}",
+        )
+
+        verified = self.request_long(
+            feature_index=EXTENDED_DPI_FEATURE_INDEX,
+            address=(5 << 4) | DEVICE_CONFIG_SW_ID,
+            payload=[0x00],
+            label="DPI.verify",
+        )
+        if len(verified) < 5:
+            raise RuntimeError("Extended DPI verification response was too short")
+        actual = int.from_bytes(bytes(verified[1:3]), byteorder="big")
+        if actual == 0:
+            actual = int.from_bytes(bytes(verified[3:5]), byteorder="big")
+        if actual != dpi:
+            raise RuntimeError(
+                f"DPI remained at {actual}; disable the mouse onboard profile or close G HUB"
+            )
+        return actual
+
+    def discover_pressure_feature_index(self) -> int:
+        """Resolve HID++ feature 0x1B0C instead of assuming index 0x0C."""
+        payload = self.request_long(
+            feature_index=0x00,
+            address=_function_to_address(0),
+            payload=[ANALOG_BUTTONS_FEATURE_ID >> 8, ANALOG_BUTTONS_FEATURE_ID & 0xFF],
+            label="PRESSURE.discover.0x1B0C",
+        )
+        if not payload or payload[0] == 0:
+            raise RuntimeError("Device does not expose HID++ feature 0x1B0C")
+        self.pressure_feature_index = payload[0]
+        self.log(f"PRESSURE feature 0x1B0C index=0x{self.pressure_feature_index:02X}")
+        return self.pressure_feature_index
+
     def enable_pressure_stream(self, mode: int = 0x01, mode_arg: int = 0x00) -> None:
-        enable_cmd = build_enable_pressure_stream(mode=mode, mode_arg=mode_arg)
-        self.read_for(0.05)  # Drain stale packets first.
-        self.write_report(
-            enable_cmd,
-            label=f"PRESSURE.enable.short(mode=0x{mode:02X},arg=0x{mode_arg:02X})",
-            read_window_s=0.2,
+        """Acquire a short event-1 lease while preserving existing monitor flags."""
+        del mode, mode_arg  # Retained in the public signature for CLI compatibility.
+        self.read_for(0.05)
+        feature_index = self.discover_pressure_feature_index()
+        current = self.request_long(
+            feature_index=feature_index,
+            address=_function_to_address(4),
+            payload=[],
+            label="PRESSURE.flags.read",
         )
-        self.write_report(
-            _short_to_long(enable_cmd),
-            label=f"PRESSURE.enable.long_fallback(mode=0x{mode:02X},arg=0x{mode_arg:02X})",
-            read_window_s=0.2,
+        if not current:
+            raise RuntimeError("HID++ 0x1B0C function 4 returned no monitoring flags")
+        self._previous_monitoring_flags = current[0] & 0x03
+        self._active_monitoring_flags = self._previous_monitoring_flags | RAW_ADC_MONITORING_FLAG
+        self.request_long(
+            feature_index=feature_index,
+            address=_function_to_address(3),
+            payload=[self._active_monitoring_flags, PRESSURE_LEASE_SECONDS],
+            label="PRESSURE.lease.acquire",
         )
+        self._next_lease_renewal = time.perf_counter() + self.lease_renew_interval_s
+
+    def maintain_pressure_stream(self) -> bool:
+        """Renew the monitoring lease when due; return whether a write occurred."""
+        if self._active_monitoring_flags is None:
+            return False
+        if time.perf_counter() < self._next_lease_renewal:
+            return False
+        self.refresh_pressure_stream()
+        return True
+
+    def refresh_pressure_stream(self, mode: int = 0x01, mode_arg: int = 0x00) -> None:
+        """Renew the active stream without consuming pressure reports.
+
+        The Superstrike receiver rejects the short form of this command and
+        accepts the 20-byte long report. Recovery used to spend roughly 0.4s
+        on the rejected short form and synchronous read windows. A refresh is
+        intentionally write-only: the reader loop will consume the echo and
+        the resumed pressure frames normally.
+        """
+        if self.dev is None:
+            raise RuntimeError("Device not open")
+
+        del mode, mode_arg
+        if self._active_monitoring_flags is None:
+            raise RuntimeError("Pressure stream has not been enabled")
+        report = build_monitoring_lease_report(
+            feature_index=self.pressure_feature_index,
+            flags=self._active_monitoring_flags,
+            lease_seconds=PRESSURE_LEASE_SECONDS,
+        )
+        label = "PRESSURE.lease.renew"
+        wrote: int | None = None
+        try:
+            wrote = self.dev.write(report)
+            self.log(f"TX {label} write()={wrote} {hex_bytes(report)}")
+        except OSError as exc:
+            self.log(f"TX {label} write_error={exc} {hex_bytes(report)}")
+
+        if (wrote is None or wrote <= 0) and hasattr(self.dev, "send_feature_report"):
+            try:
+                wrote = self.dev.send_feature_report(report)
+                self.log(f"TX {label} send_feature_report()={wrote}")
+            except OSError as exc:
+                self.log(f"TX {label} send_feature_report_error={exc}")
+
+        if wrote is None or wrote <= 0:
+            raise OSError("Pressure stream refresh was not accepted by the receiver")
+        self._next_lease_renewal = time.perf_counter() + self.lease_renew_interval_s
 
     def disable_pressure_stream(self) -> None:
         if self.dev is None:
+            return
+        if self._previous_monitoring_flags is not None:
+            self.request_long(
+                feature_index=self.pressure_feature_index,
+                address=_function_to_address(3),
+                payload=[self._previous_monitoring_flags, PRESSURE_RESTORE_LEASE_SECONDS],
+                label="CLEANUP.PRESSURE.flags.restore",
+            )
+            self._active_monitoring_flags = None
+            self._next_lease_renewal = 0.0
             return
         for i, cmd in enumerate(DISABLE_PRESSURE_STREAM_CANDIDATES, start=1):
             self.write_report(

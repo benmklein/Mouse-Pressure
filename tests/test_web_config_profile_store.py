@@ -17,7 +17,10 @@ from superstrike_pressure.web.profile_store import ProfileStore  # noqa: E402
 
 def _sample_runtime_config() -> RuntimeConfig:
     return RuntimeConfig(
-        linked=False,
+            linked=False,
+            suppress_lmb=True,
+            suppress_rmb=True,
+        release_teardown=True,
         left=ChannelConfig(raw_min=82, raw_max=180, curve="soft", contact_preset="light"),
         right=ChannelConfig(raw_min=84, raw_max=190, curve="hard", contact_preset="firm"),
         app_profiles={"krita.exe": "krita"},
@@ -31,8 +34,32 @@ class ConfigStoreTests(unittest.TestCase):
             loaded = store.load()
             self.assertEqual(loaded.schema_version, 1)
             self.assertTrue(loaded.linked)
-            self.assertEqual(loaded.left.raw_min, 80)
-            self.assertEqual(loaded.right.raw_max, 185)
+            self.assertEqual(loaded.left.raw_min, 320)
+            self.assertEqual(loaded.right.raw_max, 740)
+            self.assertEqual(loaded.left.pressure_floor, 12)
+            self.assertEqual(loaded.left.path_stabilization, 0)
+            self.assertEqual(loaded.left.pressure_influence, 85)
+            self.assertFalse(loaded.left.onset_buffer)
+
+    def test_load_migrates_legacy_byte_calibration_to_adc_codes(self) -> None:
+        with tempfile.TemporaryDirectory() as td:
+            store = ConfigStore(td)
+            store.path.parent.mkdir(parents=True, exist_ok=True)
+            store.path.write_text(
+                json.dumps(
+                    {
+                        "schema_version": 1,
+                        "left": {"raw_min": 80, "raw_max": 185},
+                        "right": {"raw_min": 79, "raw_max": 170},
+                    }
+                ),
+                encoding="utf-8",
+            )
+
+            loaded = store.load()
+
+            self.assertEqual((loaded.left.raw_min, loaded.left.raw_max), (320, 740))
+            self.assertEqual((loaded.right.raw_min, loaded.right.raw_max), (316, 680))
 
     def test_save_then_load_round_trip(self) -> None:
         with tempfile.TemporaryDirectory() as td:
@@ -41,6 +68,9 @@ class ConfigStoreTests(unittest.TestCase):
             store.save(config)
             loaded = store.load()
             self.assertEqual(loaded.linked, config.linked)
+            self.assertTrue(loaded.suppress_lmb)
+            self.assertTrue(loaded.suppress_rmb)
+            self.assertTrue(loaded.release_teardown)
             self.assertEqual(loaded.left.curve, "soft")
             self.assertEqual(loaded.right.curve, "hard")
             self.assertEqual(loaded.app_profiles["krita.exe"], "krita")
@@ -55,6 +85,20 @@ class ConfigStoreTests(unittest.TestCase):
             )
             with self.assertRaises(SchemaMismatchError):
                 store.load()
+
+    def test_load_old_config_defaults_new_bridge_flags(self) -> None:
+        with tempfile.TemporaryDirectory() as td:
+            store = ConfigStore(td)
+            store.path.parent.mkdir(parents=True, exist_ok=True)
+            store.path.write_text(
+                json.dumps({"schema_version": 1, "linked": True, "left": {}, "right": {}}),
+                encoding="utf-8",
+            )
+
+            loaded = store.load()
+
+            self.assertFalse(loaded.suppress_lmb)
+            self.assertFalse(loaded.release_teardown)
 
     def test_resolve_config_dir_prefers_env(self) -> None:
         with tempfile.TemporaryDirectory() as td:

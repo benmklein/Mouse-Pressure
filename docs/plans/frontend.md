@@ -8,7 +8,7 @@ system tray icon, communicates with a Python backend over a local WebSocket,
 and lets users configure pressure curves, calibrate, and manage profiles.
 
 The Python backend is being built in a parallel thread. You will develop against
-a mock server (mock_ws_server.js) that implements the full protocol. When both
+a mock server (`scripts/mock_ws_server.js`) that implements the full protocol. When both
 threads are done, pointing the UI at the real backend is the only integration step.
 
 ## Stack (locked, do not change)
@@ -21,8 +21,9 @@ threads are done, pointing the UI at the real backend is the only integration st
 
 ## Files provided
 
-- `protocol.md` — the WebSocket contract. Follow it exactly.
-- `mock_ws_server.js` — fake backend. Run with: `node mock_ws_server.js`
+- `../web/protocol.md` — the WebSocket contract. Follow it exactly.
+- `scripts/mock_ws_server.js` — fake backend. Run from the repository root with:
+  `node scripts/mock_ws_server.js`
   It prints a readiness line to stdout and opens ws://127.0.0.1:27842.
 
 ## Architecture
@@ -41,7 +42,7 @@ threads are done, pointing the UI at the real backend is the only integration st
 ### WebSocket (React side)
 - Connect to ws://127.0.0.1:<port from Tauri event>
 - Reconnect with exponential backoff on disconnect
-- All commands use the envelope from protocol.md with a uuidv4 request_id
+- All commands use the envelope from `../web/protocol.md` with a uuidv4 request_id
 - Maintain a pending request map: { request_id -> { resolve, reject, timeout } }
 - Match ack/error responses to pending requests by request_id
 - Unsolicited events (heartbeat, telemetry, log.event, config.changed) go
@@ -161,7 +162,7 @@ Section 4 — Session Stats:
 
 ## Development workflow
 
-1. Run `node mock_ws_server.js` in one terminal
+1. Run `node scripts/mock_ws_server.js` in one terminal
 2. Run `npm run tauri dev` in another
 3. The mock server handles all commands and emits realistic fake telemetry
 4. The real backend is a drop-in replacement — no UI code changes needed at merge

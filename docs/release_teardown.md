@@ -15,9 +15,16 @@ Observed symptom:
 The pointer may remain "in range" after `UP`, and some apps continue smoothing
 the stroke until they see a clearer pointer teardown.
 
-## Mitigation
+## Default behavior
 
-Enable the release teardown sequence (`--release-teardown`):
+The normal release sends `UP` without `INRANGE`, ending both contact and hover.
+This avoids retaining a synthetic hover pointer at the release coordinate,
+which can pull the mouse cursor back after physical movement resumes.
+
+## Optional compatibility mitigation
+
+Only if Krita visibly keeps extending a stroke after release, enable the
+experimental teardown sequence (`--release-teardown`):
 
 1. `UP | INRANGE`
 2. `UPDATE | INRANGE` (hover frame)

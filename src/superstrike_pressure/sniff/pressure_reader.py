@@ -23,8 +23,8 @@ from superstrike_pressure.sniff.hidpp_pressure import (
 def parse_args() -> argparse.Namespace:
     p = argparse.ArgumentParser(
         description=(
-            "Enable mode-3 pressure stream on MI_02 Col02, decode LEFT=0x10.byte4 "
-            "and RIGHT=0x10.byte6, and report normalized pressure in real time."
+            "Enable the pressure stream on MI_02 Col02, decode both 10-bit ADC "
+            "channels, and report normalized travel in real time."
         )
     )
     p.add_argument(
@@ -41,26 +41,26 @@ def parse_args() -> argparse.Namespace:
     p.add_argument(
         "--raw-min",
         type=int,
-        default=78,
-        help="LEFT calibration minimum for normalization (default: 78).",
+        default=312,
+        help="LEFT 10-bit ADC minimum for normalization (default: 312).",
     )
     p.add_argument(
         "--raw-max",
         type=int,
-        default=154,
-        help="LEFT calibration maximum for normalization (default: 154).",
+        default=616,
+        help="LEFT 10-bit ADC maximum for normalization (default: 616).",
     )
     p.add_argument(
         "--right-raw-min",
         type=int,
-        default=78,
-        help="RIGHT calibration minimum (default: 78).",
+        default=312,
+        help="RIGHT 10-bit ADC minimum (default: 312).",
     )
     p.add_argument(
         "--right-raw-max",
         type=int,
-        default=146,
-        help="RIGHT calibration maximum (default: 146).",
+        default=584,
+        help="RIGHT 10-bit ADC maximum (default: 584).",
     )
     p.add_argument(
         "--mode",
@@ -124,7 +124,11 @@ def _collect_phase_frames(
         if item is None:
             continue
         ts, data = item
-        frame = parse_feature_0c_frame(data, ts)
+        frame = parse_feature_0c_frame(
+            data,
+            ts,
+            feature_index=session.pressure_feature_index,
+        )
         if frame is None:
             continue
         out.append(frame)
@@ -288,8 +292,8 @@ def run_pressure_reader(
     *,
     duration_s: float | None = None,
     log_file: str = "docs/pressure_realtime_log.txt",
-    raw_min: int = 78,
-    raw_max: int = 154,
+    raw_min: int = 312,
+    raw_max: int = 616,
     right_raw_min: int | None = None,
     right_raw_max: int | None = None,
     mode: int = 3,
@@ -305,9 +309,9 @@ def run_pressure_reader(
 
     left_seen: set[int] = set()
     right_seen: set[int] = set()
-    left_lo = 255
+    left_lo = 1024
     left_hi = 0
-    right_lo = 255
+    right_lo = 1024
     right_hi = 0
     left_norm_lo = 1.0
     left_norm_hi = 0.0
@@ -354,7 +358,11 @@ def run_pressure_reader(
                 if item is None:
                     continue
                 ts, data = item
-                frame = parse_feature_0c_frame(data, ts)
+                frame = parse_feature_0c_frame(
+                    data,
+                    ts,
+                    feature_index=session.pressure_feature_index,
+                )
                 if frame is None:
                     continue
 

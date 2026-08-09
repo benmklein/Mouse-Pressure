@@ -120,23 +120,23 @@ class NamedPipeEmitter:
 def parse_args() -> argparse.Namespace:
     p = argparse.ArgumentParser(
         description=(
-            "Run Superstrike bridge using mode-3 stream (left=0x10.byte4, right=0x10.byte6), "
+            "Run the Superstrike event-1 stream with full 10-bit left/right ADC decoding, "
             "apply pressure curve, emit mapped 0..1023 values."
         )
     )
-    p.add_argument("--raw-min", type=int, default=78, help="LEFT min (default: 78)")
-    p.add_argument("--raw-max", type=int, default=154, help="LEFT max (default: 154)")
+    p.add_argument("--raw-min", type=int, default=312, help="LEFT 10-bit ADC min (default: 312)")
+    p.add_argument("--raw-max", type=int, default=616, help="LEFT 10-bit ADC max (default: 616)")
     p.add_argument(
         "--right-raw-min",
         type=int,
-        default=78,
-        help="RIGHT min (default: 78)",
+        default=312,
+        help="RIGHT 10-bit ADC min (default: 312)",
     )
     p.add_argument(
         "--right-raw-max",
         type=int,
-        default=146,
-        help="RIGHT max (default: 146)",
+        default=584,
+        help="RIGHT 10-bit ADC max (default: 584)",
     )
     p.add_argument("--mode", type=int, default=3, help="Feature 0x0C mode (default: 3)")
     p.add_argument("--mode-arg", type=int, default=0, help="Mode arg byte (default: 0)")
@@ -234,9 +234,9 @@ def run_bridge() -> int:
 
         start = time.perf_counter()
         n_samples = 0
-        left_lo = 255
+        left_lo = 1024
         left_hi = 0
-        right_lo = 255
+        right_lo = 1024
         right_hi = 0
         last_print = 0.0
         last_left = -1
@@ -261,7 +261,11 @@ def run_bridge() -> int:
                 if item is None:
                     continue
                 ts, data = item
-                frame = parse_feature_0c_frame(data, ts)
+                frame = parse_feature_0c_frame(
+                    data,
+                    ts,
+                    feature_index=session.pressure_feature_index,
+                )
                 if frame is None:
                     continue
 

@@ -30,7 +30,7 @@ Right channel has NO effect on pen injection in this sprint.
 In `synthetic_pen.py`, add a clearly marked TODO:
 ```python
 # TODO: right channel injection — eraser mode / haptics / symmetry control
-# Currently telemetry + config only. See thread_backend_v2.md decision 2.
+# Currently telemetry + config only. See docs/plans/backend.md decision 2.
 ```
 
 **3. Canonical synthetic pen module**
@@ -343,7 +343,7 @@ Maps incoming command names to handler coroutines. Each handler:
 - Calls appropriate service method
 - Calls `send_response` with ack or error envelope
 
-Implement handlers for all commands in `protocol.md`:
+Implement handlers for all commands in `../web/protocol.md`:
 `stream.start`, `stream.stop`, `config.get`, `config.patch`,
 `calibrate.start`, `profiles.list`, `profiles.save`, `profiles.load`,
 `profiles.delete`, `profiles.export`, `profiles.import`, `log.get_recent`
@@ -472,12 +472,12 @@ scripts/
 
 ## Protocol Compliance Checklist
 
-Before marking any task complete, verify against `protocol.md`:
+Before marking any task complete, verify against `../web/protocol.md`:
 
 - [ ] All command names match exactly (no typos, no camelCase)
 - [ ] All field names in telemetry payload match exactly
 - [ ] All field names in ConfigObject match exactly
-- [ ] All error codes are from the approved list in protocol.md
+- [ ] All error codes are from the approved list in `../web/protocol.md`
 - [ ] `schema_version` checked on `profiles.import`
 - [ ] `request_id` echoed on every ack and error response
 - [ ] `request_id` is null on all unsolicited events and telemetry

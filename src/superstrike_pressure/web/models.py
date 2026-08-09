@@ -28,6 +28,8 @@ class StreamNotActiveError(RuntimeError):
 _PROTOCOL_CURVES = {"linear", "soft", "hard", "scurve"}
 _CONTACT_PRESETS = {"light", "medium", "firm"}
 _PROFILE_NAME_RE = re.compile(r"^[A-Za-z0-9 _-]{1,64}$")
+CURVE_STRENGTH_MIN = 0.5
+CURVE_STRENGTH_MAX = 4.0
 
 
 def deadzone_pct_to_float(pct: int) -> float:
@@ -45,16 +47,20 @@ def validate_channel_config(ch: dict) -> list[str]:
     curve = ch.get("curve")
     curve_strength = ch.get("curve_strength")
     contact_preset = ch.get("contact_preset")
+    pressure_floor = ch.get("pressure_floor")
+    path_stabilization = ch.get("path_stabilization")
+    pressure_influence = ch.get("pressure_influence")
+    onset_buffer = ch.get("onset_buffer")
 
     if not isinstance(raw_min, int):
         errors.append("raw_min must be an integer")
     if not isinstance(raw_max, int):
         errors.append("raw_max must be an integer")
     if isinstance(raw_min, int) and isinstance(raw_max, int):
-        if not (50 <= raw_min <= 150):
-            errors.append("raw_min must be in 50..150")
-        if not (120 <= raw_max <= 220):
-            errors.append("raw_max must be in 120..220")
+        if not (0 <= raw_min <= 1023):
+            errors.append("raw_min must be in 0..1023")
+        if not (0 <= raw_max <= 1023):
+            errors.append("raw_max must be in 0..1023")
         if raw_min >= raw_max:
             errors.append("raw_min must be strictly less than raw_max")
 
@@ -79,13 +85,34 @@ def validate_channel_config(ch: dict) -> list[str]:
         errors.append("curve_strength must be numeric")
     else:
         strength = float(curve_strength)
-        if not (0.5 <= strength <= 2.0):
-            errors.append("curve_strength must be in 0.5..2.0")
+        if not (CURVE_STRENGTH_MIN <= strength <= CURVE_STRENGTH_MAX):
+            errors.append(
+                f"curve_strength must be in "
+                f"{CURVE_STRENGTH_MIN:g}..{CURVE_STRENGTH_MAX:g}"
+            )
 
     if not isinstance(contact_preset, str):
         errors.append("contact_preset must be a string")
     elif contact_preset not in _CONTACT_PRESETS:
         errors.append("contact_preset must be one of: light, medium, firm")
+
+    if not isinstance(pressure_floor, int):
+        errors.append("pressure_floor must be an integer")
+    elif not (0 <= pressure_floor <= 100):
+        errors.append("pressure_floor must be in 0..100")
+
+    if not isinstance(path_stabilization, int):
+        errors.append("path_stabilization must be an integer")
+    elif not (0 <= path_stabilization <= 100):
+        errors.append("path_stabilization must be in 0..100")
+
+    if not isinstance(pressure_influence, int):
+        errors.append("pressure_influence must be an integer")
+    elif not (0 <= pressure_influence <= 100):
+        errors.append("pressure_influence must be in 0..100")
+
+    if not isinstance(onset_buffer, bool):
+        errors.append("onset_buffer must be a boolean")
 
     return errors
 

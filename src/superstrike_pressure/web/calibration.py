@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import asyncio
+import math
 from typing import Callable
 
 from superstrike_pressure.web.config_store import ConfigStore
@@ -10,8 +11,18 @@ from superstrike_pressure.web.models import ValidationError
 from superstrike_pressure.web.runtime_service import RuntimeService
 
 PHASES: tuple[str, ...] = ("idle", "light", "heavy")
-PHASE_DURATION_S = 1.5
+PHASE_DURATION_S = 2.0
 PROGRESS_INTERVAL_S = 0.25
+CALIBRATION_SETTLE_S = 0.0
+PHASE_COUNTDOWN_S = 3
+MIN_CALIBRATION_SPAN = 8
+PHASE_INSTRUCTIONS = {
+    "prepare": "Release the button and get ready.",
+    "idle": "Keep the button fully released.",
+    "light": "Hold a light, comfortable press.",
+    "heavy": "Press firmly through your comfortable range.",
+    "done": "Calibration saved.",
+}
 
 
 def _channel_value(channel: str, left_raw: int, right_raw: int) -> int:
@@ -32,7 +43,15 @@ async def _collect_phase_values(
     end = start + PHASE_DURATION_S
     next_progress = start
 
-    progress_cb({"event": "calibrate.progress", "channel": channel, "phase": phase, "value": last_value})
+    progress_cb(
+        {
+            "event": "calibrate.progress",
+            "channel": channel,
+            "phase": phase,
+            "value": last_value,
+            "instruction": PHASE_INSTRUCTIONS[phase],
+        }
+    )
 
     while True:
         now = loop.time()
@@ -56,11 +75,68 @@ async def _collect_phase_values(
                     "channel": channel,
                     "phase": phase,
                     "value": last_value,
+                    "instruction": PHASE_INSTRUCTIONS[phase],
                 }
             )
             next_progress = now + PROGRESS_INTERVAL_S
 
     return values, last_value
+
+
+def _percentile(values: list[int], fraction: float) -> int:
+    if not values:
+        raise ValueError("percentile requires at least one value")
+    ordered = sorted(int(value) for value in values)
+    index = min(len(ordered) - 1, max(0, math.ceil((len(ordered) - 1) * fraction)))
+    return ordered[index]
+
+
+async def _countdown_before_phase(
+    *,
+    channel: str,
+    phase: str,
+    progress_cb: Callable[[dict], None],
+) -> None:
+    for remaining in range(max(0, int(PHASE_COUNTDOWN_S)), 0, -1):
+        progress_cb(
+            {
+                "event": "calibrate.progress",
+                "channel": channel,
+                "phase": "countdown",
+                "next_phase": phase,
+                "countdown": remaining,
+                "value": 0,
+                "instruction": PHASE_INSTRUCTIONS[phase],
+            }
+        )
+        await asyncio.sleep(1.0)
+
+
+def _calibrated_range(
+    phase_values: dict[str, list[int]],
+    *,
+    fallback_min: int,
+    fallback_max: int,
+) -> tuple[int, int]:
+    """Use robust phase extrema, falling back for legacy/non-paced samplers."""
+    idle = phase_values.get("idle", [])
+    heavy = phase_values.get("heavy", [])
+    all_values = [value for values in phase_values.values() for value in values]
+    if idle and heavy:
+        # Ignore isolated noise. The top of the released range becomes zero;
+        # the 95th percentile of a firm press becomes full pressure.
+        raw_min = _percentile(idle, 0.95)
+        raw_max = _percentile(heavy, 0.95)
+    elif all_values:
+        raw_min = min(all_values)
+        raw_max = max(all_values)
+    else:
+        raw_min, raw_max = int(fallback_min), int(fallback_max)
+    if raw_max - raw_min < MIN_CALIBRATION_SPAN:
+        raise ValidationError(
+            "Calibration range was too small. Release fully for idle, then press firmly during heavy."
+        )
+    return int(raw_min), int(raw_max)
 
 
 async def run_calibration(
@@ -80,25 +156,41 @@ async def run_calibration(
     result: dict[str, dict[str, int]] = {}
     try:
         for ch_name in selected_channels:
-            channel_values: list[int] = []
+            current = runtime_service.get_config()
+            current_channel = current.left if ch_name == "left" else current.right
+            progress_cb(
+                {
+                    "event": "calibrate.progress",
+                    "channel": ch_name,
+                    "phase": "prepare",
+                    "value": 0,
+                    "instruction": PHASE_INSTRUCTIONS["prepare"],
+                }
+            )
+            if CALIBRATION_SETTLE_S > 0:
+                await asyncio.sleep(CALIBRATION_SETTLE_S)
+            values_by_phase: dict[str, list[int]] = {}
             last_value = 0
             for phase in PHASES:
+                await _countdown_before_phase(
+                    channel=ch_name,
+                    phase=phase,
+                    progress_cb=progress_cb,
+                )
                 phase_values, phase_last = await _collect_phase_values(
                     channel=ch_name,
                     phase=phase,
                     runtime_service=runtime_service,
                     progress_cb=progress_cb,
                 )
-                channel_values.extend(phase_values)
+                values_by_phase[phase] = phase_values
                 last_value = phase_last
 
-            if channel_values:
-                raw_min = min(channel_values)
-                raw_max = max(channel_values)
-            else:
-                cfg = runtime_service.get_config().left if ch_name == "left" else runtime_service.get_config().right
-                raw_min = cfg.raw_min
-                raw_max = cfg.raw_max
+            raw_min, raw_max = _calibrated_range(
+                values_by_phase,
+                fallback_min=current_channel.raw_min,
+                fallback_max=current_channel.raw_max,
+            )
 
             result[ch_name] = {"raw_min": int(raw_min), "raw_max": int(raw_max)}
             progress_cb(
@@ -107,6 +199,7 @@ async def run_calibration(
                     "channel": ch_name,
                     "phase": "done",
                     "value": int(last_value),
+                    "instruction": PHASE_INSTRUCTIONS["done"],
                 }
             )
 

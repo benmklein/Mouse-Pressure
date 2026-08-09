@@ -4,8 +4,11 @@ name = "uv-python"
 
 [setup]
 script = '''
-uv sync
-uv run python -m unittest discover tests
+if (-not (Test-Path -LiteralPath ".venv\Scripts\python.exe")) {
+  py -3.12 -m venv .venv
+}
+.venv\Scripts\python.exe -m pip install -e ".[dev,web]"
+.venv\Scripts\python.exe -m pytest
 '''
 
 [cleanup]
@@ -30,14 +33,24 @@ Get-ChildItem -Recurse -Directory -Filter "__pycache__" -ErrorAction SilentlyCon
 [[actions]]
 name = "Run Pen Bridge"
 icon = "run"
-command = "uv run python scripts/pressure_to_pen.py --hz 60 --curve linear --raw-min 80 --raw-max 185 --deadzone-low 0.00 --deadzone-high 1.00 --contact-source lmb_and_pressure --contact-threshold 12 --release-threshold 4 --suppress-lmb --no-click-through --release-teardown --duration 30 --log-file docs/pressure_pen_release_fix4.txt"
+command = ".venv\\Scripts\\ss-pen.exe --hz 240 --curve linear --raw-min 320 --raw-max 740 --deadzone-low 0.00 --deadzone-high 1.00 --contact-source lmb_and_pressure --contact-threshold 12 --release-threshold 4 --suppress-lmb --no-click-through --trace-dir work/stroke_traces --log-file pressure-bridge.log"
+
+[[actions]]
+name = "Dev Control Panel"
+icon = "debug"
+command = ".venv\\Scripts\\ss-dev-ui.exe"
 
 [[actions]]
 name = "Visualize"
 icon = "debug"
-command = "uv run ss-visualize"
+command = ".venv\\Scripts\\ss-visualize.exe"
+
+[[actions]]
+name = "Analyze Last Stroke"
+icon = "debug"
+command = ".venv\\Scripts\\python.exe scripts\\analyze_stroke_trace.py work\\stroke_traces"
 
 [[actions]]
 name = "Tests"
 icon = "test"
-command = "uv run python -m unittest discover tests"
+command = ".venv\\Scripts\\python.exe -m pytest"

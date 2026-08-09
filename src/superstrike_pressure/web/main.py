@@ -27,6 +27,7 @@ def _parse_args(argv: Sequence[str] | None = None) -> argparse.Namespace:
     parser.add_argument("--hz", type=float, default=LaunchConfig.hz)
     parser.add_argument("--log-file", default=None)
     parser.add_argument("--config-dir", default=None)
+    parser.add_argument("--trace-dir", default=None)
     parser.add_argument("--port", type=int, default=27842)
     return parser.parse_args(argv)
 
@@ -41,6 +42,7 @@ def _build_launch_config(args: argparse.Namespace) -> LaunchConfig:
         hz=args.hz,
         log_file=args.log_file,
         config_dir=config_dir,
+        trace_dir=args.trace_dir,
     )
 
 

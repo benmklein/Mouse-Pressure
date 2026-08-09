@@ -26,15 +26,15 @@ def run_visualize() -> None:
         print("Install optional dev dependencies: uv sync --extra dev")
         return
 
-    left_cfg = PressureConfig(raw_min=78, raw_max=154, out_min=0, out_max=1023, curve="s_curve")
-    right_cfg = PressureConfig(raw_min=78, raw_max=146, out_min=0, out_max=1023, curve="s_curve")
+    left_cfg = PressureConfig(raw_min=312, raw_max=616, out_min=0, out_max=1023, curve="s_curve")
+    right_cfg = PressureConfig(raw_min=312, raw_max=584, out_min=0, out_max=1023, curve="s_curve")
 
     points_max = 500
     frame_interval_ms = 16  # ~60fps
 
-    left_min_seen = 255
+    left_min_seen = 1024
     left_max_seen = 0
-    right_min_seen = 255
+    right_min_seen = 1024
     right_max_seen = 0
     current_left_raw = left_cfg.raw_min
     current_right_raw = right_cfg.raw_min
@@ -147,7 +147,11 @@ def run_visualize() -> None:
                     continue
 
                 ts, data = item
-                frame = parse_feature_0c_frame(data, timestamp_s=ts)
+                frame = parse_feature_0c_frame(
+                    data,
+                    timestamp_s=ts,
+                    feature_index=session.pressure_feature_index,
+                )
                 if frame is None:
                     continue
                 left_raw, right_raw = extract_mode3_lr_pressure_raw(frame)
