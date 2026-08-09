@@ -181,6 +181,15 @@ class SyntheticPenReleaseTests(unittest.TestCase):
             [(x, y) for _ts, x, y in suppressor.drain_hardware_positions()],
             [(104, 198), (107, 203)],
         )
+        diagnostics = suppressor.motion_diagnostics()
+        self.assertEqual(diagnostics["raw_seen"], 3)
+        self.assertEqual(diagnostics["raw_selected"], 2)
+        self.assertEqual(diagnostics["wrong_device"], 1)
+        self.assertEqual(diagnostics["raw_dx"], 7)
+        self.assertEqual(diagnostics["raw_dy"], 3)
+        self.assertEqual(diagnostics["hook_correlated"], 2)
+        self.assertEqual(diagnostics["published"], 2)
+        self.assertEqual(diagnostics["duplicate"], 0)
 
         up = RAWMOUSE()
         up.usButtonFlags = RI_MOUSE_LEFT_BUTTON_UP
@@ -362,6 +371,38 @@ class SyntheticPenReleaseTests(unittest.TestCase):
             (fake.calls[0]["x"], fake.calls[0]["y"]),
             (fake.calls[1]["x"], fake.calls[1]["y"]),
         )
+
+    def test_release_does_not_repeat_pressure_at_same_endpoint(self) -> None:
+        emitter, fake = self._mk_emitter(release_teardown=False)
+        emitter.state = "contact"
+        emitter.contact_frame_no = 5
+        emitter.prev_contact_pressure = 400
+        emitter._last_contact_position = fake.pos  # noqa: SLF001
+        fake._lmb = False
+
+        sample = emitter.update(left_mapped=400, right_mapped=0)
+
+        self.assertEqual(sample.state, "idle")
+        self.assertEqual(len(fake.calls), 1)
+        self.assertEqual(fake.calls[0]["tag"], "release_up")
+        self.assertEqual(fake.calls[0]["pressure"], 0)
+
+    def test_low_latency_release_uses_last_emitted_point_without_final_dab(self) -> None:
+        emitter, fake = self._mk_emitter(release_teardown=False)
+        emitter.config.true_low_latency = True
+        emitter.state = "contact"
+        emitter.contact_frame_no = 5
+        emitter.prev_contact_pressure = 400
+        emitter._last_contact_position = (390, 295)  # noqa: SLF001
+        fake.pos = (400, 300)
+        fake._lmb = False
+
+        sample = emitter.update(left_mapped=400, right_mapped=0)
+
+        self.assertEqual(sample.state, "idle")
+        self.assertEqual(len(fake.calls), 1)
+        self.assertEqual(fake.calls[0]["tag"], "release_up")
+        self.assertEqual((fake.calls[0]["x"], fake.calls[0]["y"]), (390, 295))
 
     def test_release_with_teardown_sends_up_hover_endhover(self) -> None:
         emitter, fake = self._mk_emitter(release_teardown=True)
@@ -878,6 +919,36 @@ class SyntheticPenReleaseTests(unittest.TestCase):
         )
 
         self.assertEqual(direct, captured)
+
+    def test_low_latency_direct_path_keeps_only_newest_coordinate(self) -> None:
+        emitter, _fake = self._mk_emitter(release_teardown=False)
+        emitter._last_contact_position = (0, 0)  # noqa: SLF001
+        captured = [(5, 2), (11, 7), (18, 3)]
+
+        direct = emitter._prepare_direct_contact_path(  # noqa: SLF001
+            captured,
+            endpoint=captured[-1],
+            latest_only=True,
+        )
+
+        self.assertEqual(direct, [captured[-1]])
+
+    def test_low_latency_pressure_bypasses_interpolation(self) -> None:
+        emitter, _fake = self._mk_emitter(release_teardown=False)
+        emitter._pressure_interp_initialized = True  # noqa: SLF001
+        emitter._pressure_interp_value = 100.0  # noqa: SLF001
+        emitter._pressure_interp_target = 100.0  # noqa: SLF001
+
+        pressure = emitter._interpolate_pressure(  # noqa: SLF001
+            900,
+            pressure_fresh=True,
+            instant=True,
+            now=1.0,
+        )
+
+        self.assertEqual(pressure, 900)
+        self.assertEqual(emitter._pressure_interp_value, 900.0)  # noqa: SLF001
+        self.assertEqual(emitter._pressure_interp_remaining, 0)  # noqa: SLF001
 
     def test_pressure_influence_compresses_variation_but_preserves_pen_up(self) -> None:
         emitter, _fake = self._mk_emitter(release_teardown=False)

@@ -17,10 +17,13 @@ from superstrike_pressure.web.profile_store import ProfileStore  # noqa: E402
 
 def _sample_runtime_config() -> RuntimeConfig:
     return RuntimeConfig(
-            linked=False,
-            suppress_lmb=True,
-            suppress_rmb=True,
+        linked=False,
+        suppress_lmb=True,
+        suppress_rmb=True,
         release_teardown=True,
+        session_dpi=1600,
+        session_haptic_left=0,
+        session_haptic_right=3,
         left=ChannelConfig(raw_min=82, raw_max=180, curve="soft", contact_preset="light"),
         right=ChannelConfig(raw_min=84, raw_max=190, curve="hard", contact_preset="firm"),
         app_profiles={"krita.exe": "krita"},
@@ -71,6 +74,9 @@ class ConfigStoreTests(unittest.TestCase):
             self.assertTrue(loaded.suppress_lmb)
             self.assertTrue(loaded.suppress_rmb)
             self.assertTrue(loaded.release_teardown)
+            self.assertEqual(loaded.session_dpi, 1600)
+            self.assertEqual(loaded.session_haptic_left, 0)
+            self.assertEqual(loaded.session_haptic_right, 3)
             self.assertEqual(loaded.left.curve, "soft")
             self.assertEqual(loaded.right.curve, "hard")
             self.assertEqual(loaded.app_profiles["krita.exe"], "krita")
@@ -99,6 +105,9 @@ class ConfigStoreTests(unittest.TestCase):
 
             self.assertFalse(loaded.suppress_lmb)
             self.assertFalse(loaded.release_teardown)
+            self.assertEqual(loaded.session_dpi, 800)
+            self.assertEqual(loaded.session_haptic_left, 5)
+            self.assertEqual(loaded.session_haptic_right, 5)
 
     def test_resolve_config_dir_prefers_env(self) -> None:
         with tempfile.TemporaryDirectory() as td:

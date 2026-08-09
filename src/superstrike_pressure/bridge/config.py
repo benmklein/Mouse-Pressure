@@ -25,6 +25,9 @@ class ChannelConfig:
     # Optional one-hardware-sample delay for extra-smooth stroke starts.
     # Disabled by default when Krita owns geometry stabilization.
     onset_buffer: bool = False
+    # Favor the newest physical position and pressure over interpolation.
+    # Intended for applications such as Krita that already smooth geometry.
+    true_low_latency: bool = False
 
 
 @dataclass
@@ -34,6 +37,9 @@ class RuntimeConfig:
     suppress_lmb: bool = False
     suppress_rmb: bool = False
     release_teardown: bool = False
+    session_dpi: int = 800
+    session_haptic_left: int = 5
+    session_haptic_right: int = 5
     left: ChannelConfig = field(default_factory=ChannelConfig)
     right: ChannelConfig = field(default_factory=ChannelConfig)
     app_profiles: dict[str, str] = field(default_factory=dict)

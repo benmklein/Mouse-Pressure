@@ -265,6 +265,7 @@ def run_bridge() -> int:
                     data,
                     ts,
                     feature_index=session.pressure_feature_index,
+                    device_index=session.device_index,
                 )
                 if frame is None:
                     continue

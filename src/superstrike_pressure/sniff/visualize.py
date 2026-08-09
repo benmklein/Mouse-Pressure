@@ -151,6 +151,7 @@ def run_visualize() -> None:
                     data,
                     timestamp_s=ts,
                     feature_index=session.pressure_feature_index,
+                    device_index=session.device_index,
                 )
                 if frame is None:
                     continue

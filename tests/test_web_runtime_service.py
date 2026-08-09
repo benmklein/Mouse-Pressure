@@ -48,9 +48,15 @@ class _FakeSession:
         self.open_calls = 0
         self.close_calls = 0
         self.enable_calls = 0
+        self.disable_calls = 0
         self.refresh_calls = 0
         self.dpi_calls: list[int] = []
         self.haptic_calls: list[tuple[int, int]] = []
+        self.current_dpi = 800
+        self.current_haptics = (5, 5)
+        self.current_profile_enabled = False
+        self.current_profile_sector: int | None = None
+        self.device_events: list[str] = []
 
     def open(self) -> None:
         self.open_calls += 1
@@ -62,6 +68,11 @@ class _FakeSession:
         _ = mode
         _ = mode_arg
         self.enable_calls += 1
+        self.device_events.append("pressure_enable")
+
+    def disable_pressure_stream(self) -> None:
+        self.disable_calls += 1
+        self.device_events.append("pressure_disable")
 
     def refresh_pressure_stream(self, mode: int, mode_arg: int) -> None:
         _ = mode
@@ -70,11 +81,37 @@ class _FakeSession:
 
     def set_dpi(self, dpi: int) -> int:
         self.dpi_calls.append(dpi)
+        self.device_events.append(f"dpi={dpi}")
+        self.current_dpi = dpi
         return dpi
+
+    def get_dpi(self) -> int:
+        return self.current_dpi
 
     def set_haptic_levels(self, *, left: int, right: int) -> tuple[int, int]:
         self.haptic_calls.append((left, right))
+        self.device_events.append(f"haptics={left}/{right}")
+        self.current_haptics = (left, right)
         return left, right
+
+    def get_haptic_levels(self) -> tuple[int, int]:
+        return self.current_haptics
+
+    def get_onboard_profile_state(self) -> tuple[bool, int | None]:
+        return self.current_profile_enabled, self.current_profile_sector
+
+    def set_onboard_profile_state(
+        self,
+        *,
+        enabled: bool,
+        active_sector: int | None = None,
+    ) -> tuple[bool, int | None]:
+        self.current_profile_enabled = bool(enabled)
+        self.current_profile_sector = int(active_sector) if enabled and active_sector is not None else None
+        self.device_events.append(
+            f"profile={self.current_profile_sector}" if enabled else "profile=host"
+        )
+        return self.current_profile_enabled, self.current_profile_sector
 
     def read_next(self, timeout_s: float = 0.1):
         _ = timeout_s
@@ -82,6 +119,17 @@ class _FakeSession:
             return self.rows.pop(0)
         time.sleep(0.002)
         return None
+
+
+class _TimeoutThenSession(_FakeSession):
+    def __init__(self, failures: int) -> None:
+        super().__init__([])
+        self.failures = failures
+
+    def enable_pressure_stream(self, mode: int, mode_arg: int) -> None:
+        super().enable_pressure_stream(mode, mode_arg)
+        if self.enable_calls <= self.failures:
+            raise TimeoutError("device did not answer")
 
 
 class _FakeEmitter:
@@ -180,6 +228,19 @@ class RuntimeServiceTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(session.open_calls, 1)
         self.assertEqual(session.enable_calls, 1)
         self.assertEqual(session.close_calls, 1)
+
+    async def test_start_retries_transient_pressure_device_timeout(self) -> None:
+        session = _TimeoutThenSession(failures=2)
+        service, _, _holder = self._service(session)
+
+        await service.start_stream()
+
+        self.assertTrue(service.stream_active)
+        self.assertEqual(session.open_calls, 3)
+        self.assertEqual(session.enable_calls, 3)
+        self.assertEqual(session.close_calls, 2)
+        await service.stop_stream()
+        self.assertEqual(session.close_calls, 3)
 
     async def test_apply_config_updates_emitter_thresholds_without_restart(self) -> None:
         base = time.perf_counter()
@@ -355,6 +416,105 @@ class RuntimeServiceTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(session.haptic_calls, [(0, 3)])
         self.assertTrue(service.stream_active)
         await service.stop_stream()
+
+    async def test_session_device_settings_restore_on_stop(self) -> None:
+        session = _FakeSession([])
+        session.current_dpi = 1200
+        session.current_haptics = (4, 2)
+        session.current_profile_enabled = True
+        session.current_profile_sector = 2
+        service, _, _ = self._service(session)
+
+        await service.start_stream(
+            device_settings={
+                "dpi": 1600,
+                "haptic_left": 0,
+                "haptic_right": 3,
+            }
+        )
+
+        self.assertEqual(session.current_dpi, 1600)
+        self.assertEqual(session.current_haptics, (0, 3))
+        self.assertEqual(
+            session.device_events,
+            [
+                "pressure_enable",
+                "pressure_disable",
+                "profile=host",
+                "dpi=1600",
+                "haptics=0/3",
+                "pressure_enable",
+            ],
+        )
+        await service.stop_stream()
+        self.assertEqual(session.current_dpi, 1200)
+        self.assertEqual(session.current_haptics, (4, 2))
+        self.assertTrue(session.current_profile_enabled)
+        self.assertEqual(session.current_profile_sector, 2)
+        self.assertEqual(session.dpi_calls, [1600, 1200])
+        self.assertEqual(session.haptic_calls, [(0, 3), (4, 2)])
+        self.assertEqual(
+            session.device_events[-4:],
+            ["pressure_disable", "dpi=1200", "haptics=4/2", "profile=2"],
+        )
+
+    async def test_session_skips_redundant_device_writes(self) -> None:
+        session = _FakeSession([])
+        session.current_dpi = 800
+        session.current_haptics = (5, 5)
+        service, _, _ = self._service(session)
+
+        await service.start_stream(
+            device_settings={
+                "dpi": 800,
+                "haptic_left": 5,
+                "haptic_right": 5,
+            }
+        )
+        await service.stop_stream()
+
+        self.assertEqual(session.dpi_calls, [])
+        self.assertEqual(session.haptic_calls, [])
+
+    async def test_device_settings_detect_before_start(self) -> None:
+        session = _FakeSession([])
+        session.current_dpi = 2400
+        session.current_haptics = (1, 4)
+        service, _, _ = self._service(session)
+
+        detected = await service.detect_device_settings()
+
+        self.assertEqual(
+            detected,
+            {"dpi": 2400, "haptic_left": 1, "haptic_right": 4},
+        )
+        self.assertEqual(session.open_calls, 1)
+        self.assertEqual(session.close_calls, 1)
+        self.assertEqual(session.dpi_calls, [])
+        self.assertEqual(session.haptic_calls, [])
+
+    async def test_session_device_settings_restore_when_startup_fails(self) -> None:
+        session = _FakeSession([])
+        session.current_dpi = 1200
+        session.current_haptics = (4, 2)
+        service, _, _ = self._service(session)
+
+        def fail_emitter(_config, _log):
+            raise RuntimeError("synthetic pen unavailable")
+
+        service._emitter_factory = fail_emitter
+        with self.assertRaisesRegex(RuntimeError, "synthetic pen unavailable"):
+            await service.start_stream(
+                device_settings={
+                    "dpi": 1600,
+                    "haptic_left": 0,
+                    "haptic_right": 3,
+                }
+            )
+
+        self.assertEqual(session.current_dpi, 1200)
+        self.assertEqual(session.current_haptics, (4, 2))
+        self.assertEqual(session.close_calls, 1)
 
     async def test_stalled_stream_fails_open_and_stops(self) -> None:
         session = _FakeSession([])

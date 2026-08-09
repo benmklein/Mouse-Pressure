@@ -128,6 +128,7 @@ def _collect_phase_frames(
             data,
             ts,
             feature_index=session.pressure_feature_index,
+            device_index=session.device_index,
         )
         if frame is None:
             continue
@@ -362,6 +363,7 @@ def run_pressure_reader(
                     data,
                     ts,
                     feature_index=session.pressure_feature_index,
+                    device_index=session.device_index,
                 )
                 if frame is None:
                     continue

@@ -10,12 +10,18 @@ The barebones release target is intentionally small:
 
 - Windows 10 or 11
 - Logitech G Pro X2 Superstrike
+- automatic wired USB or wireless Lightspeed transport detection
 - independent left- and right-button pressure mapped to Windows Ink pen pressure
 - a command-line interface with adjustable calibration and pressure curves
 - Krita as the primary tested drawing application
 
 The WebSocket backend and desktop UI are experimental and are not required for
 the first usable release.
+
+The bridge scans compatible HID++ command interfaces each time it starts. HID
+paths and serial numbers are not stored or hardcoded, so another Superstrike
+does not require a separate device-discovery step. Per-device pressure
+calibration is still recommended because physical sensor ranges can vary.
 
 ## Install for development
 
@@ -89,9 +95,12 @@ ss-dev-ui
 ```
 
 The panel can start and stop the bridge and persist the mouse and pressure
-settings. The **Left button** and **Right button** settings tabs keep separate
-calibration, curve, contact, path, pressure, haptic, and native-click suppression
-values. Either button can drive the Windows Ink pen using its own pressure map.
+settings. DPI and left/right haptics live in a global **Mouse hardware** table,
+with the detected **Mapping off** restoration values beside the editable
+**Mapping on** session values. The **Left button** and **Right button** settings
+tabs keep separate calibration, curve, contact, path, pressure, and native-click
+suppression values. Either button can drive the Windows Ink pen using its own
+pressure map.
 The default **Sensitivity mapping** output tab follows the selected settings tab
 and marks that button's current click pressure live; **Terminal output** keeps
 the full runtime log separately. Less frequently changed pressure, path,
@@ -101,9 +110,16 @@ hairline; zero still produces a normal pen-up taper. Stop the bridge before
 changing settings that affect the Windows input hook.
 
 Curve strength and left/right haptics use sliders. A haptic level of 0 disables
-that button's click haptics. Enabling **Buffer first pressure sample** shows its
-roughly 16 ms latency cost. Path stabilization is causal and adds no timed
-buffer; its warning reports the maximum spatial trailing distance instead.
+that button's click haptics. Before **Start** is available, the panel detects the
+mouse's current DPI and haptic levels for the **Mapping off** column. Values in
+the **Mapping on** column are saved and applied only for the active bridge
+session; **Stop**, normal window shutdown, and automatic failure cleanup restore
+the settings detected immediately before startup. The single settings button
+saves all settings while stopped and applies the editable mouse hardware values
+while running; controls that cannot safely change live remain disabled. Enabling
+**Buffer first pressure sample** shows its roughly 16 ms latency cost. Path
+stabilization is causal and adds no timed buffer; its warning reports the
+maximum spatial trailing distance instead.
 
 The two optional **Ink stabilization** controls are independent. **Path
 stabilization** now defaults to 0%: direct mode forwards captured hardware
@@ -149,11 +165,13 @@ The bridge dynamically discovers the HITS feature index, renews its short-lived
 monitoring lease every two seconds, and restores the flags that were active
 before startup when it closes.
 
-While the bridge is running, the panel can also apply mouse DPI (100–32,000 in
-50-DPI increments) and independent left/right click haptics (0–5) without
-restarting the pressure stream. DPI changes may require G HUB to be closed and
-the mouse's onboard profile to be disabled; the panel reports a verification
-error if the device rejects or overrides the requested value.
+While the bridge is running, the panel can apply another mouse DPI (100–32,000
+in 50-DPI increments) and independent left/right click haptics (0–5) without
+restarting the pressure stream. The pre-start snapshot remains the restoration
+target. When an onboard profile controls resolution, the panel temporarily
+switches the mouse to host mode and restores the previously active profile on
+Stop. The panel reports a verification error if the device rejects or overrides
+the requested value.
 
 ## Development
 

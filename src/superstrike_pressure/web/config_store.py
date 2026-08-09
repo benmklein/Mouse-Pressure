@@ -77,6 +77,9 @@ def _channel_from_dict(raw: Any) -> ChannelConfig:
             raw.get("pressure_influence", ChannelConfig.pressure_influence)
         ),
         onset_buffer=raw.get("onset_buffer", ChannelConfig.onset_buffer),
+        true_low_latency=raw.get(
+            "true_low_latency", ChannelConfig.true_low_latency
+        ),
     )
     errors = validate_channel_config(asdict(channel))
     if errors:
@@ -110,12 +113,27 @@ def runtime_config_from_dict(raw: Any) -> RuntimeConfig:
     if not isinstance(release_teardown, bool):
         raise ValidationError("release_teardown must be a boolean")
 
+    session_dpi = int(raw.get("session_dpi", RuntimeConfig.session_dpi))
+    session_haptic_left = int(
+        raw.get("session_haptic_left", RuntimeConfig.session_haptic_left)
+    )
+    session_haptic_right = int(
+        raw.get("session_haptic_right", RuntimeConfig.session_haptic_right)
+    )
+    if not 100 <= session_dpi <= 32000 or session_dpi % 50 != 0:
+        raise ValidationError("session_dpi must be 100..32000 in 50-DPI increments")
+    if not 0 <= session_haptic_left <= 5 or not 0 <= session_haptic_right <= 5:
+        raise ValidationError("session haptic levels must be in 0..5")
+
     return RuntimeConfig(
         schema_version=SCHEMA_VERSION,
         linked=linked,
         suppress_lmb=suppress_lmb,
         suppress_rmb=suppress_rmb,
         release_teardown=release_teardown,
+        session_dpi=session_dpi,
+        session_haptic_left=session_haptic_left,
+        session_haptic_right=session_haptic_right,
         left=_channel_from_dict(raw.get("left", {})),
         right=_channel_from_dict(raw.get("right", {})),
         app_profiles=_normalize_app_profiles(raw.get("app_profiles")),
@@ -130,6 +148,9 @@ def runtime_config_to_dict(config: RuntimeConfig) -> dict[str, Any]:
         "suppress_lmb": config.suppress_lmb,
         "suppress_rmb": config.suppress_rmb,
         "release_teardown": config.release_teardown,
+        "session_dpi": config.session_dpi,
+        "session_haptic_left": config.session_haptic_left,
+        "session_haptic_right": config.session_haptic_right,
         "left": asdict(config.left),
         "right": asdict(config.right),
         "app_profiles": dict(config.app_profiles),

@@ -13,9 +13,15 @@ class _FakeRuntimeService:
         self.stream_active = False
         self.start_calls = 0
         self.stop_calls = 0
+        self.started_with: dict[str, int] | None = None
 
-    async def start_stream(self) -> None:
+    async def start_stream(
+        self,
+        *,
+        device_settings: dict[str, int] | None = None,
+    ) -> None:
         self.start_calls += 1
+        self.started_with = device_settings
         self.stream_active = True
 
     async def stop_stream(self) -> None:
@@ -45,6 +51,7 @@ def test_dev_settings_build_linked_runtime_patch() -> None:
     assert patch["left"]["path_stabilization"] == 0
     assert patch["left"]["pressure_influence"] == 85
     assert patch["left"]["onset_buffer"] is False
+    assert patch["left"]["true_low_latency"] is False
     assert settings.injection_hz == 240.0
 
 
@@ -79,6 +86,24 @@ def test_dev_settings_accept_curve_strength_three() -> None:
     )
 
     assert settings.curve_strength == 3.0
+
+
+def test_dev_settings_persist_true_low_latency() -> None:
+    settings = parse_dev_settings(
+        raw_min="320",
+        raw_max="670",
+        deadzone="0",
+        curve="linear",
+        curve_strength="1.0",
+        contact_preset="medium",
+        suppress_lmb=True,
+        release_teardown=False,
+        onset_buffer=True,
+        true_low_latency=True,
+    )
+
+    assert settings.true_low_latency is True
+    assert settings.as_runtime_patch()["left"]["true_low_latency"] is True
 
 
 def test_sensitivity_mapping_visualizer_uses_effective_pressure_settings() -> None:
@@ -127,3 +152,14 @@ def test_bridge_controller_closes_active_runtime() -> None:
 
     assert service.stream_active is False
     assert service.stop_calls == 1
+
+
+def test_bridge_controller_passes_session_device_settings() -> None:
+    service = _FakeRuntimeService()
+    controller = BridgeController(service)  # type: ignore[arg-type]
+    settings = {"dpi": 1600, "haptic_left": 0, "haptic_right": 3}
+    try:
+        controller.start(device_settings=settings).result(timeout=1.0)
+        assert service.started_with == settings
+    finally:
+        controller.close()

@@ -30,6 +30,7 @@ class DevSettings:
     suppress_lmb: bool
     release_teardown: bool
     onset_buffer: bool = False
+    true_low_latency: bool = False
     pressure_floor: int = 12
     path_stabilization: int = 0
     pressure_influence: int = 85
@@ -48,6 +49,7 @@ class DevSettings:
             "path_stabilization": self.path_stabilization,
             "pressure_influence": self.pressure_influence,
             "onset_buffer": self.onset_buffer,
+            "true_low_latency": self.true_low_latency,
         }
         return {
             "linked": True,
@@ -68,6 +70,7 @@ def parse_dev_settings(
     suppress_lmb: bool,
     release_teardown: bool,
     onset_buffer: bool = False,
+    true_low_latency: bool = False,
     pressure_floor: str = "12",
     path_stabilization: str = "0",
     pressure_influence: str = "85",
@@ -85,6 +88,7 @@ def parse_dev_settings(
             suppress_lmb=bool(suppress_lmb),
             release_teardown=bool(release_teardown),
             onset_buffer=bool(onset_buffer),
+            true_low_latency=bool(true_low_latency),
             pressure_floor=int(pressure_floor),
             path_stabilization=int(path_stabilization),
             pressure_influence=int(pressure_influence),
@@ -176,11 +180,25 @@ class BridgeController:
             self._loop.run_until_complete(asyncio.gather(*pending, return_exceptions=True))
         self._loop.close()
 
-    def start(self) -> Future[None]:
-        return asyncio.run_coroutine_threadsafe(self.service.start_stream(), self._loop)
+    def start(self, *, device_settings: dict[str, int] | None = None) -> Future[None]:
+        operation = (
+            self.service.start_stream()
+            if device_settings is None
+            else self.service.start_stream(device_settings=device_settings)
+        )
+        return asyncio.run_coroutine_threadsafe(
+            operation,
+            self._loop,
+        )
 
     def stop(self) -> Future[None]:
         return asyncio.run_coroutine_threadsafe(self.service.stop_stream(), self._loop)
+
+    def detect_device_settings(self) -> Future[dict[str, int]]:
+        return asyncio.run_coroutine_threadsafe(
+            self.service.detect_device_settings(),
+            self._loop,
+        )
 
     def calibrate(self, channel: str, progress_cb: Any) -> Future[dict]:
         return asyncio.run_coroutine_threadsafe(
@@ -236,6 +254,7 @@ class DevPanel:
         self.events: queue.Queue[tuple[str, Any]] = queue.Queue()
         self.running = False
         self.busy = False
+        self.detecting_device_settings = True
         self._setting_widgets: list[Any] = []
         self._last_calibration_phase = ""
         self.advanced_visible = {"left": False, "right": False}
@@ -261,14 +280,20 @@ class DevPanel:
 
         header = ttk.Frame(outer)
         header.pack(fill="x", pady=(0, 12))
-        self.status_label = ttk.Label(header, text="● Stopped", style="Status.TLabel", foreground="#a33")
+        self.status_label = ttk.Label(
+            header,
+            text="● Detecting mouse",
+            style="Status.TLabel",
+            foreground="#b78103",
+        )
         self.status_label.pack(side="left")
         ttk.Label(header, text="Emergency release: Ctrl+Shift+F12").pack(side="left", padx=18)
         self.toggle_button = ttk.Button(
             header,
-            text="Start",
+            text="Detecting mouse…",
             style="Primary.TButton",
             command=self._toggle,
+            state="disabled",
         )
         self.toggle_button.pack(side="right")
         appearance = ttk.Frame(header)
@@ -356,6 +381,9 @@ class DevPanel:
                     value=str(channel_config.pressure_influence)
                 ),
                 "onset_buffer": tk.BooleanVar(value=channel_config.onset_buffer),
+                "true_low_latency": tk.BooleanVar(
+                    value=getattr(channel_config, "true_low_latency", False)
+                ),
                 "suppress": tk.BooleanVar(
                     value=(
                         config.suppress_lmb
@@ -363,23 +391,69 @@ class DevPanel:
                         else getattr(config, "suppress_rmb", False)
                     )
                 ),
-                "haptic": tk.DoubleVar(value=5.0),
+                "haptic": tk.DoubleVar(
+                    value=float(
+                        config.session_haptic_left
+                        if channel_name == "left"
+                        else config.session_haptic_right
+                    )
+                ),
             }
         self.injection_hz_var = tk.StringVar(value=f"{service.launch_config.hz:g}")
-        self.dpi_var = tk.StringVar(value="800")
+        self.dpi_var = tk.StringVar(value=str(config.session_dpi))
+        self.normal_dpi_var = tk.StringVar(value="Detecting…")
+        self.normal_haptic_vars = {
+            "left": tk.StringVar(value="—"),
+            "right": tk.StringVar(value="—"),
+        }
         self.release_teardown_var = tk.BooleanVar(value=config.release_teardown)
         self.calibrate_buttons: dict[str, Any] = {}
-        self.device_apply_buttons: list[Any] = []
         self.advanced_buttons: dict[str, Any] = {}
         self.advanced_frames: dict[str, Any] = {}
         self.buffer_warning_labels: dict[str, Any] = {}
         self.path_warning_labels: dict[str, Any] = {}
         self.haptic_note_labels: dict[str, Any] = {}
+        self.low_latency_note_labels: dict[str, Any] = {}
         self.curve_value_labels: dict[str, Any] = {}
         self.haptic_value_labels: dict[str, Any] = {}
+        self.normal_device_value_labels: list[Any] = []
 
-        self.settings_notebook = ttk.Notebook(settings_frame)
-        self.settings_notebook.grid(row=0, column=0, columnspan=2, sticky="nsew")
+        self.settings_canvas = tk.Canvas(
+            settings_frame,
+            borderwidth=0,
+            highlightthickness=0,
+        )
+        settings_scrollbar = ttk.Scrollbar(
+            settings_frame,
+            orient="vertical",
+            command=self.settings_canvas.yview,
+        )
+        self.settings_canvas.configure(yscrollcommand=settings_scrollbar.set)
+        self.settings_canvas.grid(row=0, column=0, sticky="nsew")
+        settings_scrollbar.grid(row=0, column=1, sticky="ns")
+        self.settings_content = ttk.Frame(self.settings_canvas)
+        self._settings_canvas_window = self.settings_canvas.create_window(
+            (0, 0),
+            window=self.settings_content,
+            anchor="nw",
+        )
+        self.settings_content.bind(
+            "<Configure>",
+            lambda _event: self._refresh_settings_scrollregion(),
+        )
+        self.settings_canvas.bind("<Configure>", self._resize_settings_content)
+        self.root.bind_all("<MouseWheel>", self._on_settings_mousewheel, add="+")
+
+        self.mouse_hardware_frame = ttk.LabelFrame(
+            self.settings_content,
+            text="Mouse hardware",
+            padding=(8, 6),
+        )
+        self.mouse_hardware_frame.grid(row=0, column=0, sticky="ew", pady=(0, 10))
+        self._build_mouse_hardware_settings(self.mouse_hardware_frame)
+
+        self.settings_notebook = ttk.Notebook(self.settings_content)
+        self.settings_notebook.grid(row=1, column=0, sticky="nsew")
         self.channel_tabs: dict[str, Any] = {}
         for channel_name, tab_title in (("left", "Left button"), ("right", "Right button")):
             tab = ttk.Frame(self.settings_notebook, padding=(8, 10))
@@ -389,19 +463,20 @@ class DevPanel:
         self.settings_notebook.bind("<<NotebookTabChanged>>", self._on_channel_tab_changed)
 
         self.apply_button = ttk.Button(
-            settings_frame,
+            self.settings_content,
             text="Save settings",
-            command=self._apply_settings,
+            command=self._apply_all_settings,
         )
-        self.apply_button.grid(row=1, column=0, columnspan=2, sticky="ew", pady=(10, 0))
-        self._setting_widgets.append(self.apply_button)
+        self.apply_button.grid(row=2, column=0, sticky="ew", pady=(10, 0))
         settings_frame.rowconfigure(0, weight=1)
-        settings_frame.columnconfigure(1, weight=1)
+        settings_frame.columnconfigure(0, weight=1)
+        self.settings_content.columnconfigure(0, weight=1)
 
         self.output_notebook = ttk.Notebook(output_frame)
         self.output_notebook.pack(fill="both", expand=True)
         visualizer_tab = ttk.Frame(self.output_notebook, padding=12)
         terminal_tab = ttk.Frame(self.output_notebook, padding=8)
+        self.terminal_tab = terminal_tab
         self.output_notebook.add(visualizer_tab, text="Sensitivity mapping")
         self.output_notebook.add(terminal_tab, text="Terminal output")
 
@@ -465,6 +540,7 @@ class DevPanel:
                 variables[key].trace_add("write", self._queue_sensitivity_redraw)
         self._apply_theme()
         root.after_idle(self._redraw_sensitivity)
+        root.after_idle(self._begin_device_detection)
         root.after(50, self._drain_events)
 
     def _apply_theme(self) -> None:
@@ -484,6 +560,11 @@ class DevPanel:
                 "marker": "#f0a43a",
                 "marker_text": "#ffc46b",
                 "terminal": "#0f1216",
+                "terminal_foreground": "#e8edf2",
+                "terminal_info": "#d7e0e7",
+                "terminal_system": "#79c0ff",
+                "terminal_warn": "#e3b341",
+                "terminal_error": "#ff7b72",
             }
             if dark
             else {
@@ -499,7 +580,12 @@ class DevPanel:
                 "curve": "#1677b8",
                 "marker": "#f5a623",
                 "marker_text": "#7a4800",
-                "terminal": "#101418",
+                "terminal": "#ffffff",
+                "terminal_foreground": "#20262c",
+                "terminal_info": "#303840",
+                "terminal_system": "#0067a8",
+                "terminal_warn": "#8a5700",
+                "terminal_error": "#b42318",
             }
         )
         self.theme_colors = colors
@@ -586,15 +672,22 @@ class DevPanel:
             background=colors["canvas"],
             highlightbackground=colors["border"],
         )
+        self.settings_canvas.configure(background=colors["background"])
         self.mapping_caption.configure(foreground=colors["muted"])
         self.terminal.configure(
             background=colors["terminal"],
-            foreground=colors["foreground"],
-            insertbackground=colors["foreground"],
+            foreground=colors["terminal_foreground"],
+            insertbackground=colors["terminal_foreground"],
         )
-        self.terminal.tag_configure("INFO", foreground=colors["foreground"])
-        self.terminal.tag_configure("SYSTEM", foreground=colors["curve"])
+        self.terminal.tag_configure("INFO", foreground=colors["terminal_info"])
+        self.terminal.tag_configure("SYSTEM", foreground=colors["terminal_system"])
+        self.terminal.tag_configure("WARN", foreground=colors["terminal_warn"])
+        self.terminal.tag_configure("ERROR", foreground=colors["terminal_error"])
         for label in self.haptic_note_labels.values():
+            label.configure(foreground=colors["muted"])
+        for label in self.normal_device_value_labels:
+            label.configure(foreground=colors["muted"])
+        for label in self.low_latency_note_labels.values():
             label.configure(foreground=colors["muted"])
         for label in self.path_warning_labels.values():
             label.configure(foreground="#f0a43a" if dark else "#a55400")
@@ -619,6 +712,96 @@ class DevPanel:
         )
         self._redraw_sensitivity()
 
+    def _build_mouse_hardware_settings(self, parent: Any) -> None:
+        parent.columnconfigure(0, weight=0)
+        parent.columnconfigure(1, weight=0)
+        parent.columnconfigure(2, weight=1)
+        self.ttk.Label(parent, text="Setting").grid(
+            row=0, column=0, sticky="w", padx=(0, 10), pady=(0, 5)
+        )
+        self.ttk.Label(parent, text="Mapping off").grid(
+            row=0, column=1, sticky="w", padx=(0, 14), pady=(0, 5)
+        )
+        self.ttk.Label(parent, text="Mapping on").grid(
+            row=0, column=2, sticky="w", pady=(0, 5)
+        )
+
+        self.ttk.Label(parent, text="DPI").grid(
+            row=1, column=0, sticky="w", padx=(0, 10), pady=5
+        )
+        normal_dpi = self.ttk.Label(
+            parent,
+            textvariable=self.normal_dpi_var,
+            foreground="#606b75",
+        )
+        normal_dpi.grid(row=1, column=1, sticky="w", padx=(0, 14), pady=5)
+        self.normal_device_value_labels.append(normal_dpi)
+        dpi_entry = self.ttk.Entry(parent, textvariable=self.dpi_var, width=10)
+        dpi_entry.grid(row=1, column=2, sticky="ew", pady=5)
+
+        for offset, channel in enumerate(("left", "right"), start=2):
+            self.ttk.Label(parent, text=f"{channel.title()} haptics").grid(
+                row=offset,
+                column=0,
+                sticky="w",
+                padx=(0, 10),
+                pady=5,
+            )
+            normal_haptic = self.ttk.Label(
+                parent,
+                textvariable=self.normal_haptic_vars[channel],
+                foreground="#606b75",
+            )
+            normal_haptic.grid(
+                row=offset,
+                column=1,
+                sticky="w",
+                padx=(0, 14),
+                pady=5,
+            )
+            self.normal_device_value_labels.append(normal_haptic)
+
+            control = self.ttk.Frame(parent)
+            control.grid(row=offset, column=2, sticky="ew", pady=5)
+            control.columnconfigure(0, weight=1)
+            scale = self.ttk.Scale(
+                control,
+                variable=self.channel_vars[channel]["haptic"],
+                from_=0.0,
+                to=5.0,
+                orient="horizontal",
+                command=lambda value, name=channel: self._set_haptic_value(
+                    name, value
+                ),
+            )
+            scale.grid(row=0, column=0, sticky="ew")
+            value_label = self.ttk.Label(control, width=4, anchor="e")
+            value_label.grid(row=0, column=1, padx=(6, 0))
+            value_label.configure(
+                text=str(round(float(self.channel_vars[channel]["haptic"].get())))
+            )
+            self.haptic_value_labels[channel] = value_label
+
+            haptic_note = self.ttk.Label(control, text="", foreground="#6b737b")
+            haptic_note.grid(
+                row=1,
+                column=0,
+                columnspan=2,
+                sticky="w",
+                pady=(0, 2),
+            )
+            self.haptic_note_labels[channel] = haptic_note
+
+        note = self.ttk.Label(
+            parent,
+            text="Mapping-off values are detected and restored automatically.",
+            foreground="#606b75",
+            wraplength=360,
+            justify="left",
+        )
+        note.grid(row=4, column=0, columnspan=3, sticky="w", pady=(6, 0))
+        self.normal_device_value_labels.append(note)
+
     def _build_channel_settings_tab(self, parent: Any, channel: str) -> None:
         variables = self.channel_vars[channel]
         parent.columnconfigure(1, weight=1)
@@ -638,51 +821,6 @@ class DevPanel:
             pady=(3, 8),
         )
         self.calibrate_buttons[channel] = calibrate_button
-        row += 1
-
-        row = self._entry_row(
-            parent,
-            row,
-            "Mouse DPI",
-            self.dpi_var,
-            lock_while_running=False,
-        )
-        row = self._scale_row(
-            parent,
-            row,
-            f"{channel.title()} click haptics",
-            variables["haptic"],
-            from_=0.0,
-            to=5.0,
-            command=lambda value, name=channel: self._set_haptic_value(name, value),
-            value_key=("haptic", channel),
-            lock_while_running=False,
-        )
-        haptic_note = self.ttk.Label(parent, text="", foreground="#6b737b")
-        haptic_note.grid(
-            row=row,
-            column=0,
-            columnspan=2,
-            sticky="w",
-            pady=(0, 4),
-        )
-        self.haptic_note_labels[channel] = haptic_note
-        row += 1
-
-        device_apply_button = self.ttk.Button(
-            parent,
-            text="Apply mouse settings live",
-            command=self._begin_device_apply,
-            state="disabled",
-        )
-        device_apply_button.grid(
-            row=row,
-            column=0,
-            columnspan=2,
-            sticky="ew",
-            pady=(6, 2),
-        )
-        self.device_apply_buttons.append(device_apply_button)
         row += 1
 
         advanced_button = self.ttk.Button(
@@ -764,6 +902,39 @@ class DevPanel:
             "Pressure influence (%)",
             variables["pressure_influence"],
         )
+        low_latency = self.ttk.Checkbutton(
+            advanced_frame,
+            text="True low latency",
+            variable=variables["true_low_latency"],
+        )
+        low_latency.grid(
+            row=advanced_row,
+            column=0,
+            columnspan=2,
+            sticky="w",
+            pady=(5, 0),
+        )
+        self._setting_widgets.append(low_latency)
+        advanced_row += 1
+        low_latency_note = self.ttk.Label(
+            advanced_frame,
+            text=(
+                "Sends only the newest position and pressure; overrides path "
+                "stabilization and first-sample buffering."
+            ),
+            foreground="#6b737b",
+            wraplength=330,
+            justify="left",
+        )
+        low_latency_note.grid(
+            row=advanced_row,
+            column=0,
+            columnspan=2,
+            sticky="w",
+            pady=(0, 5),
+        )
+        self.low_latency_note_labels[channel] = low_latency_note
+        advanced_row += 1
         onset_buffer = self.ttk.Checkbutton(
             advanced_frame,
             text="Buffer first pressure sample",
@@ -933,6 +1104,33 @@ class DevPanel:
             )
         )
         self._redraw_sensitivity()
+        self.root.after_idle(self._refresh_settings_scrollregion)
+
+    def _resize_settings_content(self, event: Any) -> None:
+        self.settings_canvas.itemconfigure(
+            self._settings_canvas_window,
+            width=max(1, int(event.width)),
+        )
+        self._refresh_settings_scrollregion()
+
+    def _refresh_settings_scrollregion(self) -> None:
+        self.settings_canvas.configure(scrollregion=self.settings_canvas.bbox("all"))
+
+    def _on_settings_mousewheel(self, event: Any) -> str | None:
+        x = self.root.winfo_pointerx()
+        y = self.root.winfo_pointery()
+        left = self.settings_canvas.winfo_rootx()
+        top = self.settings_canvas.winfo_rooty()
+        if not (
+            left <= x < left + self.settings_canvas.winfo_width()
+            and top <= y < top + self.settings_canvas.winfo_height()
+        ):
+            return None
+        delta = int(getattr(event, "delta", 0))
+        if delta:
+            self.settings_canvas.yview_scroll(-1 if delta > 0 else 1, "units")
+            return "break"
+        return None
 
     def _entry_row(
         self,
@@ -975,6 +1173,7 @@ class DevPanel:
         else:
             self.advanced_frames[channel].grid_remove()
             self.advanced_buttons[channel].configure(text="Show advanced settings")
+        self.root.after_idle(self._refresh_settings_scrollregion)
 
     def _queue_sensitivity_redraw(self, *_args: Any) -> None:
         self.root.after_idle(self._redraw_sensitivity)
@@ -1117,6 +1316,7 @@ class DevPanel:
             suppress_lmb=variables["suppress"].get(),
             release_teardown=self.release_teardown_var.get(),
             onset_buffer=variables["onset_buffer"].get(),
+            true_low_latency=variables["true_low_latency"].get(),
             pressure_floor=variables["pressure_floor"].get(),
             path_stabilization=variables["path_stabilization"].get(),
             pressure_influence=variables["pressure_influence"].get(),
@@ -1136,6 +1336,13 @@ class DevPanel:
                     "suppress_lmb": left.suppress_lmb,
                     "suppress_rmb": right.suppress_lmb,
                     "release_teardown": self.release_teardown_var.get(),
+                    "session_dpi": int(self.dpi_var.get()),
+                    "session_haptic_left": round(
+                        float(self.channel_vars["left"]["haptic"].get())
+                    ),
+                    "session_haptic_right": round(
+                        float(self.channel_vars["right"]["haptic"].get())
+                    ),
                     "left": left.as_runtime_patch()["left"],
                     "right": right.as_runtime_patch()["left"],
                 }
@@ -1147,6 +1354,14 @@ class DevPanel:
         self._write_system("Settings saved.")
         return True
 
+    def _apply_all_settings(self) -> None:
+        if self.busy:
+            return
+        if self.running:
+            self._begin_device_apply()
+        else:
+            self._apply_settings()
+
     def _toggle(self) -> None:
         if self.busy:
             return
@@ -1156,10 +1371,18 @@ class DevPanel:
             self._begin_start()
 
     def _begin_start(self) -> None:
+        try:
+            device_settings = self._collect_device_settings()
+        except ValueError as exc:
+            self._write_system(f"Mouse settings error: {exc}", level="ERROR")
+            return
         self.busy = True
         self.toggle_button.configure(text="Starting…", state="disabled")
         self.status_label.configure(text="● Starting", foreground="#b78103")
-        self._watch_future("started", self.controller.start())
+        self._watch_future(
+            "started",
+            self.controller.start(device_settings=device_settings),
+        )
 
     def _begin_stop(self) -> None:
         self.busy = True
@@ -1243,26 +1466,59 @@ class DevPanel:
             self._write_system("Start the bridge before applying mouse settings.", level="WARN")
             return
         try:
-            dpi = int(self.dpi_var.get())
-            left = round(float(self.channel_vars["left"]["haptic"].get()))
-            right = round(float(self.channel_vars["right"]["haptic"].get()))
-            if not 100 <= dpi <= 32000 or dpi % 50 != 0:
-                raise ValueError("DPI must be 100..32000 in 50-DPI increments.")
-            if not 0 <= left <= 5 or not 0 <= right <= 5:
-                raise ValueError("Haptics must be between 0 and 5.")
+            settings = self._collect_device_settings()
         except ValueError as exc:
             self._write_system(f"Mouse settings error: {exc}", level="ERROR")
             return
 
-        for button in self.device_apply_buttons:
-            button.configure(text="Applying…", state="disabled")
+        try:
+            self.service.apply_config(
+                {
+                    "session_dpi": settings["dpi"],
+                    "session_haptic_left": settings["haptic_left"],
+                    "session_haptic_right": settings["haptic_right"],
+                }
+            )
+        except Exception as exc:
+            self._write_system(f"Settings error: {exc}", level="ERROR")
+            return
+
+        self.apply_button.configure(text="Applying…", state="disabled")
         self._watch_future(
             "device_settings_applied",
             self.controller.apply_device_settings(
-                dpi=dpi,
-                haptic_left=left,
-                haptic_right=right,
+                dpi=settings["dpi"],
+                haptic_left=settings["haptic_left"],
+                haptic_right=settings["haptic_right"],
             ),
+        )
+
+    def _collect_device_settings(self) -> dict[str, int]:
+        try:
+            dpi = int(self.dpi_var.get())
+            left = round(float(self.channel_vars["left"]["haptic"].get()))
+            right = round(float(self.channel_vars["right"]["haptic"].get()))
+        except ValueError as exc:
+            raise ValueError("DPI and haptic levels must be numeric.") from exc
+        if not 100 <= dpi <= 32000 or dpi % 50 != 0:
+            raise ValueError("DPI must be 100..32000 in 50-DPI increments.")
+        if not 0 <= left <= 5 or not 0 <= right <= 5:
+            raise ValueError("Haptics must be between 0 and 5.")
+        return {
+            "dpi": dpi,
+            "haptic_left": left,
+            "haptic_right": right,
+        }
+
+    def _begin_device_detection(self) -> None:
+        if self.running or self.busy:
+            return
+        self.detecting_device_settings = True
+        self.toggle_button.configure(text="Detecting mouse…", state="disabled")
+        self.status_label.configure(text="● Detecting mouse", foreground="#b78103")
+        self._watch_future(
+            "device_settings_detected",
+            self.controller.detect_device_settings(),
         )
 
     def _watch_future(self, event_name: str, future: Future[Any]) -> None:
@@ -1295,11 +1551,10 @@ class DevPanel:
             text="● Running" if running else "● Stopped",
             foreground="#238636" if running else "#a33",
         )
-        for button in self.device_apply_buttons:
-            button.configure(
-                text="Apply mouse settings live",
-                state="normal" if running else "disabled",
-            )
+        self.apply_button.configure(
+            text="Apply settings live" if running else "Save settings",
+            state="normal",
+        )
         for channel, button in self.calibrate_buttons.items():
             button.configure(
                 text=f"Calibrate {channel} button (15 sec)",
@@ -1340,9 +1595,20 @@ class DevPanel:
                     self._set_running(True)
                 elif kind == "stopped":
                     self._set_running(False)
+                elif kind == "device_settings_detected":
+                    self.detecting_device_settings = False
+                    self.normal_dpi_var.set(str(payload["dpi"]))
+                    for channel in ("left", "right"):
+                        key = f"haptic_{channel}"
+                        self.normal_haptic_vars[channel].set(str(payload[key]))
+                    self.toggle_button.configure(text="Start", state="normal")
+                    self.status_label.configure(text="● Stopped", foreground="#a33")
+                    self._write_system(
+                        f"Detected normal mouse settings: {payload['dpi']} DPI, "
+                        f"haptics L{payload['haptic_left']}/R{payload['haptic_right']}."
+                    )
                 elif kind == "device_settings_applied":
-                    for button in self.device_apply_buttons:
-                        button.configure(text="Apply mouse settings live", state="normal")
+                    self.apply_button.configure(text="Apply settings live", state="normal")
                     self._write_system(
                         f"Mouse settings applied: {payload['dpi']} DPI, "
                         f"haptics L{payload['haptic_left']}/R{payload['haptic_right']}."
@@ -1381,9 +1647,26 @@ class DevPanel:
                     )
                 elif kind == "runtime_error":
                     self._set_running(False)
+                    self.output_notebook.select(self.terminal_tab)
+                    self.status_label.configure(text="● Bridge stopped", foreground="#a33")
                     self._write_system(str(payload), level="ERROR")
                 elif kind.endswith("_error"):
+                    if kind == "device_settings_detected_error":
+                        self.detecting_device_settings = False
+                        self.normal_dpi_var.set("Unavailable")
+                        for variable in self.normal_haptic_vars.values():
+                            variable.set("—")
+                        self.toggle_button.configure(text="Start", state="normal")
+                        self.status_label.configure(text="● Mouse not detected", foreground="#a33")
+                        self._write_system(
+                            f"Could not detect normal mouse settings: {payload}",
+                            level="WARN",
+                        )
+                        continue
                     self._set_running(self.service.stream_active)
+                    self.output_notebook.select(self.terminal_tab)
+                    if not self.service.stream_active:
+                        self.status_label.configure(text="● Start failed", foreground="#a33")
                     self._write_system(f"Bridge error: {payload}", level="ERROR")
                 elif kind == "closed":
                     self.root.destroy()

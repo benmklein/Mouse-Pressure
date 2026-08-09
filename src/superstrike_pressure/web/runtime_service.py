@@ -89,10 +89,20 @@ class RuntimeService:
         self._failure_callback: Callable[[str], None] | None = None
         self._state_lock = threading.Lock()
         self._device_commands: queue.Queue[_DeviceCommand] = queue.Queue()
+        self._original_device_settings: dict[str, int] | None = None
 
-    async def start_stream(self) -> None:
+    async def start_stream(
+        self,
+        *,
+        device_settings: dict[str, int] | None = None,
+    ) -> None:
         if self._stream_active:
             raise StreamAlreadyActiveError("Stream is already active")
+        requested_device_settings = (
+            self._validate_device_settings(device_settings)
+            if device_settings is not None
+            else None
+        )
 
         self._loop = asyncio.get_running_loop()
         self._reader_stop.clear()
@@ -108,12 +118,89 @@ class RuntimeService:
         self._inject_hz = 0.0
         self._last_sample_monotonic = time.perf_counter()
 
-        session = self._session_factory(self._log)
-        try:
-            session.open()
-            self._device_found = True
-            session.enable_pressure_stream(mode=self.launch_config.mode, mode_arg=self.launch_config.mode_arg)
+        session: PressureHidppSession | None = None
+        for attempt in range(1, 4):
+            session = self._session_factory(self._log)
+            try:
+                session.open()
+                self._device_found = True
+                session.enable_pressure_stream(
+                    mode=self.launch_config.mode,
+                    mode_arg=self.launch_config.mode_arg,
+                )
+                break
+            except TimeoutError as exc:
+                self._device_found = False
+                try:
+                    session.close()
+                except Exception:
+                    pass
+                if attempt >= 3:
+                    raise RuntimeError(
+                        "The mouse is connected but its pressure command channel "
+                        "is not responding. Close Logitech G HUB or unplug and "
+                        "reconnect the mouse, then press Start again."
+                    ) from exc
+                self.log_bus.warn(
+                    f"Pressure device did not answer during startup; retrying "
+                    f"({attempt}/3)."
+                )
+                await asyncio.sleep(0.25)
+            except Exception:
+                self._device_found = False
+                try:
+                    session.close()
+                except Exception:
+                    pass
+                raise
 
+        if session is None:
+            raise RuntimeError("Could not create the pressure device session")
+
+        original_device_settings: dict[str, int] | None = None
+        if requested_device_settings is not None:
+            try:
+                original_device_settings = self._read_session_device_settings(
+                    session,
+                    discover_feature=False,
+                )
+                settings_changed = self._device_settings_differ(
+                    original_device_settings,
+                    requested_device_settings,
+                )
+                if settings_changed:
+                    session.disable_pressure_stream()
+                applied = self._apply_session_device_settings(
+                    session,
+                    requested_device_settings,
+                    current_settings=original_device_settings,
+                )
+                if settings_changed:
+                    session.enable_pressure_stream(
+                        mode=self.launch_config.mode,
+                        mode_arg=self.launch_config.mode_arg,
+                    )
+                self.log_bus.info(
+                    f"Session mouse settings applied: DPI {applied['dpi']}, "
+                    f"haptics L{applied['haptic_left']}/R{applied['haptic_right']}"
+                )
+            except Exception:
+                try:
+                    session.disable_pressure_stream()
+                except Exception:
+                    pass
+                if original_device_settings is not None:
+                    self._try_restore_session_device_settings(
+                        session,
+                        original_device_settings,
+                    )
+                try:
+                    session.close()
+                except Exception:
+                    pass
+                raise
+
+        try:
             emitter = self._emitter_factory(self._emitter_config_from_runtime(), self._log)
             movement_callback = getattr(emitter, "set_movement_callback", None)
             if callable(movement_callback):
@@ -121,6 +208,15 @@ class RuntimeService:
             emitter.open()
         except Exception:
             self._device_found = False
+            if original_device_settings is not None:
+                try:
+                    session.disable_pressure_stream()
+                except Exception:
+                    pass
+                self._try_restore_session_device_settings(
+                    session,
+                    original_device_settings,
+                )
             try:
                 session.close()
             except Exception:
@@ -129,6 +225,7 @@ class RuntimeService:
 
         self._session = session
         self._emitter = emitter
+        self._original_device_settings = original_device_settings
         self._stream_active = True
         self._reader_thread = threading.Thread(target=self._reader_loop, name="superstrike-reader", daemon=True)
         self._reader_thread.start()
@@ -194,8 +291,22 @@ class RuntimeService:
             self._emitter = None
 
         if self._session is not None:
+            if self._original_device_settings is not None:
+                try:
+                    self._session.disable_pressure_stream()
+                except Exception as exc:
+                    self.log_bus.warn(
+                        f"Could not pause the pressure stream before restoring "
+                        f"mouse settings: {exc}"
+                    )
+                await asyncio.to_thread(
+                    self._try_restore_session_device_settings,
+                    self._session,
+                    self._original_device_settings,
+                )
             self._session.close()
             self._session = None
+        self._original_device_settings = None
 
         self._sample_queue = None
         self._raw_sample_queue = None
@@ -228,6 +339,7 @@ class RuntimeService:
                     path_stabilization=validated.left.path_stabilization,
                     pressure_influence=validated.left.pressure_influence,
                     onset_buffer=validated.left.onset_buffer,
+                    true_low_latency=validated.left.true_low_latency,
                     right_contact_threshold=right_presets["contact_threshold"],
                     right_release_threshold=right_presets["release_threshold"],
                     right_min_contact_pressure=round(
@@ -236,6 +348,7 @@ class RuntimeService:
                     right_path_stabilization=validated.right.path_stabilization,
                     right_pressure_influence=validated.right.pressure_influence,
                     right_onset_buffer=validated.right.onset_buffer,
+                    right_true_low_latency=validated.right.true_low_latency,
                     release_teardown=validated.release_teardown,
                     trace_raw_min=validated.left.raw_min,
                     trace_raw_max=validated.left.raw_max,
@@ -294,6 +407,184 @@ class RuntimeService:
         )
         return await asyncio.wait_for(future, timeout=3.0)
 
+    async def detect_device_settings(self) -> dict[str, int]:
+        """Read DPI and haptics without starting the pressure bridge."""
+        if self._stream_active:
+            raise StreamAlreadyActiveError(
+                "Stop the bridge before detecting the normal mouse settings"
+            )
+
+        def detect() -> dict[str, int]:
+            session = self._session_factory(self._log)
+            try:
+                session.open()
+                return self._read_session_device_settings(session)
+            finally:
+                session.close()
+
+        detected = await asyncio.to_thread(detect)
+        settings = {
+            key: int(detected[key])
+            for key in ("dpi", "haptic_left", "haptic_right")
+        }
+        self.log_bus.info(
+            f"Mouse settings detected: DPI {settings['dpi']}, "
+            f"haptics L{settings['haptic_left']}/R{settings['haptic_right']}"
+        )
+        return settings
+
+    @staticmethod
+    def _validate_device_settings(settings: dict[str, int]) -> dict[str, int]:
+        try:
+            dpi = int(settings["dpi"])
+            haptic_left = int(settings["haptic_left"])
+            haptic_right = int(settings["haptic_right"])
+        except (KeyError, TypeError, ValueError) as exc:
+            raise ValidationError(
+                "Mouse settings require DPI and left/right haptic levels"
+            ) from exc
+        if not 100 <= dpi <= 32000 or dpi % 50 != 0:
+            raise ValidationError("DPI must be 100..32000 in 50-DPI increments")
+        if not 0 <= haptic_left <= 5 or not 0 <= haptic_right <= 5:
+            raise ValidationError("Haptic levels must be in 0..5")
+        return {
+            "dpi": dpi,
+            "haptic_left": haptic_left,
+            "haptic_right": haptic_right,
+        }
+
+    @staticmethod
+    def _read_session_device_settings(
+        session: PressureHidppSession,
+        *,
+        discover_feature: bool = True,
+    ) -> dict[str, int]:
+        discover = getattr(session, "discover_pressure_feature_index", None)
+        if discover_feature and callable(discover):
+            discover()
+        dpi = session.get_dpi()
+        left, right = session.get_haptic_levels()
+        result = {
+            "dpi": int(dpi),
+            "haptic_left": int(left),
+            "haptic_right": int(right),
+        }
+        profile_reader = getattr(session, "get_onboard_profile_state", None)
+        if callable(profile_reader):
+            enabled, sector = profile_reader()
+            result["onboard_profiles_enabled"] = int(bool(enabled))
+            result["onboard_profile_sector"] = int(sector or 0)
+        return result
+
+    @classmethod
+    def _apply_session_device_settings(
+        cls,
+        session: PressureHidppSession,
+        settings: dict[str, int],
+        *,
+        current_settings: dict[str, int] | None = None,
+    ) -> dict[str, int]:
+        current = (
+            dict(current_settings)
+            if current_settings is not None
+            else cls._read_session_device_settings(
+                session,
+                discover_feature=False,
+            )
+        )
+        dpi = int(current["dpi"])
+        left = int(current["haptic_left"])
+        right = int(current["haptic_right"])
+        if settings["dpi"] != dpi:
+            profile_enabled = bool(current.get("onboard_profiles_enabled", 0))
+            if profile_enabled:
+                profile_writer = getattr(session, "set_onboard_profile_state", None)
+                if not callable(profile_writer):
+                    raise RuntimeError(
+                        "DPI is controlled by an onboard profile that cannot be "
+                        "temporarily disabled"
+                    )
+                profile_writer(enabled=False)
+                current["onboard_profiles_enabled"] = 0
+                current["onboard_profile_sector"] = 0
+            dpi = session.set_dpi(settings["dpi"])
+        if (
+            settings["haptic_left"] != left
+            or settings["haptic_right"] != right
+        ):
+            left, right = session.set_haptic_levels(
+                left=settings["haptic_left"],
+                right=settings["haptic_right"],
+            )
+        return {
+            "dpi": int(dpi),
+            "haptic_left": int(left),
+            "haptic_right": int(right),
+        }
+
+    @staticmethod
+    def _device_settings_differ(
+        current: dict[str, int],
+        requested: dict[str, int],
+    ) -> bool:
+        return any(
+            int(current[key]) != int(requested[key])
+            for key in ("dpi", "haptic_left", "haptic_right")
+        )
+
+    def _restore_session_device_settings(
+        self,
+        session: PressureHidppSession,
+        settings: dict[str, int],
+    ) -> None:
+        current = self._read_session_device_settings(
+            session,
+            discover_feature=False,
+        )
+        restored = self._apply_session_device_settings(
+            session,
+            settings,
+            current_settings=current,
+        )
+        original_profiles_enabled = bool(
+            settings.get("onboard_profiles_enabled", 0)
+        )
+        original_profile_sector = int(settings.get("onboard_profile_sector", 0))
+        current_profiles_enabled = bool(
+            current.get("onboard_profiles_enabled", 0)
+        )
+        current_profile_sector = int(current.get("onboard_profile_sector", 0))
+        if (
+            original_profiles_enabled != current_profiles_enabled
+            or (
+                original_profiles_enabled
+                and original_profile_sector != current_profile_sector
+            )
+        ):
+            profile_writer = getattr(session, "set_onboard_profile_state", None)
+            if not callable(profile_writer):
+                raise RuntimeError("Could not restore the original onboard profile")
+            profile_writer(
+                enabled=original_profiles_enabled,
+                active_sector=(
+                    original_profile_sector if original_profiles_enabled else None
+                ),
+            )
+        self.log_bus.info(
+            f"Original mouse settings restored: DPI {restored['dpi']}, "
+            f"haptics L{restored['haptic_left']}/R{restored['haptic_right']}"
+        )
+
+    def _try_restore_session_device_settings(
+        self,
+        session: PressureHidppSession,
+        settings: dict[str, int],
+    ) -> None:
+        try:
+            self._restore_session_device_settings(session, settings)
+        except Exception as exc:
+            self.log_bus.error(f"Could not restore the original mouse settings: {exc}")
+
     @property
     def stream_active(self) -> bool:
         return self._stream_active
@@ -315,6 +606,17 @@ class RuntimeService:
                 if not isinstance(value, bool):
                     raise ValidationError(f"{boolean_name} must be a boolean")
                 merged[boolean_name] = value
+
+        for integer_name in (
+            "session_dpi",
+            "session_haptic_left",
+            "session_haptic_right",
+        ):
+            if integer_name in patch:
+                value = patch[integer_name]
+                if not isinstance(value, int):
+                    raise ValidationError(f"{integer_name} must be an integer")
+                merged[integer_name] = value
 
         if "left" in patch:
             left_patch = patch["left"]
@@ -371,6 +673,7 @@ class RuntimeService:
             path_stabilization=self._config.left.path_stabilization,
             pressure_influence=self._config.left.pressure_influence,
             onset_buffer=self._config.left.onset_buffer,
+            true_low_latency=self._config.left.true_low_latency,
             right_contact_threshold=right_thresholds["contact_threshold"],
             right_release_threshold=right_thresholds["release_threshold"],
             right_min_contact_pressure=round(
@@ -379,6 +682,7 @@ class RuntimeService:
             right_path_stabilization=self._config.right.path_stabilization,
             right_pressure_influence=self._config.right.pressure_influence,
             right_onset_buffer=self._config.right.onset_buffer,
+            right_true_low_latency=self._config.right.true_low_latency,
             pressure_interp_steps=max(1, int(round(self.launch_config.hz / 60.0))),
             suppress_lmb=self._config.suppress_lmb,
             suppress_rmb=self._config.suppress_rmb,
@@ -419,6 +723,7 @@ class RuntimeService:
                     data,
                     ts,
                     feature_index=getattr(session, "pressure_feature_index", 0x0C),
+                    device_index=getattr(session, "device_index", None),
                 )
                 if frame is not None:
                     left_raw, right_raw = extract_mode3_lr_pressure_raw(frame)
@@ -484,25 +789,46 @@ class RuntimeService:
 
             handled = True
             self._last_sample_monotonic = time.perf_counter()
+            stream_paused = False
             try:
-                dpi = session.set_dpi(settings["dpi"])
-                left, right = session.set_haptic_levels(
-                    left=settings["haptic_left"],
-                    right=settings["haptic_right"],
+                current = self._read_session_device_settings(
+                    session,
+                    discover_feature=False,
                 )
-                result = {
-                    "dpi": dpi,
-                    "haptic_left": left,
-                    "haptic_right": right,
-                }
+                if self._device_settings_differ(current, settings):
+                    session.disable_pressure_stream()
+                    stream_paused = True
+                result = self._apply_session_device_settings(
+                    session,
+                    settings,
+                    current_settings=current,
+                )
+                if stream_paused:
+                    session.enable_pressure_stream(
+                        mode=self.launch_config.mode,
+                        mode_arg=self.launch_config.mode_arg,
+                    )
+                    stream_paused = False
             except Exception as exc:
                 loop.call_soon_threadsafe(self._finish_device_command, future, None, exc)
             else:
                 self.log_bus.info(
-                    f"Device settings applied: DPI {dpi}, haptics L{left}/R{right}"
+                    f"Device settings applied: DPI {result['dpi']}, "
+                    f"haptics L{result['haptic_left']}/R{result['haptic_right']}"
                 )
                 loop.call_soon_threadsafe(self._finish_device_command, future, result, None)
             finally:
+                if stream_paused:
+                    try:
+                        session.enable_pressure_stream(
+                            mode=self.launch_config.mode,
+                            mode_arg=self.launch_config.mode_arg,
+                        )
+                    except Exception as exc:
+                        self.log_bus.error(
+                            f"Could not resume pressure streaming after mouse "
+                            f"settings failed: {exc}"
+                        )
                 self._last_sample_monotonic = time.perf_counter()
 
     @staticmethod

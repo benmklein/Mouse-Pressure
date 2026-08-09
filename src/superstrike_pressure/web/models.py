@@ -51,6 +51,8 @@ def validate_channel_config(ch: dict) -> list[str]:
     path_stabilization = ch.get("path_stabilization")
     pressure_influence = ch.get("pressure_influence")
     onset_buffer = ch.get("onset_buffer")
+    # Optional for backward-compatible validation of version-1 channel payloads.
+    true_low_latency = ch.get("true_low_latency", False)
 
     if not isinstance(raw_min, int):
         errors.append("raw_min must be an integer")
@@ -113,6 +115,9 @@ def validate_channel_config(ch: dict) -> list[str]:
 
     if not isinstance(onset_buffer, bool):
         errors.append("onset_buffer must be a boolean")
+
+    if not isinstance(true_low_latency, bool):
+        errors.append("true_low_latency must be a boolean")
 
     return errors
 

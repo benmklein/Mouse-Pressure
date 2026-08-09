@@ -1,4 +1,4 @@
-"""Shared HID++ pressure stream helpers for Superstrike over Lightspeed."""
+"""Shared HID++ pressure stream helpers for wired and wireless Superstrike."""
 
 from __future__ import annotations
 
@@ -12,6 +12,9 @@ import hid
 
 VID = 0x046D
 PID = 0xC54D
+WIRELESS_PID = PID
+WIRED_PID = 0xC0A8
+SUPPORTED_PIDS = {WIRELESS_PID, WIRED_PID}
 IFACE_NUMBER = 2
 USAGE_PAGE_VENDOR = 0xFF00
 USAGE_COL02 = 0x0002
@@ -19,6 +22,7 @@ USAGE_COL02 = 0x0002
 REPORT_SHORT = 0x10
 REPORT_LONG = 0x11
 DEVICE_INDEX = 0x01
+WIRED_DEVICE_INDEX = 0xFF
 PRESSURE_FEATURE_INDEX = 0x0C
 ANALOG_BUTTONS_FEATURE_ID = 0x1B0C
 RAW_ADC_MONITORING_FLAG = 0x02
@@ -34,6 +38,7 @@ MOUSE_BUTTON_SPY_INDEX = 0x0F
 HIDPP_SW_ID = 0x08
 DEVICE_CONFIG_SW_ID = 0x0F
 EXTENDED_DPI_FEATURE_INDEX = 0x09
+ONBOARD_PROFILES_FEATURE_ID = 0x8100
 CONFIG_WRAPPER_FEATURE_INDEX = 0x0F
 
 DISABLE_PRESSURE_STREAM_CANDIDATES = [
@@ -62,10 +67,16 @@ def hex_bytes(data: Iterable[int]) -> str:
     return " ".join(f"{b:02X}" for b in data)
 
 
-def _build_long_report(sub_id: int, address: int, payload: list[int]) -> list[int]:
+def _build_long_report(
+    sub_id: int,
+    address: int,
+    payload: list[int],
+    *,
+    device_index: int = DEVICE_INDEX,
+) -> list[int]:
     body = list(payload[:16])
     body.extend([0] * (16 - len(body)))
-    return [REPORT_LONG, DEVICE_INDEX, sub_id, address] + body
+    return [REPORT_LONG, device_index & 0xFF, sub_id, address] + body
 
 
 def _function_to_address(function_id: int, sw_id: int = HIDPP_SW_ID) -> int:
@@ -79,6 +90,7 @@ def _short_to_long(short_report: list[int]) -> list[int]:
         sub_id=short_report[2],
         address=short_report[3],
         payload=short_report[4:],
+        device_index=short_report[1],
     )
 
 
@@ -87,12 +99,14 @@ def build_monitoring_lease_report(
     feature_index: int,
     flags: int,
     lease_seconds: int,
+    device_index: int = DEVICE_INDEX,
 ) -> list[int]:
     """Build the HID++ 0x1B0C function-3 monitoring lease request."""
     return _build_long_report(
         sub_id=feature_index,
         address=_function_to_address(3),
         payload=[flags & 0x03, lease_seconds & 0xFF],
+        device_index=device_index,
     )
 
 
@@ -112,12 +126,18 @@ class Feature0CFrame:
     payload: list[int]
 
 
-def parse_pressure_notification(data: list[int], timestamp_s: float) -> PressureReport | None:
+def parse_pressure_notification(
+    data: list[int],
+    timestamp_s: float,
+    *,
+    device_index: int | None = None,
+) -> PressureReport | None:
     if len(data) < 20:
         return None
     if (
         data[0] != REPORT_LONG
-        or data[1] != DEVICE_INDEX
+        or (device_index is not None and data[1] != device_index)
+        or (device_index is None and data[1] not in {DEVICE_INDEX, WIRED_DEVICE_INDEX})
         or data[2] != PRESSURE_FEATURE_INDEX
         or data[3] != PRESSURE_NOTIFICATION_SWID
     ):
@@ -135,10 +155,16 @@ def parse_feature_0c_frame(
     timestamp_s: float,
     *,
     feature_index: int = PRESSURE_FEATURE_INDEX,
+    device_index: int | None = None,
 ) -> Feature0CFrame | None:
     if len(data) < 20:
         return None
-    if data[0] != REPORT_LONG or data[1] != DEVICE_INDEX or data[2] != feature_index:
+    index_matches = (
+        data[1] == device_index
+        if device_index is not None
+        else data[1] in {DEVICE_INDEX, WIRED_DEVICE_INDEX}
+    )
+    if data[0] != REPORT_LONG or not index_matches or data[2] != feature_index:
         return None
     return Feature0CFrame(
         timestamp_s=timestamp_s,
@@ -207,38 +233,96 @@ class PressureHidppSession:
         self.log = log
         self.dev: hid.device | None = None
         self.path_col02: bytes | None = None
+        self.device_index = DEVICE_INDEX
+        self.transport = "wireless"
+        self._candidates: list[dict] = []
+        self._candidate_index = 0
         self._cleanup_done = False
         self._atexit_registered = False
         self._signal_handlers: dict[signal.Signals, object] = {}
         self.pressure_feature_index = PRESSURE_FEATURE_INDEX
+        self.onboard_profiles_feature_index: int | None = None
         self._previous_monitoring_flags: int | None = None
         self._active_monitoring_flags: int | None = None
         self.lease_renew_interval_s = PRESSURE_LEASE_RENEW_INTERVAL_S
         self._next_lease_renewal = 0.0
 
-    def discover_col02_path(self) -> bytes | None:
-        for d in hid.enumerate():
+    def discover_col02_candidates(self) -> list[dict]:
+        candidates: list[dict] = []
+        for device in hid.enumerate(VID, 0):
+            product = str(device.get("product_string") or "")
+            product_id = int(device.get("product_id") or 0)
             if (
-                d["vendor_id"] == VID
-                and d["product_id"] == PID
-                and d.get("interface_number") == IFACE_NUMBER
-                and d.get("usage_page") == USAGE_PAGE_VENDOR
-                and d.get("usage") == USAGE_COL02
+                device.get("vendor_id") != VID
+                or device.get("interface_number") != IFACE_NUMBER
+                or device.get("usage_page") != USAGE_PAGE_VENDOR
+                or device.get("usage") != USAGE_COL02
+                or (
+                    product_id not in SUPPORTED_PIDS
+                    and "SUPERSTRIKE" not in product.upper()
+                )
             ):
-                return d["path"]
-        return None
-
-    def open(self) -> None:
-        self.path_col02 = self.discover_col02_path()
-        if not self.path_col02:
-            raise RuntimeError(
-                "Superstrike receiver MI_02 Col02 not found (VID:PID 046D:C54D usage 0x0002)"
+                continue
+            wired = product_id == WIRED_PID or "SUPERSTRIKE" in product.upper()
+            candidates.append(
+                {
+                    "path": device["path"],
+                    "product_id": product_id,
+                    "product": product,
+                    "serial": str(device.get("serial_number") or ""),
+                    "transport": "wired" if wired else "wireless",
+                    "device_index": WIRED_DEVICE_INDEX if wired else DEVICE_INDEX,
+                }
             )
+        # Prefer the direct device whenever the cable is connected. A receiver
+        # can remain enumerated while its paired mouse has switched to USB and
+        # will accept writes without returning any HID++ responses.
+        candidates.sort(key=lambda item: item["transport"] != "wired")
+        return candidates
 
+    def discover_col02_path(self) -> bytes | None:
+        candidates = self.discover_col02_candidates()
+        return candidates[0]["path"] if candidates else None
+
+    def _open_candidate(self, index: int) -> None:
+        candidate = self._candidates[index]
+        self._candidate_index = index
+        self.path_col02 = candidate["path"]
+        self.device_index = int(candidate["device_index"])
+        self.transport = str(candidate["transport"])
         self.dev = hid.device()
         self.dev.open_path(self.path_col02)
         self.dev.set_nonblocking(True)
-        self.log(f"OPEN Col02 path={self.path_col02!r}")
+        self.log(
+            f"OPEN {self.transport} Col02 pid=0x{candidate['product_id']:04X} "
+            f"serial={candidate['serial'] or '-'} path={self.path_col02!r}"
+        )
+
+    def _advance_candidate(self) -> bool:
+        next_index = self._candidate_index + 1
+        if next_index >= len(self._candidates):
+            return False
+        if self.dev is not None:
+            try:
+                self.dev.close()
+            except OSError:
+                pass
+        self.dev = None
+        self.pressure_feature_index = PRESSURE_FEATURE_INDEX
+        self.onboard_profiles_feature_index = None
+        self._previous_monitoring_flags = None
+        self._active_monitoring_flags = None
+        self._next_lease_renewal = 0.0
+        self._open_candidate(next_index)
+        return True
+
+    def open(self) -> None:
+        self._candidates = self.discover_col02_candidates()
+        if not self._candidates:
+            raise RuntimeError(
+                "No wired or wireless Superstrike HID++ command interface was found"
+            )
+        self._open_candidate(0)
         self._register_cleanup_hooks()
 
     def close(self) -> None:
@@ -356,7 +440,12 @@ class PressureHidppSession:
         if self.dev is None:
             raise RuntimeError("Device not open")
 
-        report = _build_long_report(feature_index, address, payload)
+        report = _build_long_report(
+            feature_index,
+            address,
+            payload,
+            device_index=self.device_index,
+        )
         wrote = self.dev.write(report)
         self.log(f"TX {label} write()={wrote} {hex_bytes(report)}")
         if wrote is None or wrote <= 0:
@@ -372,7 +461,7 @@ class PressureHidppSession:
             if (
                 len(row) >= 6
                 and row[0] == REPORT_LONG
-                and row[1] == DEVICE_INDEX
+                and row[1] == self.device_index
                 and row[2] == 0xFF
                 and row[3] == feature_index
                 and row[4] == address
@@ -382,7 +471,7 @@ class PressureHidppSession:
             if (
                 len(row) >= 4
                 and row[0] == REPORT_LONG
-                and row[1] == DEVICE_INDEX
+                and row[1] == self.device_index
                 and row[2] == feature_index
                 and row[3] == address
             ):
@@ -391,11 +480,8 @@ class PressureHidppSession:
 
         raise TimeoutError(f"Timed out waiting for {label} response")
 
-    def set_haptic_levels(self, *, left: int, right: int) -> tuple[int, int]:
-        """Set click haptics 0..5 while preserving actuation/rapid-trigger."""
-        if not 0 <= left <= 5 or not 0 <= right <= 5:
-            raise ValueError("Haptic levels must be in 0..5")
-
+    def _read_button_settings(self) -> dict[int, list[int]]:
+        """Read both HITS button records used by haptics and calibration."""
         current: dict[int, list[int]] = {}
         for button in (0, 1):
             values = self.request_long(
@@ -407,6 +493,23 @@ class PressureHidppSession:
             if len(values) < 4 or values[0] != button:
                 raise RuntimeError(f"Unexpected HITS settings response for button {button}")
             current[button] = values
+        return current
+
+    def get_haptic_levels(self) -> tuple[int, int]:
+        """Read the current 0..5 haptic level for the left and right buttons."""
+        current = self._read_button_settings()
+        levels = tuple(
+            max(0, min(5, round(current[button][3] / 4.0)))
+            for button in (0, 1)
+        )
+        return int(levels[0]), int(levels[1])
+
+    def set_haptic_levels(self, *, left: int, right: int) -> tuple[int, int]:
+        """Set click haptics 0..5 while preserving actuation/rapid-trigger."""
+        if not 0 <= left <= 5 or not 0 <= right <= 5:
+            raise ValueError("Haptic levels must be in 0..5")
+
+        current = self._read_button_settings()
 
         self.request_long(
             feature_index=CONFIG_WRAPPER_FEATURE_INDEX,
@@ -432,6 +535,27 @@ class PressureHidppSession:
             )
         return left, right
 
+    @staticmethod
+    def _dpi_from_settings(values: list[int]) -> int:
+        if len(values) < 5:
+            raise RuntimeError("Extended DPI response was too short")
+        dpi = int.from_bytes(bytes(values[1:3]), byteorder="big")
+        if dpi == 0:
+            dpi = int.from_bytes(bytes(values[3:5]), byteorder="big")
+        if dpi <= 0:
+            raise RuntimeError("Extended DPI response did not contain a valid resolution")
+        return dpi
+
+    def get_dpi(self) -> int:
+        """Read the current X-axis DPI from feature 0x2202."""
+        current = self.request_long(
+            feature_index=EXTENDED_DPI_FEATURE_INDEX,
+            address=(5 << 4) | DEVICE_CONFIG_SW_ID,
+            payload=[0x00],
+            label="DPI.read",
+        )
+        return self._dpi_from_settings(current)
+
     def set_dpi(self, dpi: int) -> int:
         """Set equal X/Y DPI using feature 0x2202 (index 0x09)."""
         if not 100 <= dpi <= 32000 or dpi % 50 != 0:
@@ -447,10 +571,12 @@ class PressureHidppSession:
             raise RuntimeError("Extended DPI response was too short")
         lod = current[9]
         high, low = divmod(dpi, 256)
+        current_y = int.from_bytes(bytes(current[5:7]), byteorder="big")
+        y_high, y_low = (high, low) if current_y > 0 else (0, 0)
         self.request_long(
             feature_index=EXTENDED_DPI_FEATURE_INDEX,
             address=(6 << 4) | DEVICE_CONFIG_SW_ID,
-            payload=[0x00, high, low, high, low, lod],
+            payload=[0x00, high, low, y_high, y_low, lod],
             label=f"DPI.write={dpi}",
         )
 
@@ -460,53 +586,130 @@ class PressureHidppSession:
             payload=[0x00],
             label="DPI.verify",
         )
-        if len(verified) < 5:
-            raise RuntimeError("Extended DPI verification response was too short")
-        actual = int.from_bytes(bytes(verified[1:3]), byteorder="big")
-        if actual == 0:
-            actual = int.from_bytes(bytes(verified[3:5]), byteorder="big")
+        actual = self._dpi_from_settings(verified)
         if actual != dpi:
             raise RuntimeError(
                 f"DPI remained at {actual}; disable the mouse onboard profile or close G HUB"
             )
         return actual
 
-    def discover_pressure_feature_index(self) -> int:
-        """Resolve HID++ feature 0x1B0C instead of assuming index 0x0C."""
+    def discover_feature_index(self, feature_id: int, *, label: str) -> int:
+        """Resolve one HID++ 2.0 feature ID to its current runtime index."""
         payload = self.request_long(
             feature_index=0x00,
             address=_function_to_address(0),
-            payload=[ANALOG_BUTTONS_FEATURE_ID >> 8, ANALOG_BUTTONS_FEATURE_ID & 0xFF],
-            label="PRESSURE.discover.0x1B0C",
+            payload=[(feature_id >> 8) & 0xFF, feature_id & 0xFF],
+            label=label,
         )
         if not payload or payload[0] == 0:
-            raise RuntimeError("Device does not expose HID++ feature 0x1B0C")
-        self.pressure_feature_index = payload[0]
+            raise RuntimeError(f"Device does not expose HID++ feature 0x{feature_id:04X}")
+        return int(payload[0])
+
+    def get_onboard_profile_state(self) -> tuple[bool, int | None]:
+        """Return whether onboard profiles own settings and the active sector."""
+        if self.onboard_profiles_feature_index is None:
+            self.onboard_profiles_feature_index = self.discover_feature_index(
+                ONBOARD_PROFILES_FEATURE_ID,
+                label="PROFILE.discover.0x8100",
+            )
+        feature_index = self.onboard_profiles_feature_index
+        mode = self.request_long(
+            feature_index=feature_index,
+            address=_function_to_address(2, DEVICE_CONFIG_SW_ID),
+            payload=[],
+            label="PROFILE.mode.read",
+        )
+        enabled = bool(mode and mode[0] == 0x01)
+        if not enabled:
+            return False, None
+        active = self.request_long(
+            feature_index=feature_index,
+            address=_function_to_address(4, DEVICE_CONFIG_SW_ID),
+            payload=[],
+            label="PROFILE.active.read",
+        )
+        if len(active) < 2:
+            raise RuntimeError("Onboard profile response was too short")
+        return True, int.from_bytes(bytes(active[:2]), byteorder="big")
+
+    def set_onboard_profile_state(
+        self,
+        *,
+        enabled: bool,
+        active_sector: int | None = None,
+    ) -> tuple[bool, int | None]:
+        """Switch between host mode and the saved onboard profile."""
+        if self.onboard_profiles_feature_index is None:
+            self.onboard_profiles_feature_index = self.discover_feature_index(
+                ONBOARD_PROFILES_FEATURE_ID,
+                label="PROFILE.discover.0x8100",
+            )
+        feature_index = self.onboard_profiles_feature_index
+        self.request_long(
+            feature_index=feature_index,
+            address=_function_to_address(1, DEVICE_CONFIG_SW_ID),
+            payload=[0x01 if enabled else 0x02],
+            label="PROFILE.onboard_mode" if enabled else "PROFILE.host_mode",
+        )
+        if enabled and active_sector is not None:
+            if not 0 <= int(active_sector) <= 0xFFFF:
+                raise ValueError("Onboard profile sector must fit in 16 bits")
+            high, low = divmod(int(active_sector), 256)
+            self.request_long(
+                feature_index=feature_index,
+                address=_function_to_address(3, DEVICE_CONFIG_SW_ID),
+                payload=[high, low],
+                label=f"PROFILE.active={int(active_sector)}",
+            )
+        return bool(enabled), int(active_sector) if enabled and active_sector is not None else None
+
+    def discover_pressure_feature_index(self) -> int:
+        """Resolve HID++ feature 0x1B0C instead of assuming index 0x0C."""
+        self.pressure_feature_index = self.discover_feature_index(
+            ANALOG_BUTTONS_FEATURE_ID,
+            label="PRESSURE.discover.0x1B0C",
+        )
         self.log(f"PRESSURE feature 0x1B0C index=0x{self.pressure_feature_index:02X}")
         return self.pressure_feature_index
 
     def enable_pressure_stream(self, mode: int = 0x01, mode_arg: int = 0x00) -> None:
         """Acquire a short event-1 lease while preserving existing monitor flags."""
         del mode, mode_arg  # Retained in the public signature for CLI compatibility.
-        self.read_for(0.05)
-        feature_index = self.discover_pressure_feature_index()
-        current = self.request_long(
-            feature_index=feature_index,
-            address=_function_to_address(4),
-            payload=[],
-            label="PRESSURE.flags.read",
-        )
-        if not current:
-            raise RuntimeError("HID++ 0x1B0C function 4 returned no monitoring flags")
-        self._previous_monitoring_flags = current[0] & 0x03
-        self._active_monitoring_flags = self._previous_monitoring_flags | RAW_ADC_MONITORING_FLAG
-        self.request_long(
-            feature_index=feature_index,
-            address=_function_to_address(3),
-            payload=[self._active_monitoring_flags, PRESSURE_LEASE_SECONDS],
-            label="PRESSURE.lease.acquire",
-        )
-        self._next_lease_renewal = time.perf_counter() + self.lease_renew_interval_s
+        while True:
+            try:
+                self.read_for(0.05)
+                feature_index = self.discover_pressure_feature_index()
+                current = self.request_long(
+                    feature_index=feature_index,
+                    address=_function_to_address(4),
+                    payload=[],
+                    label="PRESSURE.flags.read",
+                )
+                if not current:
+                    raise RuntimeError(
+                        "HID++ 0x1B0C function 4 returned no monitoring flags"
+                    )
+                self._previous_monitoring_flags = current[0] & 0x03
+                self._active_monitoring_flags = (
+                    self._previous_monitoring_flags | RAW_ADC_MONITORING_FLAG
+                )
+                self.request_long(
+                    feature_index=feature_index,
+                    address=_function_to_address(3),
+                    payload=[self._active_monitoring_flags, PRESSURE_LEASE_SECONDS],
+                    label="PRESSURE.lease.acquire",
+                )
+                self._next_lease_renewal = (
+                    time.perf_counter() + self.lease_renew_interval_s
+                )
+                return
+            except (TimeoutError, RuntimeError, OSError) as exc:
+                if not self._advance_candidate():
+                    raise
+                self.log(
+                    f"HID++ probe failed ({type(exc).__name__}); trying next "
+                    f"Superstrike interface"
+                )
 
     def maintain_pressure_stream(self) -> bool:
         """Renew the monitoring lease when due; return whether a write occurred."""
@@ -536,6 +739,7 @@ class PressureHidppSession:
             feature_index=self.pressure_feature_index,
             flags=self._active_monitoring_flags,
             lease_seconds=PRESSURE_LEASE_SECONDS,
+            device_index=self.device_index,
         )
         label = "PRESSURE.lease.renew"
         wrote: int | None = None
@@ -559,6 +763,8 @@ class PressureHidppSession:
     def disable_pressure_stream(self) -> None:
         if self.dev is None:
             return
+        if self._active_monitoring_flags is None:
+            return
         if self._previous_monitoring_flags is not None:
             self.request_long(
                 feature_index=self.pressure_feature_index,
@@ -567,16 +773,19 @@ class PressureHidppSession:
                 label="CLEANUP.PRESSURE.flags.restore",
             )
             self._active_monitoring_flags = None
+            self._previous_monitoring_flags = None
             self._next_lease_renewal = 0.0
             return
         for i, cmd in enumerate(DISABLE_PRESSURE_STREAM_CANDIDATES, start=1):
+            transport_cmd = list(cmd)
+            transport_cmd[1] = self.device_index
             self.write_report(
-                cmd,
+                transport_cmd,
                 label=f"CLEANUP.PRESSURE.disable[{i}].short",
                 read_window_s=0.1,
             )
             self.write_report(
-                _short_to_long(cmd),
+                _short_to_long(transport_cmd),
                 label=f"CLEANUP.PRESSURE.disable[{i}].long_fallback",
                 read_window_s=0.1,
             )
@@ -590,6 +799,7 @@ class PressureHidppSession:
                 sub_id=MOUSE_BUTTON_SPY_INDEX,
                 address=_function_to_address(function_id),
                 payload=payload,
+                device_index=self.device_index,
             )
             self.write_report(pkt, label=label, read_window_s=0.08)
 
