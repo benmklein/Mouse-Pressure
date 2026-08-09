@@ -44,6 +44,35 @@ def _percentile(values: list[float], fraction: float) -> float:
     return float(ordered[index])
 
 
+def _without_stationary_dabs(
+    injected: list[dict[str, Any]],
+) -> tuple[list[dict[str, Any]], int]:
+    """Remove tagged and legacy one-pixel closed stationary dab paths."""
+    cleaned: list[dict[str, Any]] = []
+    removed = 0
+    for event in injected:
+        if event.get("tag") == "stationary_contact":
+            removed += 1
+            continue
+        cleaned.append(event)
+        while len(cleaned) >= 3:
+            first, middle, last = cleaned[-3:]
+            excursion = math.hypot(
+                int(middle["x"]) - int(first["x"]),
+                int(middle["y"]) - int(first["y"]),
+            )
+            if (
+                (first["x"], first["y"]) == (last["x"], last["y"])
+                and 0.0 < excursion <= 1.01
+            ):
+                cleaned.pop()
+                cleaned.pop()
+                removed += 2
+            else:
+                break
+    return cleaned, removed
+
+
 def analyze(payload: dict[str, Any]) -> dict[str, float | int | str]:
     events = list(payload.get("events", []))
     metadata = dict(payload.get("metadata", {}))
@@ -59,6 +88,7 @@ def analyze(payload: dict[str, Any]) -> dict[str, float | int | str]:
         and event.get("ok")
         and int(event.get("flags", 0)) & 0x00000004
     ]
+    geometry_injected, stationary_dab_points = _without_stationary_dabs(injected)
 
     contact_start_ms = float(injected[0]["t_ms"]) if injected else 0.0
     contact_end_ms = float(injected[-1]["t_ms"]) if injected else contact_start_ms
@@ -95,8 +125,8 @@ def analyze(payload: dict[str, Any]) -> dict[str, float | int | str]:
     pressure_steps: list[float] = []
     cumulative_distance = 0.0
     plateau_distance = 0.0
-    stationary_pressure_updates = 0
-    for previous, current in zip(injected, injected[1:]):
+    stationary_pressure_updates = stationary_dab_points // 2
+    for previous, current in zip(geometry_injected, geometry_injected[1:]):
         distance = math.hypot(
             int(current["x"]) - int(previous["x"]),
             int(current["y"]) - int(previous["y"]),
@@ -116,7 +146,7 @@ def analyze(payload: dict[str, Any]) -> dict[str, float | int | str]:
         for previous, current in zip(fresh, fresh[1:])
     ]
     unique_path: list[dict[str, Any]] = []
-    for event in injected:
+    for event in geometry_injected:
         if not unique_path or (event["x"], event["y"]) != (
             unique_path[-1]["x"],
             unique_path[-1]["y"],
@@ -170,6 +200,7 @@ def analyze(payload: dict[str, Any]) -> dict[str, float | int | str]:
         "update_events": len(updates),
         "fresh_pressure_samples": len(fresh),
         "injected_contact_points": len(injected),
+        "stationary_dab_points": stationary_dab_points,
         "motion_anchor_hz": round(motion_anchor_hz, 2),
         "p95_motion_segment_px": round(_percentile(motion_distances, 0.95), 2),
         "max_motion_segment_px": round(max(motion_distances, default=0.0), 2),
@@ -211,8 +242,14 @@ def analyze(payload: dict[str, Any]) -> dict[str, float | int | str]:
         result["pressure_influence"] = int(metadata["pressure_influence"])
     if metadata.get("onset_buffer") is not None:
         result["onset_buffer"] = bool(metadata["onset_buffer"])
+    if metadata.get("stationary_pressure_updates") is not None:
+        result["stationary_pressure_enabled"] = bool(
+            metadata["stationary_pressure_updates"]
+        )
 
-    if len(injected) < 10 or (cumulative_distance > 50 and len(motions) < 10):
+    if len(geometry_injected) < 10 or (
+        cumulative_distance > 50 and len(motions) < 10
+    ):
         diagnosis = "SPATIAL_INPUT_SPARSE: too few movement/injection points for interpolation."
     elif reversals >= 3:
         diagnosis = "PATH_BACKTRACKING: injected coordinates repeatedly reverse direction."
@@ -256,9 +293,10 @@ def render_plot(payload: dict[str, Any], output: Path) -> None:
         and event.get("ok")
         and int(event.get("flags", 0)) & 0x00000004
     ]
+    geometry_injected, _stationary_dab_points = _without_stationary_dabs(injected)
 
     distance = [0.0]
-    for previous, current in zip(injected, injected[1:]):
+    for previous, current in zip(geometry_injected, geometry_injected[1:]):
         distance.append(
             distance[-1]
             + math.hypot(
@@ -303,7 +341,7 @@ def render_plot(payload: dict[str, Any], output: Path) -> None:
 
     axes[1].plot(
         distance,
-        [event["pressure"] for event in injected],
+        [event["pressure"] for event in geometry_injected],
         marker=".",
         markersize=3,
         linewidth=1.2,

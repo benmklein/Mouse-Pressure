@@ -3,7 +3,9 @@
 from __future__ import annotations
 
 import asyncio
+import os
 import queue
+import subprocess
 import threading
 import time
 from dataclasses import replace
@@ -12,6 +14,7 @@ from typing import Callable, TypeAlias
 from superstrike_pressure.bridge.config import CONTACT_PRESETS, ChannelConfig, LaunchConfig, RuntimeConfig
 from superstrike_pressure.bridge.curves import PressureConfig, map_normalized_pressure, normalize_curve_name
 from superstrike_pressure.bridge.synthetic_pen import SyntheticPenConfig, SyntheticPenEmitter
+from superstrike_pressure.bridge.tablet_emitter import VMultiPenInjectorAdapter
 from superstrike_pressure.sniff.hidpp_pressure import (
     PressureHidppSession,
     extract_mode3_lr_pressure_raw,
@@ -19,6 +22,10 @@ from superstrike_pressure.sniff.hidpp_pressure import (
     parse_feature_0c_frame,
 )
 from superstrike_pressure.web.config_store import ConfigStore, runtime_config_from_dict, runtime_config_to_dict
+from superstrike_pressure.web.device_restore_watchdog import (
+    arm_restore_watchdog,
+    disarm_restore_watchdog,
+)
 from superstrike_pressure.web.log_bus import GLOBAL_LOG_BUS, LogBus
 from superstrike_pressure.web.models import (
     StreamAlreadyActiveError,
@@ -54,6 +61,7 @@ class RuntimeService:
         self.config_store = config_store
         self.log_bus = log_bus or GLOBAL_LOG_BUS
         self._session_factory = session_factory
+        self._crash_restore_enabled = session_factory is PressureHidppSession
         self._emitter_factory = emitter_factory
         self._stream_stall_timeout_s = max(0.25, float(stream_stall_timeout_s))
         self._stream_recovery_after_s = max(0.1, float(stream_recovery_after_s))
@@ -81,15 +89,20 @@ class RuntimeService:
         self._processor_task: asyncio.Task[None] | None = None
         self._movement_task: asyncio.Task[None] | None = None
         self._health_task: asyncio.Task[None] | None = None
+        self._startup_ready_event: asyncio.Event | None = None
         self._latest_emission_sample: _RawSample | None = None
         self._last_sample_t: float | None = None
         self._last_inject_monotonic: float | None = None
         self._inject_hz = 0.0
         self._last_sample_monotonic: float | None = None
         self._failure_callback: Callable[[str], None] | None = None
+        self._force_stop_callback: Callable[[str], None] | None = None
+        self._force_stop_scheduled = False
         self._state_lock = threading.Lock()
         self._device_commands: queue.Queue[_DeviceCommand] = queue.Queue()
         self._original_device_settings: dict[str, int] | None = None
+        self._restore_watchdog_process: subprocess.Popen[bytes] | None = None
+        self._restore_watchdog_state_path = None
 
     async def start_stream(
         self,
@@ -112,11 +125,13 @@ class RuntimeService:
         self._sample_queue = asyncio.Queue(maxsize=1)
         self._raw_sample_queue = asyncio.Queue(maxsize=256)
         self._movement_queue = asyncio.Queue(maxsize=512)
+        self._startup_ready_event = asyncio.Event()
         self._latest_emission_sample = None
         self._last_sample_t = None
         self._last_inject_monotonic = None
         self._inject_hz = 0.0
         self._last_sample_monotonic = time.perf_counter()
+        self._force_stop_scheduled = False
 
         session: PressureHidppSession | None = None
         for attempt in range(1, 4):
@@ -158,6 +173,7 @@ class RuntimeService:
             raise RuntimeError("Could not create the pressure device session")
 
         original_device_settings: dict[str, int] | None = None
+        settings_changed = False
         if requested_device_settings is not None:
             try:
                 original_device_settings = self._read_session_device_settings(
@@ -169,6 +185,7 @@ class RuntimeService:
                     requested_device_settings,
                 )
                 if settings_changed:
+                    self._arm_restore_watchdog(original_device_settings)
                     session.disable_pressure_stream()
                 applied = self._apply_session_device_settings(
                     session,
@@ -190,22 +207,45 @@ class RuntimeService:
                 except Exception:
                     pass
                 if original_device_settings is not None:
-                    self._try_restore_session_device_settings(
+                    restored = self._try_restore_session_device_settings(
                         session,
                         original_device_settings,
                     )
+                    if restored:
+                        self._disarm_restore_watchdog()
                 try:
                     session.close()
                 except Exception:
                     pass
                 raise
 
+        deferred_input_arm = False
         try:
             emitter = self._emitter_factory(self._emitter_config_from_runtime(), self._log)
+            backend = str(self.launch_config.backend).strip().lower()
+            if backend not in {"synthetic", "vmulti"}:
+                raise RuntimeError(
+                    f"Unknown pen output backend {self.launch_config.backend!r}; "
+                    "expected 'synthetic' or 'vmulti'"
+                )
+            if backend == "vmulti" and isinstance(emitter, SyntheticPenEmitter):
+                emitter.pen = VMultiPenInjectorAdapter(
+                    desktop_input=emitter.pen,
+                    log=self._log,
+                )
             movement_callback = getattr(emitter, "set_movement_callback", None)
             if callable(movement_callback):
                 movement_callback(self._signal_movement)
-            emitter.open()
+            force_stop_setter = getattr(emitter, "set_force_stop_callback", None)
+            if callable(force_stop_setter):
+                force_stop_setter(self._schedule_force_stop)
+            open_unarmed = getattr(emitter, "open_unarmed", None)
+            arm_input = getattr(emitter, "arm_input", None)
+            deferred_input_arm = callable(open_unarmed) and callable(arm_input)
+            if deferred_input_arm:
+                open_unarmed()
+            else:
+                emitter.open()
         except Exception:
             self._device_found = False
             if original_device_settings is not None:
@@ -213,10 +253,12 @@ class RuntimeService:
                     session.disable_pressure_stream()
                 except Exception:
                     pass
-                self._try_restore_session_device_settings(
+                restored = self._try_restore_session_device_settings(
                     session,
                     original_device_settings,
                 )
+                if restored:
+                    self._disarm_restore_watchdog()
             try:
                 session.close()
             except Exception:
@@ -232,6 +274,23 @@ class RuntimeService:
         self._processor_task = asyncio.create_task(self._process_samples())
         self._movement_task = asyncio.create_task(self._process_movement())
         self._health_task = asyncio.create_task(self._monitor_stream_health())
+        if deferred_input_arm:
+            try:
+                ready_event = self._startup_ready_event
+                if ready_event is None:
+                    raise RuntimeError("Pressure startup readiness was not initialized")
+                await asyncio.wait_for(ready_event.wait(), timeout=1.0)
+                emitter.arm_input()
+            except Exception as exc:
+                await self.stop_stream()
+                if isinstance(exc, TimeoutError):
+                    raise RuntimeError(
+                        "The pressure stream did not produce a usable frame during "
+                        "startup. Native clicks were left enabled; press Start to "
+                        "try again."
+                    ) from exc
+                raise
+            self.log_bus.info("Pressure input primed; mouse button suppression armed")
         self.log_bus.info(
             f"Stream started (pressure ~60 Hz, raw mouse event-driven, "
             f"fallback pen tick {self.launch_config.hz:.0f} Hz)"
@@ -285,12 +344,16 @@ class RuntimeService:
                 movement_callback = getattr(self._emitter, "set_movement_callback", None)
                 if callable(movement_callback):
                     movement_callback(None)
+                force_stop_setter = getattr(self._emitter, "set_force_stop_callback", None)
+                if callable(force_stop_setter):
+                    force_stop_setter(None)
                 self._emitter.release()
             finally:
                 self._emitter.close()
             self._emitter = None
 
         if self._session is not None:
+            restored = True
             if self._original_device_settings is not None:
                 try:
                     self._session.disable_pressure_stream()
@@ -299,26 +362,31 @@ class RuntimeService:
                         f"Could not pause the pressure stream before restoring "
                         f"mouse settings: {exc}"
                     )
-                await asyncio.to_thread(
+                restored = await asyncio.to_thread(
                     self._try_restore_session_device_settings,
                     self._session,
                     self._original_device_settings,
                 )
             self._session.close()
             self._session = None
+            if restored:
+                self._disarm_restore_watchdog()
         self._original_device_settings = None
 
         self._sample_queue = None
         self._raw_sample_queue = None
         self._movement_queue = None
+        self._startup_ready_event = None
         self._latest_emission_sample = None
         self.log_bus.info("Stream stopped")
 
-    def apply_config(self, patch: dict) -> RuntimeConfig:
+    def apply_config(self, patch: dict, *, replace_existing: bool = False) -> RuntimeConfig:
         if not isinstance(patch, dict):
             raise ValidationError("config patch must be an object")
 
-        merged = runtime_config_to_dict(self._config)
+        merged = runtime_config_to_dict(
+            RuntimeConfig() if replace_existing else self._config
+        )
         self._merge_patch_dict(merged, patch)
         validated = runtime_config_from_dict(merged)
 
@@ -340,6 +408,12 @@ class RuntimeService:
                     pressure_influence=validated.left.pressure_influence,
                     onset_buffer=validated.left.onset_buffer,
                     true_low_latency=validated.left.true_low_latency,
+                    stationary_pressure_updates=(
+                        validated.left.stationary_pressure_updates
+                    ),
+                    rapid_release_threshold=(
+                        validated.left.rapid_release_threshold
+                    ),
                     right_contact_threshold=right_presets["contact_threshold"],
                     right_release_threshold=right_presets["release_threshold"],
                     right_min_contact_pressure=round(
@@ -349,6 +423,24 @@ class RuntimeService:
                     right_pressure_influence=validated.right.pressure_influence,
                     right_onset_buffer=validated.right.onset_buffer,
                     right_true_low_latency=validated.right.true_low_latency,
+                    right_stationary_pressure_updates=(
+                        validated.right.stationary_pressure_updates
+                    ),
+                    right_rapid_release_threshold=(
+                        validated.right.rapid_release_threshold
+                    ),
+                    suppress_lmb=(
+                        validated.left_enabled and validated.suppress_lmb
+                    ),
+                    suppress_rmb=(
+                        validated.right_enabled
+                        and (validated.suppress_rmb or validated.rmb_aux_xtilt)
+                    ),
+                    rmb_aux_xtilt=(
+                        validated.left_enabled
+                        and validated.right_enabled
+                        and validated.rmb_aux_xtilt
+                    ),
                     release_teardown=validated.release_teardown,
                     trace_raw_min=validated.left.raw_min,
                     trace_raw_max=validated.left.raw_max,
@@ -358,10 +450,22 @@ class RuntimeService:
                     right_trace_raw_max=validated.right.raw_max,
                     right_trace_curve=normalize_curve_name(validated.right.curve),
                     right_trace_curve_strength=validated.right.curve_strength,
+                    debug_mode=validated.debug_mode,
                 )
+                debug_setter = getattr(self._emitter, "set_debug_mode", None)
+                if callable(debug_setter):
+                    debug_setter(validated.debug_mode)
 
         self.config_store.save(validated)
         return validated
+
+    def restore_defaults(self, defaults: RuntimeConfig | None = None) -> RuntimeConfig:
+        """Replace persisted runtime settings with the factory configuration."""
+        config = defaults or RuntimeConfig()
+        return self.apply_config(
+            runtime_config_to_dict(config),
+            replace_existing=True,
+        )
 
     def get_config(self) -> RuntimeConfig:
         return self._config
@@ -371,6 +475,36 @@ class RuntimeService:
 
     def set_failure_callback(self, cb: Callable[[str], None] | None) -> None:
         self._failure_callback = cb
+
+    def set_force_stop_callback(self, cb: Callable[[str], None] | None) -> None:
+        self._force_stop_callback = cb
+
+    def _schedule_force_stop(self, reason: str) -> None:
+        """Move a global-hotkey request from the hook thread to asyncio."""
+        loop = self._loop
+        if loop is None:
+            return
+
+        def schedule() -> None:
+            if not self._stream_active or self._force_stop_scheduled:
+                return
+            self._force_stop_scheduled = True
+            asyncio.create_task(self._force_stop(reason))
+
+        loop.call_soon_threadsafe(schedule)
+
+    async def _force_stop(self, reason: str) -> None:
+        try:
+            self.log_bus.warn(
+                f"{reason}; stopping bridge and restoring mouse settings"
+            )
+            if self._stream_active:
+                await self.stop_stream()
+        finally:
+            self._force_stop_scheduled = False
+            callback = self._force_stop_callback
+            if callback is not None:
+                callback(reason)
 
     async def wait_for_raw_sample(self, timeout_s: float = 1.0) -> tuple[int, int]:
         if not self._stream_active or self._raw_sample_queue is None:
@@ -575,15 +709,39 @@ class RuntimeService:
             f"haptics L{restored['haptic_left']}/R{restored['haptic_right']}"
         )
 
+    def _arm_restore_watchdog(self, settings: dict[str, int]) -> None:
+        if not self._crash_restore_enabled:
+            return
+        try:
+            process, state_path = arm_restore_watchdog(
+                config_dir=self.config_store.config_dir,
+                parent_pid=os.getpid(),
+                settings=settings,
+            )
+        except Exception as exc:
+            raise RuntimeError(
+                f"Could not arm mouse-settings crash recovery: {exc}"
+            ) from exc
+        self._restore_watchdog_process = process
+        self._restore_watchdog_state_path = state_path
+        self.log_bus.info("Mouse-settings crash recovery armed")
+
+    def _disarm_restore_watchdog(self) -> None:
+        disarm_restore_watchdog(self._restore_watchdog_state_path)
+        self._restore_watchdog_state_path = None
+        self._restore_watchdog_process = None
+
     def _try_restore_session_device_settings(
         self,
         session: PressureHidppSession,
         settings: dict[str, int],
-    ) -> None:
+    ) -> bool:
         try:
             self._restore_session_device_settings(session, settings)
         except Exception as exc:
             self.log_bus.error(f"Could not restore the original mouse settings: {exc}")
+            return False
+        return True
 
     @property
     def stream_active(self) -> bool:
@@ -600,7 +758,17 @@ class RuntimeService:
                 raise ValidationError("linked must be a boolean")
             merged["linked"] = linked
 
-        for boolean_name in ("suppress_lmb", "suppress_rmb", "release_teardown"):
+        for boolean_name in (
+            "left_enabled",
+            "right_enabled",
+            "suppress_lmb",
+            "suppress_rmb",
+            "rmb_aux_xtilt",
+            "debug_mode",
+            "minimize_to_tray",
+            "release_teardown",
+            "session_device_settings_follow_normal",
+        ):
             if boolean_name in patch:
                 value = patch[boolean_name]
                 if not isinstance(value, bool):
@@ -674,6 +842,17 @@ class RuntimeService:
             pressure_influence=self._config.left.pressure_influence,
             onset_buffer=self._config.left.onset_buffer,
             true_low_latency=self._config.left.true_low_latency,
+            # Synthetic pointer injection is marked and can be filtered from
+            # the hook path, so retain Windows' normal transformed mouse
+            # coordinates there. VMulti promotion is not reliably marked;
+            # its feedback-safe path therefore remains device-scoped Raw Input.
+            allow_raw_direct_motion=(
+                str(self.launch_config.backend).strip().lower() == "vmulti"
+            ),
+            stationary_pressure_updates=(
+                self._config.left.stationary_pressure_updates
+            ),
+            rapid_release_threshold=self._config.left.rapid_release_threshold,
             right_contact_threshold=right_thresholds["contact_threshold"],
             right_release_threshold=right_thresholds["release_threshold"],
             right_min_contact_pressure=round(
@@ -683,9 +862,24 @@ class RuntimeService:
             right_pressure_influence=self._config.right.pressure_influence,
             right_onset_buffer=self._config.right.onset_buffer,
             right_true_low_latency=self._config.right.true_low_latency,
+            right_stationary_pressure_updates=(
+                self._config.right.stationary_pressure_updates
+            ),
+            right_rapid_release_threshold=(
+                self._config.right.rapid_release_threshold
+            ),
             pressure_interp_steps=max(1, int(round(self.launch_config.hz / 60.0))),
-            suppress_lmb=self._config.suppress_lmb,
-            suppress_rmb=self._config.suppress_rmb,
+            suppress_lmb=(self._config.left_enabled and self._config.suppress_lmb),
+            suppress_rmb=(
+                self._config.right_enabled
+                and (self._config.suppress_rmb or self._config.rmb_aux_xtilt)
+            ),
+            rmb_aux_xtilt=(
+                self._config.left_enabled
+                and self._config.right_enabled
+                and self._config.rmb_aux_xtilt
+            ),
+            debug_mode=self._config.debug_mode,
             release_teardown=self._config.release_teardown,
             trace_dir=self.launch_config.trace_dir,
             trace_raw_min=self._config.left.raw_min,
@@ -979,6 +1173,9 @@ class RuntimeService:
                 right_raw=right_raw,
                 publish_telemetry=pressure_changed,
             )
+            startup_ready = self._startup_ready_event
+            if startup_ready is not None and not startup_ready.is_set():
+                startup_ready.set()
             pressure_changed = False
             if stop_after_emit:
                 break
@@ -1025,6 +1222,10 @@ class RuntimeService:
         right_norm = normalize_raw_pressure(right_raw, right_cfg.raw_min, right_cfg.raw_max)
         left_mapped = map_normalized_pressure(left_norm, left_cfg)
         right_mapped = map_normalized_pressure(right_norm, right_cfg)
+        if not self._config.left_enabled:
+            left_mapped = 0
+        if not self._config.right_enabled:
+            right_mapped = 0
 
         if emitter is not None:
             try:

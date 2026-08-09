@@ -1,8 +1,8 @@
 VMulti HID descriptor probe (read-only)
 ====================================================================================================
 DevicePath: \\?\HID#hid&Col03#1&2d595ca7&0&0002#{4d1e55b2-f16f-11cf-88cb-001111000030}
-CreateFileW: success handle=0xA8 access=0x00000000
-HidD_GetPreparsedData: success ppd=0x2CAC5339490
+CreateFileW: success handle=0x22C access=0x00000000
+HidD_GetPreparsedData: success ppd=0x23383E6A720
 HidP_GetCaps: status=0x00110000
 HIDP_CAPS:
   Usage=0x0001
@@ -37,8 +37,8 @@ HidD_FreePreparsedData: success
 CloseHandle: success
 ====================================================================================================
 DevicePath: \\?\HID#hid&Col04#1&2d595ca7&0&0003#{4d1e55b2-f16f-11cf-88cb-001111000030}
-CreateFileW: success handle=0xA8 access=0x00000000
-HidD_GetPreparsedData: success ppd=0x2CAC5339490
+CreateFileW: success handle=0x22C access=0x00000000
+HidD_GetPreparsedData: success ppd=0x23383E6A720
 HidP_GetCaps: status=0x00110000
 HIDP_CAPS:
   Usage=0x0001

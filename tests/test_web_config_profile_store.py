@@ -18,31 +18,65 @@ from superstrike_pressure.web.profile_store import ProfileStore  # noqa: E402
 def _sample_runtime_config() -> RuntimeConfig:
     return RuntimeConfig(
         linked=False,
+        left_enabled=False,
+        right_enabled=True,
         suppress_lmb=True,
         suppress_rmb=True,
+        rmb_aux_xtilt=True,
+        debug_mode=False,
+        minimize_to_tray=False,
         release_teardown=True,
         session_dpi=1600,
         session_haptic_left=0,
         session_haptic_right=3,
-        left=ChannelConfig(raw_min=82, raw_max=180, curve="soft", contact_preset="light"),
-        right=ChannelConfig(raw_min=84, raw_max=190, curve="hard", contact_preset="firm"),
+        session_device_settings_follow_normal=False,
+        left=ChannelConfig(
+            raw_min=82,
+            raw_max=180,
+            curve="soft",
+            contact_preset="light",
+            stationary_pressure_updates=True,
+            rapid_release_threshold=8,
+        ),
+        right=ChannelConfig(
+            raw_min=84,
+            raw_max=190,
+            curve="hard",
+            contact_preset="firm",
+        ),
         app_profiles={"krita.exe": "krita"},
     )
 
 
 class ConfigStoreTests(unittest.TestCase):
+    def test_default_profile_enables_only_left_pressure(self) -> None:
+        defaults = RuntimeConfig()
+
+        self.assertTrue(defaults.left_enabled)
+        self.assertFalse(defaults.right_enabled)
+
     def test_load_returns_defaults_when_file_missing(self) -> None:
         with tempfile.TemporaryDirectory() as td:
             store = ConfigStore(td)
             loaded = store.load()
             self.assertEqual(loaded.schema_version, 1)
-            self.assertTrue(loaded.linked)
-            self.assertEqual(loaded.left.raw_min, 320)
-            self.assertEqual(loaded.right.raw_max, 740)
-            self.assertEqual(loaded.left.pressure_floor, 12)
+            self.assertFalse(loaded.linked)
+            self.assertTrue(loaded.left_enabled)
+            self.assertFalse(loaded.right_enabled)
+            self.assertEqual(loaded.left.raw_min, 350)
+            self.assertEqual(loaded.right.raw_max, 680)
+            self.assertEqual(loaded.left.pressure_floor, 25)
             self.assertEqual(loaded.left.path_stabilization, 0)
-            self.assertEqual(loaded.left.pressure_influence, 85)
+            self.assertEqual(loaded.left.pressure_influence, 100)
             self.assertFalse(loaded.left.onset_buffer)
+            self.assertFalse(loaded.left.stationary_pressure_updates)
+            self.assertEqual(loaded.left.rapid_release_threshold, 2)
+            self.assertEqual(loaded.left.curve, "soft")
+            self.assertEqual(loaded.left.curve_strength, 3.0)
+            self.assertEqual(loaded.right.curve_strength, 3.1)
+            self.assertFalse(loaded.debug_mode)
+            self.assertTrue(loaded.minimize_to_tray)
+            self.assertTrue(loaded.session_device_settings_follow_normal)
 
     def test_load_migrates_legacy_byte_calibration_to_adc_codes(self) -> None:
         with tempfile.TemporaryDirectory() as td:
@@ -71,14 +105,23 @@ class ConfigStoreTests(unittest.TestCase):
             store.save(config)
             loaded = store.load()
             self.assertEqual(loaded.linked, config.linked)
+            self.assertFalse(loaded.left_enabled)
+            self.assertTrue(loaded.right_enabled)
             self.assertTrue(loaded.suppress_lmb)
             self.assertTrue(loaded.suppress_rmb)
+            self.assertTrue(loaded.rmb_aux_xtilt)
+            self.assertFalse(loaded.debug_mode)
+            self.assertFalse(loaded.minimize_to_tray)
             self.assertTrue(loaded.release_teardown)
             self.assertEqual(loaded.session_dpi, 1600)
             self.assertEqual(loaded.session_haptic_left, 0)
             self.assertEqual(loaded.session_haptic_right, 3)
+            self.assertFalse(loaded.session_device_settings_follow_normal)
             self.assertEqual(loaded.left.curve, "soft")
             self.assertEqual(loaded.right.curve, "hard")
+            self.assertTrue(loaded.left.stationary_pressure_updates)
+            self.assertEqual(loaded.left.rapid_release_threshold, 8)
+            self.assertFalse(loaded.right.stationary_pressure_updates)
             self.assertEqual(loaded.app_profiles["krita.exe"], "krita")
 
     def test_load_rejects_schema_mismatch(self) -> None:
@@ -103,11 +146,19 @@ class ConfigStoreTests(unittest.TestCase):
 
             loaded = store.load()
 
-            self.assertFalse(loaded.suppress_lmb)
+            self.assertTrue(loaded.suppress_lmb)
+            self.assertTrue(loaded.left_enabled)
+            self.assertFalse(loaded.right_enabled)
+            self.assertFalse(loaded.rmb_aux_xtilt)
+            self.assertFalse(loaded.debug_mode)
+            self.assertTrue(loaded.minimize_to_tray)
             self.assertFalse(loaded.release_teardown)
             self.assertEqual(loaded.session_dpi, 800)
-            self.assertEqual(loaded.session_haptic_left, 5)
-            self.assertEqual(loaded.session_haptic_right, 5)
+            self.assertEqual(loaded.session_haptic_left, 3)
+            self.assertEqual(loaded.session_haptic_right, 3)
+            self.assertTrue(loaded.session_device_settings_follow_normal)
+            self.assertFalse(loaded.left.stationary_pressure_updates)
+            self.assertFalse(loaded.right.stationary_pressure_updates)
 
     def test_resolve_config_dir_prefers_env(self) -> None:
         with tempfile.TemporaryDirectory() as td:

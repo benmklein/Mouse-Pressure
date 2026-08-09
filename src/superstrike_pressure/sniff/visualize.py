@@ -20,7 +20,6 @@ def run_visualize() -> None:
     try:
         from matplotlib.animation import FuncAnimation
         import matplotlib.pyplot as plt
-        import numpy as np
     except ImportError:
         print("matplotlib is not installed.")
         print("Install optional dev dependencies: uv sync --extra dev")
@@ -94,9 +93,9 @@ def run_visualize() -> None:
         family="monospace",
     )
 
-    curve_x = np.linspace(0.0, 1.0, 256)
-    left_curve_y = np.array([map_normalized_pressure(float(x), left_cfg) for x in curve_x], dtype=float)
-    right_curve_y = np.array([map_normalized_pressure(float(x), right_cfg) for x in curve_x], dtype=float)
+    curve_x = [index / 255.0 for index in range(256)]
+    left_curve_y = [map_normalized_pressure(x, left_cfg) for x in curve_x]
+    right_curve_y = [map_normalized_pressure(x, right_cfg) for x in curve_x]
     ax_curve.plot(curve_x, left_curve_y, color="#D32F2F", linewidth=2.0, label="Left curve")
     ax_curve.plot(curve_x, right_curve_y, color="#7B1FA2", linewidth=1.6, linestyle="--", label="Right curve")
     (left_curve_point,) = ax_curve.plot([0.0], [0.0], marker="o", color="#D32F2F", markersize=7)

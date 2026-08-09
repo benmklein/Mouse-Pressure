@@ -1,22 +1,39 @@
 # Superstrike Pressure Bridge
 
+[![Windows build](https://github.com/benmklein/analog_mouse_pressure/actions/workflows/windows-build.yml/badge.svg)](https://github.com/benmklein/analog_mouse_pressure/actions/workflows/windows-build.yml)
+[![Windows 10/11](https://img.shields.io/badge/Windows-10%20%7C%2011-0078D4?logo=windows11&logoColor=white)](https://www.microsoft.com/windows/)
+[![Krita 5.3.3](https://img.shields.io/badge/Krita-5.3.3-3BABFF?logo=krita&logoColor=white)](https://krita.org/)
+[![Python 3.12+](https://img.shields.io/badge/Python-3.12%2B-3776AB?logo=python&logoColor=white)](https://www.python.org/)
+[![License: MIT](https://img.shields.io/badge/License-MIT-35C46A.svg)](LICENSE)
+
 Use the Logitech G Pro X2 Superstrike's analog HITS button as pressure input
 for painting in Krita. The bridge reads the mouse's HID++ pressure stream and
 injects Windows synthetic-pen events at the current cursor position.
 
 ## Current scope
 
-The barebones release target is intentionally small:
+The first Windows release target is intentionally small:
 
 - Windows 10 or 11
 - Logitech G Pro X2 Superstrike
 - automatic wired USB or wireless Lightspeed transport detection
 - independent left- and right-button pressure mapped to Windows Ink pen pressure
-- a command-line interface with adjustable calibration and pressure curves
+- a desktop interface with adjustable calibration and pressure curves
 - Krita as the primary tested drawing application
 
-The WebSocket backend and desktop UI are experimental and are not required for
-the first usable release.
+The standalone application and unified installer are now being prepared for an
+alpha release. The installer includes the Krita 5.3.3 tool and detects an
+existing compatible VMulti device, but deliberately does not redistribute the
+third-party tablet driver currently present on the development machine. The
+driverless synthetic Windows Ink backend remains the fallback.
+
+## Release build
+
+The repository now contains a reproducible PyInstaller one-folder build, a
+Windows installer definition, and a GitHub Actions packaging workflow. See
+[`docs/releasing.md`](docs/releasing.md) for local build commands, supported
+Krita versions, signing requirements, Windows 11 validation, and the driver
+release gate.
 
 The bridge scans compatible HID++ command interfaces each time it starts. HID
 paths and serial numbers are not stored or hardcoded, so another Superstrike
@@ -98,51 +115,93 @@ The panel can start and stop the bridge and persist the mouse and pressure
 settings. DPI and left/right haptics live in a global **Mouse hardware** table,
 with the detected **Mapping off** restoration values beside the editable
 **Mapping on** session values. The **Left button** and **Right button** settings
-tabs keep separate calibration, curve, contact, path, pressure, and native-click
+tabs keep separate raw range, curve, contact, path, pressure, and native-click
 suppression values. Either button can drive the Windows Ink pen using its own
 pressure map.
 The default **Sensitivity mapping** output tab follows the selected settings tab
-and marks that button's current click pressure live; **Terminal output** keeps
-the full runtime log separately. Less frequently changed pressure, path,
-injection, and teardown controls are collapsed under **Advanced settings**. The pressure
+and marks that button's current click pressure live. The second **Stroke
+analysis** tab lists recent Debug-mode traces and graphs raw ADC, mapped,
+interpolated, and injected pressure over time plus injected pressure over path
+distance. **Terminal output** is the third tab and keeps the full runtime log
+separately. Less frequently changed pressure, path,
+injection controls are collapsed under **Advanced settings**. The pressure
 floor prevents a fast release from stretching very low pressure into a long
 hairline; zero still produces a normal pen-up taper. Stop the bridge before
 changing settings that affect the Windows input hook.
 
 Curve strength and left/right haptics use sliders. A haptic level of 0 disables
-that button's click haptics. Before **Start** is available, the panel detects the
+that button's click haptics. The button is always named **Start** or **Stop**;
+`Ctrl+F12` starts mapping and `Ctrl+Shift+F12` stops it globally. Before Start is
+enabled, the panel detects the
 mouse's current DPI and haptic levels for the **Mapping off** column. Values in
-the **Mapping on** column are saved and applied only for the active bridge
-session; **Stop**, normal window shutdown, and automatic failure cleanup restore
+the **Mapping on** column initially follow those detected values. Editing any
+Mapping-on hardware value turns the profile into an explicit override. Mapping-on
+values are applied only for the active bridge session; **Stop**, normal window
+shutdown, and automatic failure cleanup restore
 the settings detected immediately before startup. The single settings button
 saves all settings while stopped and applies the editable mouse hardware values
-while running; controls that cannot safely change live remain disabled. Enabling
-**Buffer first pressure sample** shows its roughly 16 ms latency cost. Path
-stabilization is causal and adds no timed buffer; its warning reports the
-maximum spatial trailing distance instead.
+while running; controls that cannot safely change live remain disabled. Path
+stabilization is causal and adds no timed buffer; its warning reports the maximum
+spatial trailing distance instead.
+
+When temporary DPI or haptic values differ from the Mapping-off snapshot, an
+independent recovery watchdog is armed before the device is changed. If the UI
+or bridge process crashes without reaching normal Stop cleanup, the watchdog
+reopens the mouse after the process exits and restores DPI, both haptic levels,
+and the original onboard-profile state.
+
+**Contact feel** changes only the mapped-pressure thresholds that begin and end
+pen contact: Light uses 6/4, Medium 10/6, and Firm 18/12 out of 1023. It does not
+change the pressure curve once contact is active.
+
+**Rapid release threshold** is disabled at 0%. Small values such as 1–2% can
+help when thin tails are an issue.
 
 The two optional **Ink stabilization** controls are independent. **Path
 stabilization** now defaults to 0%: direct mode forwards captured hardware
 coordinates without curve fitting or synthetic point expansion so Krita's
 Dynamic Brush or Freehand smoothing can own the geometry with lower latency.
 Values above 0% enable the experimental causal path filter. **Pressure
-influence** defaults to 85% and gently compresses real pressure around
-mid-pressure, making width changes less extreme while preserving real pen-up;
-set it to 100% for unmodified sensor expression.
+influence** defaults to 100% for unmodified sensor expression.
 
-**Buffer first pressure sample** is disabled by default for low-latency Krita
-Dynamic Brush use. Immediate contact is protected from a hairline start by the
-configured pressure floor. Enable the checkbox only when a brush still produces
-an objectionable thin lead-in; it deliberately adds roughly one 60-Hz pressure
-frame (about 16 ms) before pen-down.
+The global **Pressure buttons** section independently enables left and right
+pressure mapping. When both are enabled, **Use the same settings for both**
+mirrors the left pressure settings onto the right channel and disables the
+redundant Right button settings tab until the channels are unlinked.
 
-Use **Calibrate raw range (15 sec)** instead of guessing the raw endpoints. A
-large highlighted banner stays above the settings and terminal while the
-panel gives a three-second countdown before sampling a fully released button,
-a light press, and a firm comfortable press. It rejects an unusably small range,
-then saves the robust observed range.
-The resulting maximum is your useful drawing maximum, not a claim about the
-ADC's absolute electrical limit.
+The Right button's **Advanced settings** include **use right pressure as X-Tilt
+modifier** for both VMulti and synthetic output. The verified VMulti pen report
+includes signed X/Y Tilt fields, so right pressure can be carried in the same
+virtual-HID packet as left pressure. **Show advanced backend settings** appears
+only for synthetic output and contains experimental release teardown, because
+VMulti does not use the Windows synthetic-pointer teardown sequence. When
+X-Tilt is enabled, only the left button starts a
+pen stroke: left pressure remains Windows Ink pressure, while the independently
+mapped right pressure is sent in the same pen packet as 0–60 degrees of positive
+X-Tilt. Native right click is suppressed automatically while the bridge is
+active. To try color control in Krita, open the Brush Editor (`F5`) for a Pixel
+Brush preset, enable **Hue, Saturation, Value**, select one of those properties,
+and choose **X-Tilt** as its sensor. The sensor curve determines how right-button
+pressure changes that property. Right calibration, deadzone, and pressure curve
+shape the modifier; pressure floor and pressure influence remain specific to
+independent pressure strokes. This mode is off by default, and disabling it
+restores the independent right-pressure stroke workflow.
+
+The global **Debug mode** toggle appears in Advanced settings and defaults to
+on for the current development phase. It records the detailed per-stroke JSON
+files under `work/stroke_traces` and prints verbose `RAW`, `CONTACT`, `RELEASE`,
+and motion-diagnostic messages used by the analyzer. Turning it off bypasses the
+trace recorder entirely while preserving startup, safety, recovery, error, and
+cleanup logging, which makes it useful for comparing input latency without the
+diagnostic overhead.
+
+## Krita raster ink experiment
+
+`integrations/krita/superstrike_raster_ink` contains the first-stage source for
+a native Krita raster tool. It keeps the live path unfiltered by default for
+Freehand-like latency, then cancels the temporary stroke on release and replays
+a corner-aware refined centerline through the active Krita brush. See
+`docs/krita_raster_ink.md` for the staged build, install, and validation plan.
 
 The pressure channel itself reports at roughly 60 Hz. Pen injection defaults
 to 240 Hz and resamples cursor position between pressure reports so short, fast

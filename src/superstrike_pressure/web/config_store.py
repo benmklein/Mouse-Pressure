@@ -48,12 +48,12 @@ def _normalize_app_profiles(raw: Any) -> dict[str, str]:
     return out
 
 
-def _channel_from_dict(raw: Any) -> ChannelConfig:
+def _channel_from_dict(raw: Any, defaults: ChannelConfig) -> ChannelConfig:
     if not isinstance(raw, dict):
         raise ValidationError("channel config must be an object")
 
-    raw_min = int(raw.get("raw_min", ChannelConfig.raw_min))
-    raw_max = int(raw.get("raw_max", ChannelConfig.raw_max))
+    raw_min = int(raw.get("raw_min", defaults.raw_min))
+    raw_max = int(raw.get("raw_max", defaults.raw_max))
     # Version-1 configs originally stored only the high byte of each ADC word.
     # A real Superstrike rest value is above 255 in the decoded 10-bit space,
     # so a pair wholly in the byte range can be upgraded without ambiguity.
@@ -64,21 +64,31 @@ def _channel_from_dict(raw: Any) -> ChannelConfig:
     channel = ChannelConfig(
         raw_min=raw_min,
         raw_max=raw_max,
-        deadzone_low=int(raw.get("deadzone_low", ChannelConfig.deadzone_low)),
-        deadzone_high=int(raw.get("deadzone_high", ChannelConfig.deadzone_high)),
-        curve=str(raw.get("curve", ChannelConfig.curve)),
-        curve_strength=float(raw.get("curve_strength", ChannelConfig.curve_strength)),
-        contact_preset=str(raw.get("contact_preset", ChannelConfig.contact_preset)),
-        pressure_floor=int(raw.get("pressure_floor", ChannelConfig.pressure_floor)),
+        deadzone_low=int(raw.get("deadzone_low", defaults.deadzone_low)),
+        deadzone_high=int(raw.get("deadzone_high", defaults.deadzone_high)),
+        curve=str(raw.get("curve", defaults.curve)),
+        curve_strength=float(raw.get("curve_strength", defaults.curve_strength)),
+        contact_preset=str(raw.get("contact_preset", defaults.contact_preset)),
+        pressure_floor=int(raw.get("pressure_floor", defaults.pressure_floor)),
         path_stabilization=int(
-            raw.get("path_stabilization", ChannelConfig.path_stabilization)
+            raw.get("path_stabilization", defaults.path_stabilization)
         ),
         pressure_influence=int(
-            raw.get("pressure_influence", ChannelConfig.pressure_influence)
+            raw.get("pressure_influence", defaults.pressure_influence)
         ),
-        onset_buffer=raw.get("onset_buffer", ChannelConfig.onset_buffer),
+        onset_buffer=raw.get("onset_buffer", defaults.onset_buffer),
         true_low_latency=raw.get(
-            "true_low_latency", ChannelConfig.true_low_latency
+            "true_low_latency", defaults.true_low_latency
+        ),
+        stationary_pressure_updates=raw.get(
+            "stationary_pressure_updates",
+            defaults.stationary_pressure_updates,
+        ),
+        rapid_release_threshold=int(
+            raw.get(
+                "rapid_release_threshold",
+                defaults.rapid_release_threshold,
+            )
         ),
     )
     errors = validate_channel_config(asdict(channel))
@@ -97,19 +107,41 @@ def runtime_config_from_dict(raw: Any) -> RuntimeConfig:
             f"Unsupported schema_version: {schema_version!r}; expected {SCHEMA_VERSION}"
         )
 
-    linked = raw.get("linked", True)
+    linked = raw.get("linked", RuntimeConfig.linked)
     if not isinstance(linked, bool):
         raise ValidationError("linked must be a boolean")
 
-    suppress_lmb = raw.get("suppress_lmb", False)
+    left_enabled = raw.get("left_enabled", RuntimeConfig.left_enabled)
+    if not isinstance(left_enabled, bool):
+        raise ValidationError("left_enabled must be a boolean")
+
+    right_enabled = raw.get("right_enabled", RuntimeConfig.right_enabled)
+    if not isinstance(right_enabled, bool):
+        raise ValidationError("right_enabled must be a boolean")
+
+    suppress_lmb = raw.get("suppress_lmb", RuntimeConfig.suppress_lmb)
     if not isinstance(suppress_lmb, bool):
         raise ValidationError("suppress_lmb must be a boolean")
 
-    suppress_rmb = raw.get("suppress_rmb", False)
+    suppress_rmb = raw.get("suppress_rmb", RuntimeConfig.suppress_rmb)
     if not isinstance(suppress_rmb, bool):
         raise ValidationError("suppress_rmb must be a boolean")
 
-    release_teardown = raw.get("release_teardown", False)
+    rmb_aux_xtilt = raw.get("rmb_aux_xtilt", RuntimeConfig.rmb_aux_xtilt)
+    if not isinstance(rmb_aux_xtilt, bool):
+        raise ValidationError("rmb_aux_xtilt must be a boolean")
+
+    debug_mode = raw.get("debug_mode", RuntimeConfig.debug_mode)
+    if not isinstance(debug_mode, bool):
+        raise ValidationError("debug_mode must be a boolean")
+
+    minimize_to_tray = raw.get(
+        "minimize_to_tray", RuntimeConfig.minimize_to_tray
+    )
+    if not isinstance(minimize_to_tray, bool):
+        raise ValidationError("minimize_to_tray must be a boolean")
+
+    release_teardown = raw.get("release_teardown", RuntimeConfig.release_teardown)
     if not isinstance(release_teardown, bool):
         raise ValidationError("release_teardown must be a boolean")
 
@@ -125,17 +157,32 @@ def runtime_config_from_dict(raw: Any) -> RuntimeConfig:
     if not 0 <= session_haptic_left <= 5 or not 0 <= session_haptic_right <= 5:
         raise ValidationError("session haptic levels must be in 0..5")
 
+    follow_normal = raw.get(
+        "session_device_settings_follow_normal",
+        RuntimeConfig.session_device_settings_follow_normal,
+    )
+    if not isinstance(follow_normal, bool):
+        raise ValidationError("session_device_settings_follow_normal must be a boolean")
+
+    defaults = RuntimeConfig()
+
     return RuntimeConfig(
         schema_version=SCHEMA_VERSION,
         linked=linked,
+        left_enabled=left_enabled,
+        right_enabled=right_enabled,
         suppress_lmb=suppress_lmb,
         suppress_rmb=suppress_rmb,
+        rmb_aux_xtilt=rmb_aux_xtilt,
+        debug_mode=debug_mode,
+        minimize_to_tray=minimize_to_tray,
         release_teardown=release_teardown,
         session_dpi=session_dpi,
         session_haptic_left=session_haptic_left,
         session_haptic_right=session_haptic_right,
-        left=_channel_from_dict(raw.get("left", {})),
-        right=_channel_from_dict(raw.get("right", {})),
+        session_device_settings_follow_normal=follow_normal,
+        left=_channel_from_dict(raw.get("left", {}), defaults.left),
+        right=_channel_from_dict(raw.get("right", {}), defaults.right),
         app_profiles=_normalize_app_profiles(raw.get("app_profiles")),
     )
 
@@ -145,12 +192,20 @@ def runtime_config_to_dict(config: RuntimeConfig) -> dict[str, Any]:
     return {
         "schema_version": config.schema_version,
         "linked": config.linked,
+        "left_enabled": config.left_enabled,
+        "right_enabled": config.right_enabled,
         "suppress_lmb": config.suppress_lmb,
         "suppress_rmb": config.suppress_rmb,
+        "rmb_aux_xtilt": config.rmb_aux_xtilt,
+        "debug_mode": config.debug_mode,
+        "minimize_to_tray": config.minimize_to_tray,
         "release_teardown": config.release_teardown,
         "session_dpi": config.session_dpi,
         "session_haptic_left": config.session_haptic_left,
         "session_haptic_right": config.session_haptic_right,
+        "session_device_settings_follow_normal": (
+            config.session_device_settings_follow_normal
+        ),
         "left": asdict(config.left),
         "right": asdict(config.right),
         "app_profiles": dict(config.app_profiles),

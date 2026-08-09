@@ -173,6 +173,23 @@ class _FakeEmitter:
         self.raw_updates.append((left_raw, right_raw))
 
 
+class _DeferredArmEmitter(_FakeEmitter):
+    def __init__(self, config, log) -> None:
+        super().__init__(config, log)
+        self.startup_events: list[str] = []
+
+    def open_unarmed(self) -> None:
+        self.open_calls += 1
+        self.startup_events.append("pen_open")
+
+    def arm_input(self) -> None:
+        self.startup_events.append("input_armed")
+
+    def update(self, *args, **kwargs) -> None:
+        self.startup_events.append("pressure_update")
+        super().update(*args, **kwargs)
+
+
 class RuntimeServiceTests(unittest.IsolatedAsyncioTestCase):
     def _service(self, session: _FakeSession):
         config = RuntimeConfig(
@@ -242,6 +259,66 @@ class RuntimeServiceTests(unittest.IsolatedAsyncioTestCase):
         await service.stop_stream()
         self.assertEqual(session.close_calls, 3)
 
+    def test_coordinate_policy_is_backend_specific(self) -> None:
+        service, _, _ = self._service(_FakeSession([]))
+
+        service.launch_config.backend = "synthetic"
+        self.assertFalse(
+            service._emitter_config_from_runtime().allow_raw_direct_motion  # noqa: SLF001
+        )
+
+        service.launch_config.backend = "vmulti"
+        self.assertTrue(
+            service._emitter_config_from_runtime().allow_raw_direct_motion  # noqa: SLF001
+        )
+
+    def test_restore_defaults_replaces_saved_configuration(self) -> None:
+        service, store, _ = self._service(_FakeSession([]))
+        service.apply_config(
+            {
+                "linked": True,
+                "debug_mode": True,
+                "minimize_to_tray": False,
+                "app_profiles": {"krita.exe": "custom"},
+            }
+        )
+        defaults = RuntimeConfig(
+            session_dpi=1200,
+            session_haptic_left=4,
+            session_haptic_right=4,
+        )
+
+        restored = service.restore_defaults(defaults)
+
+        self.assertFalse(restored.linked)
+        self.assertFalse(restored.debug_mode)
+        self.assertTrue(restored.minimize_to_tray)
+        self.assertEqual(restored.session_dpi, 1200)
+        self.assertEqual(restored.app_profiles, {})
+        self.assertEqual(store.current, restored)
+
+    async def test_start_primes_pressure_before_arming_button_suppression(self) -> None:
+        base = time.perf_counter()
+        session = _FakeSession([(base, _frame(100, 100))])
+        service, _, holder = self._service(session)
+
+        def make_deferred_emitter(cfg, log):
+            emitter = _DeferredArmEmitter(cfg, log)
+            holder["emitter"] = emitter
+            return emitter
+
+        service._emitter_factory = make_deferred_emitter
+
+        await service.start_stream()
+
+        emitter = holder["emitter"]
+        self.assertEqual(
+            emitter.startup_events[:3],
+            ["pen_open", "pressure_update", "input_armed"],
+        )
+        self.assertIsNotNone(service._latest_emission_sample)
+        await service.stop_stream()
+
     async def test_apply_config_updates_emitter_thresholds_without_restart(self) -> None:
         base = time.perf_counter()
         session = _FakeSession([(base + 0.01, _frame(100, 100)), (base + 0.02, _frame(110, 112))])
@@ -259,6 +336,7 @@ class RuntimeServiceTests(unittest.IsolatedAsyncioTestCase):
                     "deadzone_high": 15,
                     "contact_preset": "firm",
                     "pressure_floor": 18,
+                    "rapid_release_threshold": 7,
                 },
             }
         )
@@ -270,6 +348,7 @@ class RuntimeServiceTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(holder["emitter"].config.contact_threshold, 18)
         self.assertEqual(holder["emitter"].config.release_threshold, 12)
         self.assertEqual(holder["emitter"].config.min_contact_pressure, 184)
+        self.assertEqual(holder["emitter"].config.rapid_release_threshold, 7)
         self.assertEqual(holder["emitter"].config.right_contact_threshold, 18)
         self.assertTrue(holder["emitter"].config.release_teardown)
         self.assertEqual(session.open_calls, 1)
@@ -311,6 +390,8 @@ class RuntimeServiceTests(unittest.IsolatedAsyncioTestCase):
                     "path_stabilization": 40,
                     "pressure_influence": 70,
                     "onset_buffer": True,
+                    "stationary_pressure_updates": True,
+                    "rapid_release_threshold": 9,
                 },
             }
         )
@@ -324,6 +405,67 @@ class RuntimeServiceTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(emitter_config.right_path_stabilization, 40)
         self.assertEqual(emitter_config.right_pressure_influence, 70)
         self.assertTrue(emitter_config.right_onset_buffer)
+        self.assertTrue(emitter_config.right_stationary_pressure_updates)
+        self.assertEqual(emitter_config.right_rapid_release_threshold, 9)
+
+        await service.stop_stream()
+
+    async def test_auxiliary_right_pressure_mode_is_applied_on_next_start(self) -> None:
+        session = _FakeSession([])
+        service, store, holder = self._service(session)
+
+        updated = service.apply_config(
+            {
+                "left_enabled": True,
+                "right_enabled": True,
+                "rmb_aux_xtilt": True,
+            }
+        )
+        await service.start_stream()
+
+        self.assertTrue(updated.rmb_aux_xtilt)
+        self.assertTrue(store.current.rmb_aux_xtilt)
+        self.assertTrue(holder["emitter"].config.rmb_aux_xtilt)
+        self.assertTrue(holder["emitter"].config.suppress_rmb)
+
+        await service.stop_stream()
+
+    async def test_disabled_pressure_channel_emits_zero_and_does_not_suppress(self) -> None:
+        base = time.perf_counter()
+        session = _FakeSession([(base + 0.01, _frame(600, 620))])
+        service, store, holder = self._service(session)
+        service.apply_config(
+            {
+                "left_enabled": False,
+                "right_enabled": True,
+                "suppress_lmb": True,
+                "suppress_rmb": True,
+            }
+        )
+
+        await service.start_stream()
+        await asyncio.sleep(0.03)
+
+        self.assertFalse(store.current.left_enabled)
+        self.assertTrue(store.current.right_enabled)
+        self.assertFalse(holder["emitter"].config.suppress_lmb)
+        self.assertTrue(holder["emitter"].config.suppress_rmb)
+        self.assertTrue(holder["emitter"].updates)
+        self.assertEqual(holder["emitter"].updates[-1][0], 0)
+        self.assertGreater(holder["emitter"].updates[-1][1], 0)
+
+        await service.stop_stream()
+
+    async def test_debug_mode_is_applied_on_next_start(self) -> None:
+        session = _FakeSession([])
+        service, store, holder = self._service(session)
+
+        updated = service.apply_config({"debug_mode": False})
+        await service.start_stream()
+
+        self.assertFalse(updated.debug_mode)
+        self.assertFalse(store.current.debug_mode)
+        self.assertFalse(holder["emitter"].config.debug_mode)
 
         await service.stop_stream()
 

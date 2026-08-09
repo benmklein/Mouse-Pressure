@@ -170,3 +170,26 @@ def test_analyzer_reports_raw_saturation_latency_and_adaptive_budget() -> None:
     assert result["path_budget_median"] == 8.0
     assert float(result["raw_at_or_above_configured_max_pct"]) > 80.0
     assert str(result["diagnosis"]).startswith("RAW_RANGE_SATURATION")
+
+
+def test_analyzer_excludes_closed_stationary_dabs_from_path_geometry() -> None:
+    analyzer = _load_analyzer()
+    events = [
+        {
+            "kind": "inject",
+            "t_ms": float(index),
+            "x": x,
+            "y": 0,
+            "pressure": 400,
+            "flags": 0x00000004,
+            "ok": True,
+        }
+        for index, x in enumerate((0, 1, 0, 10))
+    ]
+
+    result = analyzer.analyze({"events": events})
+
+    assert result["stationary_dab_points"] == 2
+    assert result["stationary_pressure_updates"] == 1
+    assert result["path_px"] == 10.0
+    assert result["direction_reversals"] == 0

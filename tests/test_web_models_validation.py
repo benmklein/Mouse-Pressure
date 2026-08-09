@@ -53,11 +53,13 @@ class ValidationModelTests(unittest.TestCase):
         ch = _valid_channel()
         ch["path_stabilization"] = 101
         ch["pressure_influence"] = -1
+        ch["rapid_release_threshold"] = 31
 
         errors = validate_channel_config(ch)
 
         self.assertTrue(any("path_stabilization" in error for error in errors))
         self.assertTrue(any("pressure_influence" in error for error in errors))
+        self.assertTrue(any("rapid_release_threshold" in error for error in errors))
 
     def test_onset_buffer_requires_boolean(self) -> None:
         ch = _valid_channel()

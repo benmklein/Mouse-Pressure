@@ -42,14 +42,22 @@ VMULTI_ALT_COL05_PATH = (
 
 VMULTI_REPORT_ID_PEN = 0x05
 VMULTI_REPORT_ID_CONTROL = 0x40
-VMULTI_STATUS_TIP = 0x02
-VMULTI_STATUS_IN_RANGE = 0x01
+# A live GetPointerPenInfo probe confirms the packed status order used by this
+# driver: Tip, Barrel, Eraser, Invert, In Range.  Contact is 0x11.  The old
+# 0x03 value asserted Tip+Barrel (Krita's popup palette), while swapping these
+# two constants made hover assert Tip and left the pen permanently down.
+VMULTI_STATUS_TIP = 0x01
+VMULTI_STATUS_IN_RANGE = 0x10
 VMULTI_COORD_MAX = 0x7FFF
 VMULTI_PRESSURE_MAX = 0x1FFF
 
 VK_LBUTTON = 0x01
 SM_CXSCREEN = 0
 SM_CYSCREEN = 1
+SM_XVIRTUALSCREEN = 76
+SM_YVIRTUALSCREEN = 77
+SM_CXVIRTUALSCREEN = 78
+SM_CYVIRTUALSCREEN = 79
 
 FILE_SHARE_READ = 0x00000001
 FILE_SHARE_WRITE = 0x00000002
@@ -60,8 +68,6 @@ INVALID_HANDLE_VALUE = ctypes.c_void_p(-1).value
 
 WriteMode = Literal["auto", "write", "write_prefixed", "feature", "feature_prefixed", "writefile"]
 ReportFormat = Literal["format_a", "format_b", "report06"]
-Backend = Literal["vmulti", "synthetic"]
-
 # Synthetic pointer constants (Win32).
 PT_PEN = 3
 POINTER_FEEDBACK_DEFAULT = 1
@@ -181,6 +187,15 @@ def get_screen_size() -> tuple[int, int]:
     w = int(_user32().GetSystemMetrics(SM_CXSCREEN))
     h = int(_user32().GetSystemMetrics(SM_CYSCREEN))
     return max(1, w), max(1, h)
+
+
+def get_virtual_screen_rect() -> tuple[int, int, int, int]:
+    """Return the full Windows desktop, including secondary monitors."""
+    left = int(_user32().GetSystemMetrics(SM_XVIRTUALSCREEN))
+    top = int(_user32().GetSystemMetrics(SM_YVIRTUALSCREEN))
+    width = max(1, int(_user32().GetSystemMetrics(SM_CXVIRTUALSCREEN)))
+    height = max(1, int(_user32().GetSystemMetrics(SM_CYVIRTUALSCREEN)))
+    return left, top, width, height
 
 
 def is_left_button_down() -> bool:
@@ -308,14 +323,15 @@ class VMultiPenEmitter:
 
     Inner pen payload (9 bytes total):
       [0]  Report ID (0x05)
-      [1]  Status (0x01 hover, 0x03 contact)
+      [1]  Status
       [2]  X lo
       [3]  X hi
       [4]  Y lo
       [5]  Y hi
       [6]  Pressure lo
       [7]  Pressure hi
-      [8]  Padding/extra (set 0)
+      [8]  X-Tilt (signed 8-bit)
+      [9]  Y-Tilt (signed 8-bit, full report formats)
 
     Wrapped control report:
       [0]  0x40 (REPORTID_CONTROL)
@@ -329,14 +345,18 @@ class VMultiPenEmitter:
         device_path: str | None,
         write_mode: WriteMode,
         log: Callable[[str], None],
+        log_writes: bool = True,
     ) -> None:
         self.requested_path = device_path
         self.write_mode_requested = write_mode
         self.write_mode_effective: WriteMode | None = None
         self.log = log
+        self.log_writes = bool(log_writes)
         self.dev: hid.device | None = None
         self.file_handle: int | None = None
         self.path: bytes | None = None
+        self.screen_left = 0
+        self.screen_top = 0
         self.screen_w = 1
         self.screen_h = 1
 
@@ -385,12 +405,18 @@ class VMultiPenEmitter:
         else:
             self.file_handle = handle
             self.log(f"VMULTI CreateFileW(handle for writefile)=0x{handle:X}")
-        self.screen_w, self.screen_h = get_screen_size()
+        (
+            self.screen_left,
+            self.screen_top,
+            self.screen_w,
+            self.screen_h,
+        ) = get_virtual_screen_rect()
         self.log(f"VMULTI open path={to_text(self.path)!r}")
         self.log(
             f"VMULTI config control_report=0x{VMULTI_REPORT_ID_CONTROL:02X} "
             f"inner_report=0x{VMULTI_REPORT_ID_PEN:02X} "
-            f"screen={self.screen_w}x{self.screen_h}"
+            f"desktop=({self.screen_left},{self.screen_top})+"
+            f"{self.screen_w}x{self.screen_h}"
         )
 
     def close(self) -> None:
@@ -417,10 +443,14 @@ class VMultiPenEmitter:
         pressure: int,
         pressure_max: int,
         include_extra_byte9: bool,
+        tilt_x: int = 0,
+        tilt_y: int = 0,
     ) -> list[int]:
         x = clamp_i(x, 0, VMULTI_COORD_MAX)
         y = clamp_i(y, 0, VMULTI_COORD_MAX)
         pressure = clamp_i(pressure, 0, pressure_max)
+        tilt_x = clamp_i(tilt_x, -127, 127)
+        tilt_y = clamp_i(tilt_y, -127, 127)
         inner = [
             report_id & 0xFF,
             status & 0xFF,
@@ -430,10 +460,10 @@ class VMultiPenEmitter:
             (y >> 8) & 0xFF,
             pressure & 0xFF,
             (pressure >> 8) & 0xFF,
-            0x00,
+            tilt_x & 0xFF,
         ]
         if include_extra_byte9:
-            inner.append(0x00)
+            inner.append(tilt_y & 0xFF)
         return inner
 
     def _build_control_report(
@@ -444,6 +474,8 @@ class VMultiPenEmitter:
         x: int,
         y: int,
         pressure: int,
+        tilt_x: int = 0,
+        tilt_y: int = 0,
     ) -> list[int]:
         if report_format == "format_a":
             inner = self._build_pen_inner_report(
@@ -454,6 +486,8 @@ class VMultiPenEmitter:
                 pressure=pressure,
                 pressure_max=0x1FFF,
                 include_extra_byte9=True,  # 10-byte inner payload
+                tilt_x=tilt_x,
+                tilt_y=tilt_y,
             )
             return [VMULTI_REPORT_ID_CONTROL, 0x0A] + inner
 
@@ -466,6 +500,8 @@ class VMultiPenEmitter:
                 pressure=pressure,
                 pressure_max=0x1FFF,
                 include_extra_byte9=False,  # 9-byte inner payload
+                tilt_x=tilt_x,
+                tilt_y=tilt_y,
             )
             packet = [VMULTI_REPORT_ID_CONTROL, 0x09] + inner
             if len(packet) < 65:
@@ -481,6 +517,8 @@ class VMultiPenEmitter:
             pressure=pressure,
             pressure_max=0x3FFF,
             include_extra_byte9=True,  # 10-byte inner payload
+            tilt_x=tilt_x,
+            tilt_y=tilt_y,
         )
         return [VMULTI_REPORT_ID_CONTROL, 0x0A] + inner
 
@@ -530,10 +568,11 @@ class VMultiPenEmitter:
             self.log(f"TX {label} method={method} write_error={e} bytes={hex_bytes(effective_packet)}")
             return WriteResult(method=method, wrote=-1, bytes_sent=effective_packet, win32_error=win32_error)
 
-        self.log(
-            f"TX {label} method={method} wrote={ret} win32_error={win32_error} "
-            f"bytes={hex_bytes(effective_packet)}"
-        )
+        if self.log_writes:
+            self.log(
+                f"TX {label} method={method} wrote={ret} win32_error={win32_error} "
+                f"bytes={hex_bytes(effective_packet)}"
+            )
         return WriteResult(method=method, wrote=ret, bytes_sent=effective_packet, win32_error=win32_error)
 
     def _write_control_report(
@@ -584,6 +623,8 @@ class VMultiPenEmitter:
         label: str,
         report_format: ReportFormat = "format_a",
         write_method: WriteMode | None = None,
+        tilt_x: int = 0,
+        tilt_y: int = 0,
     ) -> WriteResult:
         control = self._build_control_report(
             report_format=report_format,
@@ -591,6 +632,8 @@ class VMultiPenEmitter:
             x=x,
             y=y,
             pressure=pressure,
+            tilt_x=tilt_x,
+            tilt_y=tilt_y,
         )
         return self._write_control_report(control, label=label, override_method=write_method)
 
@@ -603,8 +646,20 @@ class VMultiPenEmitter:
         write_method: WriteMode | None = None,
     ) -> TabletEmission:
         x_px, y_px = get_cursor_pos()
-        x = map_range(x_px, 0, max(1, self.screen_w - 1), 0, VMULTI_COORD_MAX)
-        y = map_range(y_px, 0, max(1, self.screen_h - 1), 0, VMULTI_COORD_MAX)
+        x = map_range(
+            x_px,
+            self.screen_left,
+            self.screen_left + max(1, self.screen_w - 1),
+            0,
+            VMULTI_COORD_MAX,
+        )
+        y = map_range(
+            y_px,
+            self.screen_top,
+            self.screen_top + max(1, self.screen_h - 1),
+            0,
+            VMULTI_COORD_MAX,
+        )
 
         left_mapped_1023 = clamp_i(left_mapped_1023, 0, 1023)
         if report_format == "report06":
@@ -653,6 +708,142 @@ class VMultiPenEmitter:
             report_format=report_format,
             write_method=write_method,
         )
+
+
+class VMultiPenInjectorAdapter:
+    """Use VMulti as the final pen sink for the canonical bridge state machine.
+
+    The canonical emitter continues to own button suppression, Raw Input
+    correlation, contact/release decisions, and trace capture.  This adapter
+    only replaces InjectSyntheticPointerInput with a real virtual-HID report.
+    """
+
+    def __init__(
+        self,
+        *,
+        desktop_input: object,
+        log: Callable[[str], None],
+        report_format: ReportFormat = "format_a",
+    ) -> None:
+        self._desktop_input = desktop_input
+        self._log = log
+        self._report_format = report_format
+        self._vmulti = VMultiPenEmitter(
+            device_path=None,
+            write_mode="auto",
+            log=log,
+            log_writes=False,
+        )
+
+    def open(self) -> None:
+        self._vmulti.open()
+        self._log("PEN backend=vmulti (virtual HID tablet)")
+
+    def close(self) -> None:
+        try:
+            self._vmulti.send_out_of_range(report_format=self._report_format)
+        except Exception as exc:
+            self._log(f"WARN VMulti final out-of-range failed: {exc}")
+        finally:
+            self._vmulti.close()
+
+    def get_cursor_pos(self) -> tuple[int, int]:
+        return self._desktop_input.get_cursor_pos()
+
+    def is_lmb_down(self) -> bool:
+        return bool(self._desktop_input.is_lmb_down())
+
+    def is_rmb_down(self) -> bool:
+        return bool(self._desktop_input.is_rmb_down())
+
+    def emit_left_click(self) -> None:
+        self._desktop_input.emit_left_click()
+
+    def emit_right_click(self) -> None:
+        self._desktop_input.emit_right_click()
+
+    def inject(
+        self,
+        *,
+        flags: int,
+        x: int,
+        y: int,
+        pressure_1024: int,
+        tag: str,
+        tilt_x: int | None = None,
+    ) -> tuple[bool, int]:
+        tablet_x = map_range(
+            int(x),
+            self._vmulti.screen_left,
+            self._vmulti.screen_left + max(1, self._vmulti.screen_w - 1),
+            0,
+            VMULTI_COORD_MAX,
+        )
+        tablet_y = map_range(
+            int(y),
+            self._vmulti.screen_top,
+            self._vmulti.screen_top + max(1, self._vmulti.screen_h - 1),
+            0,
+            VMULTI_COORD_MAX,
+        )
+        in_range = bool(flags & POINTER_FLAG_INRANGE)
+        in_contact = bool(flags & POINTER_FLAG_INCONTACT) and not bool(
+            flags & POINTER_FLAG_UP
+        )
+        status = 0
+        if in_range:
+            status |= VMULTI_STATUS_IN_RANGE
+        if in_contact:
+            status |= VMULTI_STATUS_TIP
+        pressure = map_range(
+            clamp_i(int(pressure_1024), 0, 1024),
+            0,
+            1024,
+            0,
+            VMULTI_PRESSURE_MAX,
+        )
+        if not in_contact:
+            pressure = 0
+        # The descriptor exposes X/Y Tilt as signed 8-bit Digitizer values.
+        # Match the synthetic backend's degree-based input by mapping
+        # -90..90 degrees onto the descriptor's -127..127 logical range.
+        tablet_tilt_x = map_range(
+            clamp_i(int(tilt_x or 0), -90, 90),
+            -90,
+            90,
+            -127,
+            127,
+        )
+        try:
+            if flags & POINTER_FLAG_DOWN:
+                # Reposition the virtual tablet pen while it is hovering before
+                # asserting Tip. Without this anchor report, a new stroke that
+                # begins far from the previous VMulti endpoint can be delivered
+                # as one long in-contact relocation across the canvas.
+                hover = self._vmulti.emit_report(
+                    status=VMULTI_STATUS_IN_RANGE,
+                    x=tablet_x,
+                    y=tablet_y,
+                    pressure=0,
+                    label=f"{tag}.hover_anchor",
+                    report_format=self._report_format,
+                    tilt_x=tablet_tilt_x,
+                )
+                if hover.wrote <= 0:
+                    return False, 1
+            result = self._vmulti.emit_report(
+                status=status,
+                x=tablet_x,
+                y=tablet_y,
+                pressure=pressure,
+                label=tag,
+                report_format=self._report_format,
+                tilt_x=tablet_tilt_x,
+            )
+        except Exception as exc:
+            self._log(f"VMULTI inject {tag} failed: {exc}")
+            return False, 1
+        return result.wrote > 0, 0
 
 
 class SyntheticPenEmitter:
@@ -879,7 +1070,7 @@ def _run_test_mode(emitter: VMultiPenEmitter, *, hz: float, log: Callable[[str],
     run_phase(
         name="phase1_formatA_write_contact",
         seconds=3.0,
-        status=0x03,
+        status=VMULTI_STATUS_IN_RANGE | VMULTI_STATUS_TIP,
         pressure=4096,
         report_format="format_a",
         write_method="write",
@@ -887,7 +1078,7 @@ def _run_test_mode(emitter: VMultiPenEmitter, *, hz: float, log: Callable[[str],
     run_phase(
         name="reset_after_phase1_hover",
         seconds=1.0,
-        status=0x01,
+        status=VMULTI_STATUS_IN_RANGE,
         pressure=0,
         report_format="format_a",
         write_method="write",
@@ -896,7 +1087,7 @@ def _run_test_mode(emitter: VMultiPenEmitter, *, hz: float, log: Callable[[str],
     run_phase(
         name="phase2_formatB_write_contact",
         seconds=3.0,
-        status=0x03,
+        status=VMULTI_STATUS_IN_RANGE | VMULTI_STATUS_TIP,
         pressure=4096,
         report_format="format_b",
         write_method="write",
@@ -904,7 +1095,7 @@ def _run_test_mode(emitter: VMultiPenEmitter, *, hz: float, log: Callable[[str],
     run_phase(
         name="reset_after_phase2_hover",
         seconds=1.0,
-        status=0x01,
+        status=VMULTI_STATUS_IN_RANGE,
         pressure=0,
         report_format="format_b",
         write_method="write",
@@ -913,7 +1104,7 @@ def _run_test_mode(emitter: VMultiPenEmitter, *, hz: float, log: Callable[[str],
     run_phase(
         name="phase3_report06_write_contact",
         seconds=3.0,
-        status=0x03,
+        status=VMULTI_STATUS_IN_RANGE | VMULTI_STATUS_TIP,
         pressure=4096,
         report_format="report06",
         write_method="write",
@@ -921,7 +1112,7 @@ def _run_test_mode(emitter: VMultiPenEmitter, *, hz: float, log: Callable[[str],
     run_phase(
         name="reset_after_phase3_hover",
         seconds=1.0,
-        status=0x01,
+        status=VMULTI_STATUS_IN_RANGE,
         pressure=0,
         report_format="report06",
         write_method="write",
@@ -930,7 +1121,7 @@ def _run_test_mode(emitter: VMultiPenEmitter, *, hz: float, log: Callable[[str],
     run_phase(
         name="phase4_formatA_writefile_contact",
         seconds=3.0,
-        status=0x03,
+        status=VMULTI_STATUS_IN_RANGE | VMULTI_STATUS_TIP,
         pressure=4096,
         report_format="format_a",
         write_method="writefile",
@@ -938,7 +1129,7 @@ def _run_test_mode(emitter: VMultiPenEmitter, *, hz: float, log: Callable[[str],
     run_phase(
         name="reset_after_phase4_hover",
         seconds=1.0,
-        status=0x01,
+        status=VMULTI_STATUS_IN_RANGE,
         pressure=0,
         report_format="format_a",
         write_method="write",
@@ -947,7 +1138,7 @@ def _run_test_mode(emitter: VMultiPenEmitter, *, hz: float, log: Callable[[str],
     run_phase(
         name="phase5_formatA_feature_contact",
         seconds=3.0,
-        status=0x03,
+        status=VMULTI_STATUS_IN_RANGE | VMULTI_STATUS_TIP,
         pressure=4096,
         report_format="format_a",
         write_method="feature",

@@ -1,24 +1,5 @@
-"""
-Pressure curve mapping.
+"""Pressure calibration and curve mapping."""
 
-VIBE CODE INSTRUCTIONS:
------------------------
-This maps the raw analog value from the Superstrike to a pressure value
-that drawing apps expect. Different curves feel different:
-
-  - Linear: direct 1:1 mapping. Simple but may feel stiff.
-  - Ease-in (soft start): light pressure = very little output, heavy = ramps up.
-    Good for detail work where you want light default.
-  - Ease-out (soft end): light pressure = immediate response, heavy = plateaus.
-    Good for broad strokes where you want quick coverage.  
-  - S-curve: soft start AND soft end, most pressure change in the middle.
-    Closest to how most Wacom tablets feel by default.
-
-The raw range and output range need to be configured once we know
-what the Superstrike actually reports (Phase 1 discovery).
-"""
-
-import numpy as np
 from dataclasses import dataclass
 
 _CURVE_ALIASES = {
@@ -31,6 +12,10 @@ _CURVE_ALIASES = {
     "ease_out": "ease_out",
     "s_curve": "s_curve",
 }
+
+
+def _clamp01(value: float) -> float:
+    return max(0.0, min(1.0, float(value)))
 
 
 @dataclass
@@ -63,7 +48,7 @@ def apply_curve(normalized: float, config: PressureConfig) -> float:
     Returns:
         Curved pressure value, 0.0 to 1.0
     """
-    t = np.clip(normalized, 0.0, 1.0)
+    t = _clamp01(normalized)
     gamma = config.curve_strength
     curve = normalize_curve_name(config.curve)
 
@@ -104,7 +89,7 @@ def map_pressure(raw_value: int, config: PressureConfig) -> int:
         return config.out_min
     
     normalized = (raw_value - config.raw_min) / raw_range
-    normalized = np.clip(normalized, 0.0, 1.0)
+    normalized = _clamp01(normalized)
     
     # Apply deadzones
     if normalized < config.deadzone_low:
@@ -115,7 +100,7 @@ def map_pressure(raw_value: int, config: PressureConfig) -> int:
     # Rescale within deadzones
     active_range = config.deadzone_high - config.deadzone_low
     normalized = (normalized - config.deadzone_low) / active_range
-    normalized = np.clip(normalized, 0.0, 1.0)
+    normalized = _clamp01(normalized)
     
     # Apply curve
     curved = apply_curve(normalized, config)
@@ -127,7 +112,7 @@ def map_pressure(raw_value: int, config: PressureConfig) -> int:
 
 def map_normalized_pressure(normalized: float, config: PressureConfig) -> int:
     """Map normalized pressure (0..1) to output range using configured curve."""
-    t = float(np.clip(normalized, 0.0, 1.0))
+    t = _clamp01(normalized)
 
     if t < config.deadzone_low:
         return config.out_min
@@ -139,7 +124,7 @@ def map_normalized_pressure(normalized: float, config: PressureConfig) -> int:
         return config.out_min
 
     t = (t - config.deadzone_low) / active_range
-    t = float(np.clip(t, 0.0, 1.0))
+    t = _clamp01(t)
     curved = apply_curve(t, config)
     out_range = config.out_max - config.out_min
     return int(config.out_min + curved * out_range)

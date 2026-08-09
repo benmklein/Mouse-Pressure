@@ -5,6 +5,7 @@ from superstrike_pressure.dev_ui import (
     effective_pressure_for_raw,
     parse_dev_settings,
     sensitivity_mapping_points,
+    stroke_analysis_data,
 )
 
 
@@ -52,6 +53,7 @@ def test_dev_settings_build_linked_runtime_patch() -> None:
     assert patch["left"]["pressure_influence"] == 85
     assert patch["left"]["onset_buffer"] is False
     assert patch["left"]["true_low_latency"] is False
+    assert patch["left"]["stationary_pressure_updates"] is False
     assert settings.injection_hz == 240.0
 
 
@@ -106,6 +108,56 @@ def test_dev_settings_persist_true_low_latency() -> None:
     assert settings.as_runtime_patch()["left"]["true_low_latency"] is True
 
 
+def test_dev_settings_persist_stationary_pressure_updates() -> None:
+    settings = parse_dev_settings(
+        raw_min="320",
+        raw_max="670",
+        deadzone="0",
+        curve="linear",
+        curve_strength="1.0",
+        contact_preset="medium",
+        suppress_lmb=True,
+        release_teardown=False,
+        stationary_pressure_updates=True,
+    )
+
+    assert settings.stationary_pressure_updates is True
+    assert settings.as_runtime_patch()["left"]["stationary_pressure_updates"] is True
+
+
+def test_dev_settings_validate_rapid_release_threshold() -> None:
+    settings = parse_dev_settings(
+        raw_min="320",
+        raw_max="670",
+        deadzone="0",
+        curve="linear",
+        curve_strength="1.0",
+        contact_preset="medium",
+        suppress_lmb=True,
+        release_teardown=False,
+        rapid_release_threshold="8",
+    )
+    assert settings.rapid_release_threshold == 8
+    assert settings.as_runtime_patch()["left"]["rapid_release_threshold"] == 8
+
+    try:
+        parse_dev_settings(
+            raw_min="320",
+            raw_max="670",
+            deadzone="0",
+            curve="linear",
+            curve_strength="1.0",
+            contact_preset="medium",
+            suppress_lmb=True,
+            release_teardown=False,
+            rapid_release_threshold="31",
+        )
+    except ValueError as exc:
+        assert "Rapid release threshold" in str(exc)
+    else:
+        raise AssertionError("Expected invalid rapid release threshold to raise")
+
+
 def test_sensitivity_mapping_visualizer_uses_effective_pressure_settings() -> None:
     settings = parse_dev_settings(
         raw_min="300",
@@ -127,6 +179,61 @@ def test_sensitivity_mapping_visualizer_uses_effective_pressure_settings() -> No
     assert 510 <= points[1][1] <= 513
     assert points[2] == (700, 1023)
     assert effective_pressure_for_raw(settings, 301) >= round(15 * 1024 / 100)
+
+
+def test_stroke_analysis_exposes_pipeline_and_low_latency_pressure_steps() -> None:
+    payload = {
+        "metadata": {
+            "button": "left",
+            "configured_curve": "s_curve",
+            "configured_curve_strength": 3.0,
+            "true_low_latency": True,
+        },
+        "events": [
+            {
+                "kind": "update",
+                "t_ms": 0.0,
+                "pressure_fresh": True,
+                "left_raw": 400,
+                "mapped": 100,
+                "actual_pressure": 100,
+            },
+            {
+                "kind": "inject",
+                "t_ms": 0.1,
+                "x": 0,
+                "y": 0,
+                "pressure": 100,
+                "flags": 4,
+                "ok": True,
+            },
+            {
+                "kind": "update",
+                "t_ms": 16.0,
+                "pressure_fresh": True,
+                "left_raw": 475,
+                "mapped": 700,
+                "actual_pressure": 700,
+            },
+            {
+                "kind": "inject",
+                "t_ms": 16.1,
+                "x": 20,
+                "y": 0,
+                "pressure": 700,
+                "flags": 4,
+                "ok": True,
+            },
+        ],
+    }
+
+    result = stroke_analysis_data(payload)
+
+    assert result["raw"] == [(0.0, 400.0), (16.0, 475.0)]
+    assert result["mapped"] == [(0.0, 100.0), (16.0, 700.0)]
+    assert result["path_px"] == 20.0
+    assert result["max_pressure_step"] == 600.0
+    assert "True low latency" in result["diagnosis"]
 
 
 def test_bridge_controller_starts_and_stops_runtime() -> None:

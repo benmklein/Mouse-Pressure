@@ -53,6 +53,8 @@ def validate_channel_config(ch: dict) -> list[str]:
     onset_buffer = ch.get("onset_buffer")
     # Optional for backward-compatible validation of version-1 channel payloads.
     true_low_latency = ch.get("true_low_latency", False)
+    stationary_pressure_updates = ch.get("stationary_pressure_updates", False)
+    rapid_release_threshold = ch.get("rapid_release_threshold", 0)
 
     if not isinstance(raw_min, int):
         errors.append("raw_min must be an integer")
@@ -118,6 +120,14 @@ def validate_channel_config(ch: dict) -> list[str]:
 
     if not isinstance(true_low_latency, bool):
         errors.append("true_low_latency must be a boolean")
+
+    if not isinstance(stationary_pressure_updates, bool):
+        errors.append("stationary_pressure_updates must be a boolean")
+
+    if not isinstance(rapid_release_threshold, int):
+        errors.append("rapid_release_threshold must be an integer")
+    elif not (0 <= rapid_release_threshold <= 30):
+        errors.append("rapid_release_threshold must be in 0..30")
 
     return errors
 
