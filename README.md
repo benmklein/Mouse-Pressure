@@ -23,9 +23,11 @@ The first Windows release target is intentionally small:
 
 The standalone application and unified installer are now being prepared for an
 alpha release. The installer includes the Krita 5.3.3 tool and detects an
-existing compatible VMulti device, but deliberately does not redistribute the
-third-party tablet driver currently present on the development machine. The
-driverless synthetic Windows Ink backend remains the fallback.
+existing compatible VMulti device. It can also embed the project-owned virtual
+tablet payload once that payload has been signed through Microsoft's hardware
+dashboard. The build deliberately rejects the unrelated Pentablet package
+currently present on the development machine. The driverless synthetic Windows
+Ink backend remains the fallback.
 
 ## Release build
 
@@ -103,31 +105,33 @@ ss-pen --raw-min 320 --raw-max 680 --release-teardown
 Run `ss-pen --help` for curve, deadzone, contact, smoothing, and click-through
 options.
 
-## Development control panel
+## Desktop control panel
 
-Launch the small local interface with:
+Launch the desktop interface with:
 
 ```powershell
 ss-dev-ui
 ```
 
-The panel can start and stop the bridge and persist the mouse and pressure
-settings. DPI and left/right haptics live in a global **Mouse hardware** table,
-with the detected **Mapping off** restoration values beside the editable
-**Mapping on** session values. The **Left button** and **Right button** settings
-tabs keep separate raw range, curve, contact, path, pressure, and native-click
-suppression values. Either button can drive the Windows Ink pen using its own
-pressure map.
-The default **Sensitivity mapping** output tab follows the selected settings tab
-and marks that button's current click pressure live. The second **Stroke
-analysis** tab lists recent Debug-mode traces and graphs raw ADC, mapped,
-interpolated, and injected pressure over time plus injected pressure over path
-distance. **Terminal output** is the third tab and keeps the full runtime log
-separately. Less frequently changed pressure, path,
-injection controls are collapsed under **Advanced settings**. The pressure
-floor prevents a fast release from stretching very low pressure into a long
-hairline; zero still produces a normal pen-up taper. Stop the bridge before
-changing settings that affect the Windows input hook.
+The PySide6 control panel uses a clean native Windows layout with persistent
+light and dark modes. Its sidebar separates the interface into four focused
+pages:
+
+- **Pressure** — left/right enable switches, linked settings, channel-specific
+  calibration, pressure curves, contact behavior, advanced controls, and a live
+  antialiased sensitivity graph.
+- **Mouse** — detected Mapping-off DPI/haptics beside the temporary Mapping-on
+  values, pen backend selection, debug recording, tray behavior, and backend
+  settings.
+- **Stroke analysis** — recent Debug-mode traces with mapped, smoothed, and
+  injected pressure plotted together.
+- **Logs** — full runtime and device output in a high-contrast terminal panel
+  in either application theme.
+
+Either button can drive Windows Ink using its own pressure map. Less frequently
+changed pressure and path controls stay under **Advanced settings**. The
+pressure floor prevents a fast release from stretching very low pressure into a
+long hairline; zero still produces a normal pen-up taper.
 
 Curve strength and left/right haptics use sliders. A haptic level of 0 disables
 that button's click haptics. The button is always named **Start** or **Stop**;
@@ -157,17 +161,17 @@ change the pressure curve once contact is active.
 **Rapid release threshold** is disabled at 0%. Small values such as 1–2% can
 help when thin tails are an issue.
 
-The two optional **Ink stabilization** controls are independent. **Path
+The optional ink controls are independent. **Path
 stabilization** now defaults to 0%: direct mode forwards captured hardware
 coordinates without curve fitting or synthetic point expansion so Krita's
 Dynamic Brush or Freehand smoothing can own the geometry with lower latency.
 Values above 0% enable the experimental causal path filter. **Pressure
 influence** defaults to 100% for unmodified sensor expression.
 
-The global **Pressure buttons** section independently enables left and right
-pressure mapping. When both are enabled, **Use the same settings for both**
-mirrors the left pressure settings onto the right channel and disables the
-redundant Right button settings tab until the channels are unlinked.
+The switches at the top of **Pressure** independently enable left and right
+pressure mapping. When both are enabled, **Link settings** mirrors the left
+pressure settings onto the right channel and disables the redundant Right
+button tab until the channels are unlinked.
 
 The Right button's **Advanced settings** include **use right pressure as X-Tilt
 modifier** for both VMulti and synthetic output. The verified VMulti pen report
@@ -187,7 +191,7 @@ shape the modifier; pressure floor and pressure influence remain specific to
 independent pressure strokes. This mode is off by default, and disabling it
 restores the independent right-pressure stroke workflow.
 
-The global **Debug mode** toggle appears in Advanced settings and defaults to
+The global **Debug mode** toggle appears on the Mouse page and defaults to
 on for the current development phase. It records the detailed per-stroke JSON
 files under `~/.superstrike/stroke_traces` and prints verbose `RAW`, `CONTACT`,
 `RELEASE`, and motion-diagnostic messages used by the analyzer. Turning it off

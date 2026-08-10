@@ -52,8 +52,7 @@ and icon files.
 2. Run the complete test suite.
 3. Build from a clean checkout through GitHub Actions.
 4. Install into a clean Windows 10 VM and a clean Windows 11 VM.
-5. Test without VMulti, then with the project-owned signed VMulti package when
-   one becomes available.
+5. Test without VMulti, then with the project-owned signed VMulti package.
 6. Test wired and Lightspeed Superstrike connections on real hardware.
 7. Test Start, Stop, Force Stop, forced process termination, sleep/wake, and
    unplug/reconnect while temporary DPI and haptic overrides are active.
@@ -62,16 +61,52 @@ and icon files.
 10. Generate SHA-256 checksums, release notes, and the software bill of
     materials before publishing the GitHub Release.
 
-## Driver gate
+## Virtual tablet driver
 
-Do not place the currently detected Ugee/Huion VMulti package in this
-installer. A public driver must have a verified redistribution license, a
-project-specific identity, Secure Boot and Memory Integrity testing, and the
-appropriate Microsoft signature/certification.
+The compatible driver currently installed on the development PC is the
+Microsoft-signed `Pentablet HID 1.1` package (`vmulti.inf`, hardware ID
+`pentablet\hid`). The commonly linked `X9VoiD/vmulti-bin` archive contains the
+same package plus legacy DIFx, DevCon, WinTab, and KMDF co-installer files. It
+does not include a redistribution notice. Do not copy either package into a
+Superstrike release.
 
-Until that work is complete, the installer reports whether compatible VMulti
-hardware is already present and otherwise leaves the application on its
-driverless synthetic backend.
+The release driver lives in the separate
+[`benmklein/superstrike-vmulti`](https://github.com/benmklein/superstrike-vmulti)
+repository. It derives its report-forwarding design from the MIT-licensed
+original VMulti implementation, uses the project-specific hardware ID
+`ROOT\SUPERSTRIKEVMULTI`, and exposes only the digitizer and vendor-control
+collections we need. Its x64 build uses Visual Studio 2026 plus the pinned
+10.0.28000 WDK and ships a project-owned SetupAPI/NewDev provisioner instead of
+redistributing DevCon.
+
+The signed release payload contract is defined by
+`packaging/windows/vmulti-driver-manifest.schema.json`. Before Inno Setup can
+embed a payload, `scripts/validate_vmulti_payload.ps1` verifies:
+
+- the fixed package and hardware identities;
+- SHA-256 hashes for every required file;
+- Microsoft hardware-dashboard signatures on the INF, catalog, and SYS;
+- a valid Authenticode signature on the project-owned provisioner; and
+- the absence of legacy/vendor files such as DevCon, DIFx, WinTab, and the old
+  KMDF co-installer.
+
+Build the unified installer with a signed payload:
+
+```powershell
+.\scripts\build_windows.ps1 -VMultiPayload C:\release\superstrike-vmulti-x64
+```
+
+Without `-VMultiPayload`, the normal installer is still produced, detects an
+existing compatible device, and uses the driverless synthetic backend as its
+fallback. This keeps ordinary CI builds reproducible while making it impossible
+to accidentally package a driver copied from the local driver store.
+
+For a public retail driver, use the Windows Hardware Compatibility Program/HLK
+path. Microsoft documents new attestation submissions as testing-only rather
+than a retail publication path. The driver currently targets Windows 11 build
+22000 or newer and must be tested with Secure Boot and Memory Integrity enabled
+before it is passed to the application installer. Windows 10 continues to use
+the synthetic fallback unless a separately supported driver is added later.
 
 ## Windows 11 validation
 
@@ -83,5 +118,13 @@ beta tester with Secure Boot and Memory Integrity enabled.
 ## Signing
 
 Development builds may remain unsigned. Public builds must sign and timestamp
-the executable, bundled DLLs where applicable, and final installer. Driver
-signing is a separate Microsoft hardware submission process.
+the executable, project-owned driver provisioner, bundled DLLs where
+applicable, and final installer. Driver signing is a separate Microsoft
+hardware submission process.
+
+Primary references:
+
+- https://github.com/djpnewton/vmulti (MIT-licensed original implementation)
+- https://github.com/microsoft/Windows-driver-samples/tree/main/hid/vhidmini2
+- https://learn.microsoft.com/windows-hardware/drivers/dashboard/driver-signing-offerings
+- https://learn.microsoft.com/windows-hardware/drivers/dashboard/code-signing-attestation
