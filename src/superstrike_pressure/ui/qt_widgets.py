@@ -12,6 +12,7 @@ from PySide6.QtWidgets import (
     QFrame,
     QHBoxLayout,
     QLabel,
+    QSizePolicy,
     QSlider,
     QSpinBox,
     QVBoxLayout,
@@ -109,6 +110,10 @@ class LabeledSwitch(QWidget):
         parent: QWidget | None = None,
     ) -> None:
         super().__init__(parent)
+        self.setSizePolicy(
+            QSizePolicy.Policy.Preferred,
+            QSizePolicy.Policy.Maximum,
+        )
         layout = QHBoxLayout(self)
         layout.setContentsMargins(0, 0, 0, 0)
         layout.setSpacing(12)
@@ -214,14 +219,17 @@ class SliderField(QWidget):
 class MappingGraph(QWidget):
     """Antialiased pressure mapping plot with live channel markers."""
 
+    RAW_MIN = 300
+    RAW_MAX = 700
+
     def __init__(self, parent: QWidget | None = None) -> None:
         super().__init__(parent)
         self.setMinimumHeight(270)
         self._theme: Theme | None = None
         self._series: dict[str, list[tuple[int, int]]] = {}
-        self._raw_range: dict[str, tuple[int, int]] = {}
         self._current: dict[str, tuple[int, int] | None] = {"left": None, "right": None}
         self._visible_channels = ("left",)
+        self._live_preview = False
 
     def set_theme(self, theme: Theme) -> None:
         self._theme = theme
@@ -230,17 +238,24 @@ class MappingGraph(QWidget):
     def set_data(
         self,
         series: dict[str, list[tuple[int, int]]],
-        raw_range: dict[str, tuple[int, int]],
+        _raw_range: dict[str, tuple[int, int]],
         *,
         channels: tuple[str, ...],
     ) -> None:
         self._series = series
-        self._raw_range = raw_range
         self._visible_channels = channels
         self.update()
 
+    @classmethod
+    def _raw_fraction(cls, raw: int) -> float:
+        return max(0.0, min(1.0, (raw - cls.RAW_MIN) / (cls.RAW_MAX - cls.RAW_MIN)))
+
     def set_current(self, channel: str, raw: int, pressure: int) -> None:
         self._current[channel] = (int(raw), int(pressure))
+        self.update()
+
+    def set_live_preview(self, live: bool) -> None:
+        self._live_preview = bool(live)
         self.update()
 
     def paintEvent(self, _event: Any) -> None:  # noqa: N802
@@ -250,7 +265,7 @@ class MappingGraph(QWidget):
         painter = QPainter(self)
         painter.setRenderHint(QPainter.RenderHint.Antialiasing)
         painter.fillRect(self.rect(), QColor(theme.surface))
-        plot = QRectF(48, 20, max(1, self.width() - 70), max(1, self.height() - 58))
+        plot = QRectF(48, 8, max(1, self.width() - 70), max(1, self.height() - 58))
         grid_pen = QPen(QColor(theme.grid), 1)
         painter.setPen(grid_pen)
         for i in range(5):
@@ -267,12 +282,11 @@ class MappingGraph(QWidget):
         colors = {"left": "#378ADD", "right": "#EF9F27"}
         for channel in self._visible_channels:
             points = self._series.get(channel, [])
-            raw_min, raw_max = self._raw_range.get(channel, (0, 1023))
-            if len(points) < 2 or raw_max <= raw_min:
+            if len(points) < 2:
                 continue
             path = QPainterPath()
             for index, (raw, pressure) in enumerate(points):
-                px = plot.left() + (raw - raw_min) / (raw_max - raw_min) * plot.width()
+                px = plot.left() + self._raw_fraction(raw) * plot.width()
                 py = plot.bottom() - pressure / 1024 * plot.height()
                 if index == 0:
                     path.moveTo(px, py)
@@ -281,9 +295,9 @@ class MappingGraph(QWidget):
             painter.setPen(QPen(QColor(colors[channel]), 2.3))
             painter.drawPath(path)
             current = self._current.get(channel)
-            if current is not None:
+            if self._live_preview and current is not None:
                 raw, pressure = current
-                px = plot.left() + (raw - raw_min) / (raw_max - raw_min) * plot.width()
+                px = plot.left() + self._raw_fraction(raw) * plot.width()
                 py = plot.bottom() - pressure / 1024 * plot.height()
                 px = min(plot.right(), max(plot.left(), px))
                 py = min(plot.bottom(), max(plot.top(), py))
@@ -292,10 +306,44 @@ class MappingGraph(QWidget):
                 painter.drawEllipse(QPointF(px, py), 6, 6)
         painter.setPen(QColor(theme.muted))
         painter.drawText(
-            QRectF(plot.left(), plot.bottom() + 10, plot.width(), 20),
-            Qt.AlignmentFlag.AlignCenter,
-            "Raw click pressure",
+            QRectF(plot.left(), plot.bottom() + 8, 48, 18),
+            Qt.AlignmentFlag.AlignLeft,
+            str(self.RAW_MIN),
         )
+        painter.drawText(
+            QRectF(plot.right() - 48, plot.bottom() + 8, 48, 18),
+            Qt.AlignmentFlag.AlignRight,
+            str(self.RAW_MAX),
+        )
+        painter.drawText(
+            QRectF(plot.left(), plot.bottom() + 27, plot.width(), 20),
+            Qt.AlignmentFlag.AlignCenter,
+            "Physical pressure",
+        )
+        if not self._live_preview:
+            message_box = QRectF(
+                plot.center().x() - 145,
+                plot.center().y() - 37,
+                290,
+                74,
+            )
+            overlay = QColor(theme.surface_alt)
+            overlay.setAlpha(238)
+            painter.setPen(QPen(QColor(theme.border), 1))
+            painter.setBrush(overlay)
+            painter.drawRoundedRect(message_box, 9, 9)
+            painter.setPen(QColor(theme.text))
+            painter.drawText(
+                message_box.adjusted(12, 10, -12, -34),
+                Qt.AlignmentFlag.AlignCenter,
+                "Live preview is off",
+            )
+            painter.setPen(QColor(theme.muted))
+            painter.drawText(
+                message_box.adjusted(12, 34, -12, -9),
+                Qt.AlignmentFlag.AlignCenter,
+                "Start to test your pressure settings.",
+            )
 
 
 class StrokeGraph(QWidget):

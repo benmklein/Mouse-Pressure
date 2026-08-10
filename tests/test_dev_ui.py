@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import asyncio
 import time
+from unittest.mock import AsyncMock, patch
 
 from superstrike_pressure.dev_ui import (
     BridgeController,
@@ -264,3 +265,27 @@ def test_bridge_controller_close_is_bounded_and_idempotent() -> None:
     assert service.stop_calls == 1
     controller.close(timeout=0.1)
     assert service.stop_calls == 1
+
+
+def test_bridge_controller_routes_calibration_on_runtime_loop() -> None:
+    service = _FakeRuntimeService()
+    controller = BridgeController(service)  # type: ignore[arg-type]
+    progress_events: list[dict] = []
+    result = {"left": {"raw_min": 410, "raw_max": 690}}
+
+    try:
+        with patch(
+            "superstrike_pressure.dev_ui.run_calibration",
+            new=AsyncMock(return_value=result),
+        ) as calibrate:
+            future = controller.calibrate(
+                "left",
+                config_store=object(),  # type: ignore[arg-type]
+                progress_cb=progress_events.append,
+            )
+
+            assert future.result(timeout=1.0) == result
+            assert calibrate.await_args.args[0] == "left"
+            assert calibrate.await_args.args[1] is service
+    finally:
+        controller.close()

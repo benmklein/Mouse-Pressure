@@ -342,7 +342,8 @@ class RuntimeServiceTests(unittest.IsolatedAsyncioTestCase):
 
         self.assertTrue(updated.linked)
         self.assertEqual(updated.left.curve, "soft")
-        self.assertEqual(updated.right.curve, "soft")
+        self.assertEqual(updated.right.curve, "linear")
+        self.assertEqual(store.current.right.curve, "linear")
         self.assertEqual(store.current.left.contact_preset, "firm")
         self.assertEqual(holder["emitter"].config.contact_threshold, 18)
         self.assertEqual(holder["emitter"].config.release_threshold, 12)
@@ -351,6 +352,11 @@ class RuntimeServiceTests(unittest.IsolatedAsyncioTestCase):
         self.assertTrue(holder["emitter"].config.release_teardown)
         self.assertEqual(session.open_calls, 1)
         self.assertEqual(session.enable_calls, 1)
+
+        restored = service.apply_config({"linked": False})
+        self.assertEqual(restored.right.curve, "linear")
+        self.assertEqual(service._right_curve_config.curve, "linear")
+        self.assertEqual(holder["emitter"].config.right_contact_threshold, 10)
 
         await service.stop_stream()
 

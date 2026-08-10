@@ -19,8 +19,8 @@ MIN_CALIBRATION_SPAN = 8
 PHASE_INSTRUCTIONS = {
     "prepare": "Release the button and get ready.",
     "idle": "Keep the button fully released.",
-    "light": "Hold a light, comfortable press.",
-    "heavy": "Press firmly through your comfortable range.",
+    "light": "Press as lightly as you want pressure output to begin.",
+    "heavy": "Press as firmly as you want to represent 100%.",
     "done": "Calibration saved.",
 }
 
@@ -120,11 +120,17 @@ def _calibrated_range(
 ) -> tuple[int, int]:
     """Use robust phase extrema, falling back for legacy/non-paced samplers."""
     idle = phase_values.get("idle", [])
+    light = phase_values.get("light", [])
     heavy = phase_values.get("heavy", [])
     all_values = [value for values in phase_values.values() for value in values]
-    if idle and heavy:
-        # Ignore isolated noise. The top of the released range becomes zero;
-        # the 95th percentile of a firm press becomes full pressure.
+    if light and heavy:
+        # Use the held light press as the user's desired activation point, but
+        # never place it inside the measured released/noise range.
+        raw_min = _percentile(light, 0.25)
+        if idle:
+            raw_min = max(raw_min, _percentile(idle, 0.95) + 1)
+        raw_max = _percentile(heavy, 0.95)
+    elif idle and heavy:
         raw_min = _percentile(idle, 0.95)
         raw_max = _percentile(heavy, 0.95)
     elif all_values:
@@ -134,7 +140,7 @@ def _calibrated_range(
         raw_min, raw_max = int(fallback_min), int(fallback_max)
     if raw_max - raw_min < MIN_CALIBRATION_SPAN:
         raise ValidationError(
-            "Calibration range was too small. Release fully for idle, then press firmly during heavy."
+            "Calibration range was too small. Release fully, then use a lighter press for activation and a firmer press for 100%."
         )
     return int(raw_min), int(raw_max)
 

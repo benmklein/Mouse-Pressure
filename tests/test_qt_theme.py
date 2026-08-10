@@ -1,5 +1,7 @@
 from __future__ import annotations
 
+from pathlib import Path
+
 from superstrike_pressure.ui.qt_theme import DARK, LIGHT, stylesheet, theme_for
 
 
@@ -18,3 +20,6 @@ def test_qt_stylesheet_uses_theme_tokens_and_windows_font() -> None:
     assert LIGHT.accent in light
     assert DARK.window in dark
     assert DARK.terminal_text in dark
+    assert "QPushButton#channelSegment:checked" in dark
+    assert "QComboBox::down-arrow" in dark
+    assert Path("src/superstrike_pressure/assets/chevron-down.svg").is_file()

@@ -115,7 +115,7 @@ class CalibrationTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(list(result.keys()), ["left"])
         self.assertEqual(runtime.apply_calls[0]["left"]["raw_min"], result["left"]["raw_min"])
 
-    def test_phase_range_ignores_idle_and_heavy_outliers(self) -> None:
+    def test_phase_range_uses_light_press_above_idle_noise(self) -> None:
         raw_min, raw_max = calibration._calibrated_range(  # noqa: SLF001
             {
                 "idle": [378, 379, 380, 380, 381] * 4 + [999],
@@ -126,7 +126,7 @@ class CalibrationTests(unittest.IsolatedAsyncioTestCase):
             fallback_max=180,
         )
 
-        self.assertEqual(raw_min, 381)
+        self.assertEqual(raw_min, 440)
         self.assertEqual(raw_max, 635)
 
     async def test_countdown_announces_each_second_before_sampling(self) -> None:

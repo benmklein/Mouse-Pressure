@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 from dataclasses import dataclass
+from pathlib import Path
 
 
 @dataclass(frozen=True)
@@ -34,7 +35,7 @@ LIGHT = Theme(
     surface_alt="#F1F3F6",
     border="#DDE1E7",
     text="#171A20",
-    muted="#535C69",
+    muted="#262B33",
     accent="#635BFF",
     accent_hover="#5148EB",
     accent_soft="#ECEBFF",
@@ -73,13 +74,19 @@ def theme_for(name: str) -> Theme:
 
 def stylesheet(theme: Theme) -> str:
     """Return one token-driven stylesheet for all standard Qt widgets."""
+    chevron_path = (
+        Path(__file__).resolve().parents[1] / "assets" / "chevron-down.svg"
+    ).as_posix()
     return f"""
     * {{
         font-family: "Segoe UI";
         font-size: 13px;
         color: {theme.text};
     }}
-    QMainWindow, QWidget#appRoot, QWidget#page {{ background: {theme.window}; }}
+    QMainWindow, QWidget#appRoot, QWidget#page, QDialog, QMessageBox {{
+        background: {theme.window};
+    }}
+    QLabel {{ font-weight: 500; }}
     QWidget#sidebar {{
         background: {theme.sidebar};
         border-right: 1px solid {theme.border};
@@ -87,11 +94,13 @@ def stylesheet(theme: Theme) -> str:
     QLabel#brand {{ font-size: 17px; font-weight: 700; }}
     QLabel#pageTitle {{ font-size: 24px; font-weight: 700; }}
     QLabel#sectionTitle {{ font-size: 15px; font-weight: 650; }}
-    QLabel#muted, QLabel.muted {{ color: {theme.muted}; }}
+    QLabel#muted, QLabel.muted {{ color: {theme.muted}; font-weight: 400; }}
+    QMessageBox QLabel {{ color: {theme.text}; min-width: 340px; }}
     QLabel#statusRunning {{ color: {theme.success}; font-weight: 600; }}
     QLabel#statusStopped {{ color: {theme.muted}; font-weight: 600; }}
     QLabel#statusBusy {{ color: {theme.warning}; font-weight: 600; }}
     QLabel#statusError {{ color: {theme.danger}; font-weight: 600; }}
+    QFrame#footerRule {{ color: {theme.border}; background: {theme.border}; max-height: 1px; }}
     QFrame#card {{
         background: {theme.surface};
         border: 1px solid {theme.border};
@@ -121,6 +130,22 @@ def stylesheet(theme: Theme) -> str:
     }}
     QPushButton#primary:hover {{ background: {theme.accent_hover}; }}
     QPushButton#danger {{ color: {theme.danger}; }}
+    QPushButton#channelSegment {{
+        color: {theme.text};
+        background: {theme.surface};
+        border: 1px solid {theme.border};
+        border-radius: 0;
+        border-bottom: 3px solid {theme.border};
+        font-weight: 600;
+        padding: 9px 14px;
+    }}
+    QPushButton#channelSegment:hover {{ background: {theme.surface_alt}; }}
+    QPushButton#channelSegment:checked {{
+        color: white;
+        background: {theme.accent};
+        border-color: {theme.accent};
+        border-bottom-color: {theme.accent_hover};
+    }}
     QPushButton#nav {{
         background: transparent;
         border: none;
@@ -153,7 +178,18 @@ def stylesheet(theme: Theme) -> str:
     QLineEdit:focus, QSpinBox:focus, QDoubleSpinBox:focus, QComboBox:focus {{
         border: 1px solid {theme.accent};
     }}
-    QComboBox::drop-down {{ border: none; width: 22px; }}
+    QComboBox::drop-down {{
+        subcontrol-origin: padding;
+        subcontrol-position: top right;
+        width: 26px;
+        border-left: 1px solid {theme.border};
+        background: {theme.surface};
+    }}
+    QComboBox::down-arrow {{
+        image: url("{chevron_path}");
+        width: 13px;
+        height: 13px;
+    }}
     QComboBox QAbstractItemView {{
         background: {theme.surface}; border: 1px solid {theme.border};
         selection-background-color: {theme.accent_soft};
@@ -188,16 +224,6 @@ def stylesheet(theme: Theme) -> str:
         width: 14px; height: 14px; margin: -6px 0; border-radius: 8px;
     }}
     QCheckBox {{ spacing: 7px; }}
-    QCheckBox::indicator {{
-        width: 15px; height: 15px;
-        border: 1px solid {theme.border};
-        border-radius: 4px;
-        background: {theme.surface_alt};
-    }}
-    QCheckBox::indicator:checked {{
-        background: {theme.accent};
-        border-color: {theme.accent};
-    }}
     QPlainTextEdit {{
         background: {theme.terminal}; color: {theme.terminal_text};
         border: 1px solid {theme.border}; border-radius: 9px;

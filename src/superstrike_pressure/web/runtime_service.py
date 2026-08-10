@@ -70,7 +70,9 @@ class RuntimeService:
 
         self._config = self.config_store.load()
         self._left_curve_config = self._curve_config_for(self._config.left)
-        self._right_curve_config = self._curve_config_for(self._config.right)
+        self._right_curve_config = self._curve_config_for(
+            self._effective_right_channel(self._config)
+        )
 
         self._telemetry_callback: Callable[[dict], None] | None = None
 
@@ -392,11 +394,12 @@ class RuntimeService:
 
         with self._state_lock:
             self._config = validated
+            effective_right = self._effective_right_channel(validated)
             self._left_curve_config = self._curve_config_for(validated.left)
-            self._right_curve_config = self._curve_config_for(validated.right)
+            self._right_curve_config = self._curve_config_for(effective_right)
             if self._emitter is not None:
                 left_presets = CONTACT_PRESETS[validated.left.contact_preset]
-                right_presets = CONTACT_PRESETS[validated.right.contact_preset]
+                right_presets = CONTACT_PRESETS[effective_right.contact_preset]
                 self._emitter.config = replace(
                     self._emitter.config,
                     contact_threshold=left_presets["contact_threshold"],
@@ -414,24 +417,35 @@ class RuntimeService:
                     right_contact_threshold=right_presets["contact_threshold"],
                     right_release_threshold=right_presets["release_threshold"],
                     right_min_contact_pressure=round(
-                        validated.right.pressure_floor * 1024 / 100
+                        effective_right.pressure_floor * 1024 / 100
                     ),
-                    right_path_stabilization=validated.right.path_stabilization,
-                    right_pressure_influence=validated.right.pressure_influence,
-                    right_onset_buffer=validated.right.onset_buffer,
-                    right_true_low_latency=validated.right.true_low_latency,
+                    right_path_stabilization=effective_right.path_stabilization,
+                    right_pressure_influence=effective_right.pressure_influence,
+                    right_onset_buffer=effective_right.onset_buffer,
+                    right_true_low_latency=effective_right.true_low_latency,
                     right_stationary_pressure_updates=(
-                        validated.right.stationary_pressure_updates
+                        effective_right.stationary_pressure_updates
                     ),
                     suppress_lmb=(
                         validated.left_enabled and validated.suppress_lmb
                     ),
                     suppress_rmb=(
                         validated.right_enabled
-                        and (validated.suppress_rmb or validated.rmb_aux_xtilt)
+                        and (
+                            (
+                                validated.suppress_lmb
+                                if validated.linked
+                                else validated.suppress_rmb
+                            )
+                            or (
+                                not validated.linked
+                                and validated.rmb_aux_xtilt
+                            )
+                        )
                     ),
                     rmb_aux_xtilt=(
-                        validated.left_enabled
+                        not validated.linked
+                        and validated.left_enabled
                         and validated.right_enabled
                         and validated.rmb_aux_xtilt
                     ),
@@ -440,10 +454,10 @@ class RuntimeService:
                     trace_raw_max=validated.left.raw_max,
                     trace_curve=normalize_curve_name(validated.left.curve),
                     trace_curve_strength=validated.left.curve_strength,
-                    right_trace_raw_min=validated.right.raw_min,
-                    right_trace_raw_max=validated.right.raw_max,
-                    right_trace_curve=normalize_curve_name(validated.right.curve),
-                    right_trace_curve_strength=validated.right.curve_strength,
+                    right_trace_raw_min=effective_right.raw_min,
+                    right_trace_raw_max=effective_right.raw_max,
+                    right_trace_curve=normalize_curve_name(effective_right.curve),
+                    right_trace_curve_strength=effective_right.curve_strength,
                     debug_mode=validated.debug_mode,
                 )
                 debug_setter = getattr(self._emitter, "set_debug_mode", None)
@@ -808,8 +822,9 @@ class RuntimeService:
                 merged_profiles[proc_name] = profile_name
             merged["app_profiles"] = merged_profiles
 
-        if merged.get("linked", False):
-            merged["right"] = dict(merged["left"])
+    @staticmethod
+    def _effective_right_channel(config: RuntimeConfig) -> ChannelConfig:
+        return config.left if config.linked else config.right
 
     def _curve_config_for(self, channel: ChannelConfig) -> PressureConfig:
         return PressureConfig(
@@ -824,8 +839,9 @@ class RuntimeService:
         )
 
     def _emitter_config_from_runtime(self) -> SyntheticPenConfig:
+        effective_right = self._effective_right_channel(self._config)
         left_thresholds = CONTACT_PRESETS[self._config.left.contact_preset]
-        right_thresholds = CONTACT_PRESETS[self._config.right.contact_preset]
+        right_thresholds = CONTACT_PRESETS[effective_right.contact_preset]
         return SyntheticPenConfig(
             contact_threshold=left_thresholds["contact_threshold"],
             release_threshold=left_thresholds["release_threshold"],
@@ -849,23 +865,34 @@ class RuntimeService:
             right_contact_threshold=right_thresholds["contact_threshold"],
             right_release_threshold=right_thresholds["release_threshold"],
             right_min_contact_pressure=round(
-                self._config.right.pressure_floor * 1024 / 100
+                effective_right.pressure_floor * 1024 / 100
             ),
-            right_path_stabilization=self._config.right.path_stabilization,
-            right_pressure_influence=self._config.right.pressure_influence,
-            right_onset_buffer=self._config.right.onset_buffer,
-            right_true_low_latency=self._config.right.true_low_latency,
+            right_path_stabilization=effective_right.path_stabilization,
+            right_pressure_influence=effective_right.pressure_influence,
+            right_onset_buffer=effective_right.onset_buffer,
+            right_true_low_latency=effective_right.true_low_latency,
             right_stationary_pressure_updates=(
-                self._config.right.stationary_pressure_updates
+                effective_right.stationary_pressure_updates
             ),
             pressure_interp_steps=max(1, int(round(self.launch_config.hz / 60.0))),
             suppress_lmb=(self._config.left_enabled and self._config.suppress_lmb),
             suppress_rmb=(
                 self._config.right_enabled
-                and (self._config.suppress_rmb or self._config.rmb_aux_xtilt)
+                and (
+                    (
+                        self._config.suppress_lmb
+                        if self._config.linked
+                        else self._config.suppress_rmb
+                    )
+                    or (
+                        not self._config.linked
+                        and self._config.rmb_aux_xtilt
+                    )
+                )
             ),
             rmb_aux_xtilt=(
-                self._config.left_enabled
+                not self._config.linked
+                and self._config.left_enabled
                 and self._config.right_enabled
                 and self._config.rmb_aux_xtilt
             ),
@@ -876,10 +903,10 @@ class RuntimeService:
             trace_raw_max=self._config.left.raw_max,
             trace_curve=normalize_curve_name(self._config.left.curve),
             trace_curve_strength=self._config.left.curve_strength,
-            right_trace_raw_min=self._config.right.raw_min,
-            right_trace_raw_max=self._config.right.raw_max,
-            right_trace_curve=normalize_curve_name(self._config.right.curve),
-            right_trace_curve_strength=self._config.right.curve_strength,
+            right_trace_raw_min=effective_right.raw_min,
+            right_trace_raw_max=effective_right.raw_max,
+            right_trace_curve=normalize_curve_name(effective_right.curve),
+            right_trace_curve_strength=effective_right.curve_strength,
         )
 
     def _reader_loop(self) -> None:

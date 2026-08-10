@@ -35,7 +35,6 @@ from PySide6.QtWidgets import (
     QSpinBox,
     QStackedWidget,
     QSystemTrayIcon,
-    QTabWidget,
     QToolButton,
     QVBoxLayout,
     QWidget,
@@ -48,7 +47,6 @@ from superstrike_pressure.dev_ui import (
     DevSettings,
     effective_pressure_for_raw,
     parse_dev_settings,
-    sensitivity_mapping_points,
     stroke_analysis_data,
 )
 from superstrike_pressure.ui.qt_theme import Theme, stylesheet, theme_for
@@ -119,78 +117,136 @@ class _WheelToScrollFilter(QObject):
         return True
 
 
+class _CurrentPageStack(QStackedWidget):
+    """Size a stack from its visible page instead of its largest page."""
+
+    def sizeHint(self) -> QSize:  # noqa: N802
+        current = self.currentWidget()
+        return current.sizeHint() if current is not None else super().sizeHint()
+
+    def minimumSizeHint(self) -> QSize:  # noqa: N802
+        current = self.currentWidget()
+        return (
+            current.minimumSizeHint()
+            if current is not None
+            else super().minimumSizeHint()
+        )
+
+    def setCurrentIndex(self, index: int) -> None:  # noqa: N802
+        super().setCurrentIndex(index)
+        self.updateGeometry()
+
+
 class ChannelEditor(QWidget):
     """One channel's primary and advanced pressure controls."""
 
-    def __init__(self, channel: str, config: Any, parent: QWidget | None = None) -> None:
+    def __init__(
+        self,
+        channel: str,
+        config: Any,
+        *,
+        enabled: bool,
+        parent: QWidget | None = None,
+    ) -> None:
         super().__init__(parent)
         self.setObjectName("settingsEditor")
+        self.setSizePolicy(
+            QSizePolicy.Policy.Expanding,
+            QSizePolicy.Policy.Maximum,
+        )
         self.channel = channel
+        channel_name = "Left" if channel == "left" else "Right"
         root = QVBoxLayout(self)
         root.setContentsMargins(0, 4, 0, 0)
         root.setSpacing(14)
 
-        calibration = QGridLayout()
-        calibration.setHorizontalSpacing(12)
-        calibration.setVerticalSpacing(8)
-        calibration.addWidget(_label("Raw minimum", muted=True), 0, 0)
-        calibration.addWidget(_label("Raw maximum", muted=True), 0, 1)
+        self.enabled = LabeledSwitch(
+            f"{channel_name}-click pressure",
+            f"Enable pressure output from the {channel.lower()} mouse button.",
+            checked=enabled,
+        )
+        root.addWidget(self.enabled)
+
+        self.linked_notice = _label(
+            "Uses the left-click pressure settings while linking is on.",
+            muted=True,
+            wrap=True,
+        )
+        self.linked_notice.setVisible(False)
+        root.addWidget(self.linked_notice)
+
+        self.settings_content = QWidget()
+        settings = QVBoxLayout(self.settings_content)
+        settings.setContentsMargins(0, 0, 0, 0)
+        settings.setSpacing(14)
+
+        raw_values = QGridLayout()
+        raw_values.setHorizontalSpacing(12)
+        raw_values.setVerticalSpacing(8)
+        raw_values.addWidget(_label("Raw activation value", muted=True), 0, 0)
+        raw_values.addWidget(_label("Raw full-pressure value", muted=True), 0, 1)
         self.raw_min = QSpinBox()
         self.raw_min.setRange(0, 1022)
         self.raw_min.setValue(config.raw_min)
         self.raw_max = QSpinBox()
         self.raw_max.setRange(1, 1023)
         self.raw_max.setValue(config.raw_max)
-        calibration.addWidget(self.raw_min, 1, 0)
-        calibration.addWidget(self.raw_max, 1, 1)
-        root.addLayout(calibration)
+        raw_values.addWidget(self.raw_min, 1, 0)
+        raw_values.addWidget(self.raw_max, 1, 1)
+        settings.addLayout(raw_values)
 
-        root.addWidget(_label("Pressure curve", muted=True))
+        settings.addWidget(_label("Calibration", muted=True))
+        self.calibrate_button = QPushButton("Calibrate pressure range…")
+        settings.addWidget(self.calibrate_button)
+
+        settings.addWidget(_label("Pressure curve", muted=True))
         self.curve = QComboBox()
-        self.curve.addItem("Soft", "soft")
         self.curve.addItem("Linear", "linear")
-        self.curve.addItem("Hard", "hard")
-        self.curve.addItem("S-Curve", "scurve")
+        self.curve.addItem("Logarithmic", "hard")
+        self.curve.addItem("Exponential", "soft")
         index = self.curve.findData(config.curve)
         self.curve.setCurrentIndex(max(0, index))
-        root.addWidget(self.curve)
+        settings.addWidget(self.curve)
 
         self.curve_strength = SliderField(
             "Curve strength",
-            5,
+            11,
             40,
             round(config.curve_strength * 10),
-            description="Controls how strongly the selected curve reshapes pressure.",
         )
         self.curve_strength.spin.setVisible(False)
-        self.curve_strength.value_label.setText(f"{config.curve_strength:.1f}")
+        self.curve_strength.value_label.setText(
+            f"{self.curve_strength.value() / 10:.1f}"
+        )
         self.curve_strength.valueChanged.connect(
             lambda value: self.curve_strength.value_label.setText(f"{value / 10:.1f}")
         )
-        root.addWidget(self.curve_strength)
+        settings.addWidget(self.curve_strength)
+        self.curve.currentIndexChanged.connect(self._update_curve_controls)
+        self._update_curve_controls()
 
-        contact_row = QGridLayout()
-        contact_row.setHorizontalSpacing(12)
-        contact_row.addWidget(_label("Contact feel", muted=True), 0, 0)
-        contact_row.addWidget(_label("Native click", muted=True), 0, 1)
+        settings.addWidget(_label("Press/release behavior", muted=True))
         self.contact = QComboBox()
-        for label, value in (("Light", "light"), ("Medium", "medium"), ("Firm", "firm")):
+        for label, value in (
+            ("Activates early", "light"),
+            ("Balanced", "medium"),
+            ("Requires a firmer press", "firm"),
+        ):
             self.contact.addItem(label, value)
         self.contact.setCurrentIndex(max(0, self.contact.findData(config.contact_preset)))
-        contact_row.addWidget(self.contact, 1, 0)
-        self.suppress = QCheckBox("Suppress")
-        contact_row.addWidget(self.suppress, 1, 1)
-        root.addLayout(contact_row)
-        root.addWidget(
-            _label("Controls when contact begins and releases.", muted=True, wrap=True)
+        settings.addWidget(self.contact)
+
+        self.suppress = LabeledSwitch(
+            "Block the normal mouse click",
         )
+        settings.addWidget(self.suppress)
 
         self.advanced_button = QToolButton()
         self.advanced_button.setText("Advanced settings")
         self.advanced_button.setCheckable(True)
         self.advanced_button.setToolButtonStyle(Qt.ToolButtonStyle.ToolButtonTextBesideIcon)
         self.advanced_button.setArrowType(Qt.ArrowType.RightArrow)
-        root.addWidget(self.advanced_button, 0, Qt.AlignmentFlag.AlignLeft)
+        settings.addWidget(self.advanced_button, 0, Qt.AlignmentFlag.AlignLeft)
 
         self.advanced = QWidget()
         advanced = QVBoxLayout(self.advanced)
@@ -230,9 +286,16 @@ class ChannelEditor(QWidget):
             )
             advanced.addWidget(self.xtilt)
         self.advanced.setVisible(False)
-        root.addWidget(self.advanced)
-        root.addStretch(1)
+        settings.addWidget(self.advanced)
+        self.reset_button = QPushButton(f"Reset {channel.lower()}-click settings")
+        settings.addWidget(self.reset_button)
+        root.addWidget(self.settings_content)
         self.advanced_button.toggled.connect(self._show_advanced)
+
+    def _update_curve_controls(self, *_args: Any) -> None:
+        self.curve_strength.setVisible(self.curve.currentData() != "linear")
+        self.curve_strength.updateGeometry()
+        self.updateGeometry()
 
     def _show_advanced(self, visible: bool) -> None:
         self.advanced.setVisible(visible)
@@ -243,10 +306,13 @@ class ChannelEditor(QWidget):
         self.updateGeometry()
 
     def curve_strength_value(self) -> float:
+        if self.curve.currentData() == "linear":
+            return 1.0
         return self.curve_strength.value() / 10.0
 
     def control_widgets(self) -> list[QWidget]:
         widgets: list[QWidget] = [
+            self.enabled,
             self.raw_min,
             self.raw_max,
             self.curve,
@@ -286,6 +352,9 @@ class MainWindow(QMainWindow):
         self._close_deadline = 0.0
         self._close_error: str | None = None
         self._loading = False
+        self.settings_dirty = False
+        self.calibrating = False
+        self.calibration_dialog: QDialog | None = None
         self._latest_raw = {"left": 0, "right": 0}
         self._latest_mapped = {"left": 0, "right": 0}
         self._normal_device = {"dpi": None, "haptic_left": None, "haptic_right": None}
@@ -363,31 +432,49 @@ class MainWindow(QMainWindow):
             side.addWidget(button)
         self.nav_buttons[0].setChecked(True)
         side.addStretch(1)
-        self.sidebar_backend = _label("VMulti output", muted=True)
+        side.addWidget(_label("Output device", muted=True))
+        self.sidebar_backend = QLabel("Connected")
+        self.sidebar_backend.setToolTip("VMulti virtual pen output")
         side.addWidget(self.sidebar_backend)
-        self.theme_button = QPushButton()
-        self.theme_button.clicked.connect(self._toggle_theme)
-        side.addWidget(self.theme_button)
+        footer_rule = QFrame()
+        footer_rule.setFrameShape(QFrame.Shape.HLine)
+        footer_rule.setObjectName("footerRule")
+        side.addWidget(footer_rule)
+        appearance_row = QHBoxLayout()
+        appearance_row.addWidget(_label("Appearance", muted=True))
+        self.theme_selector = QComboBox()
+        self.theme_selector.addItem("Light", "light")
+        self.theme_selector.addItem("Dark", "dark")
+        self.theme_selector.setCurrentIndex(
+            max(0, self.theme_selector.findData(self.theme_name))
+        )
+        self.theme_selector.currentIndexChanged.connect(
+            lambda _index: self.apply_theme(str(self.theme_selector.currentData()))
+        )
+        appearance_row.addWidget(self.theme_selector, 1)
+        side.addLayout(appearance_row)
         layout.addWidget(sidebar)
 
         content = QVBoxLayout()
         content.setContentsMargins(24, 18, 24, 20)
         content.setSpacing(16)
         header = QHBoxLayout()
-        self.status_label = QLabel("● Detecting mouse")
+        self.page_title = QLabel("Pressure")
+        self.page_title.setObjectName("pageTitle")
+        header.addWidget(self.page_title)
+        header.addStretch(1)
+        self.status_label = QLabel("Detecting mouse…")
         self.status_label.setObjectName("statusBusy")
         header.addWidget(self.status_label)
-        self.hz_label = _label("— Hz", muted=True)
-        header.addWidget(self.hz_label)
-        header.addStretch(1)
-        shortcut = _label("Ctrl+F12 start  ·  Ctrl+Shift+F12 stop", muted=True)
-        header.addWidget(shortcut)
-        self.save_button = QPushButton("Save settings")
+        self.save_button = QPushButton("Apply changes")
+        self.save_button.setEnabled(False)
         self.save_button.clicked.connect(self._save_or_apply)
         header.addWidget(self.save_button)
         self.start_button = QPushButton("Start")
         self.start_button.setObjectName("primary")
-        self.start_button.setToolTip("Start pressure mapping (Ctrl+F12)")
+        self.start_button.setToolTip(
+            "Apply the visible settings and start pressure output (Ctrl+F12)"
+        )
         self.start_button.setEnabled(False)
         self.start_button.clicked.connect(self._toggle_bridge)
         header.addWidget(self.start_button)
@@ -402,6 +489,9 @@ class MainWindow(QMainWindow):
             self.pages.addWidget(page)
         content.addWidget(self.pages, 1)
         layout.addLayout(content, 1)
+        self._connect_non_mapping_controls()
+        self.settings_dirty = False
+        self.save_button.setEnabled(False)
 
     def _scroll_page(self, content: QWidget) -> QScrollArea:
         area = QScrollArea()
@@ -413,95 +503,109 @@ class MainWindow(QMainWindow):
     def _build_pressure_page(self, config: RuntimeConfig) -> QWidget:
         content, layout = _page_container()
         layout.setSpacing(16)
-        options = Card(padding=16)
-        option_row = QHBoxLayout()
-        self.left_enabled = LabeledSwitch(
-            "Left pressure", checked=config.left_enabled, compact=True
-        )
-        self.right_enabled = LabeledSwitch(
-            "Right pressure", checked=config.right_enabled, compact=True
-        )
-        self.linked = LabeledSwitch(
-            "Link settings", checked=config.linked, compact=True
-        )
-        option_row.addWidget(self.left_enabled, 1)
-        option_row.addWidget(self.right_enabled, 1)
-        option_row.addWidget(self.linked, 1)
-        options.content.addLayout(option_row)
-        layout.addWidget(options)
+
+        segment_row = QHBoxLayout()
+        segment_row.setSpacing(0)
+        self.channel_group = QButtonGroup(self)
+        self.channel_group.setExclusive(True)
+        self.channel_buttons: list[QPushButton] = []
+        for index in range(2):
+            button = QPushButton()
+            button.setObjectName("channelSegment")
+            button.setCheckable(True)
+            button.clicked.connect(
+                lambda _checked=False, selected=index: self.channel_tabs.setCurrentIndex(selected)
+            )
+            self.channel_group.addButton(button, index)
+            self.channel_buttons.append(button)
+            segment_row.addWidget(button, 1)
+        self.channel_buttons[0].setChecked(True)
+        segment_row.addStretch(2)
+        layout.addLayout(segment_row)
+
+        self.linked = QCheckBox("Use the same settings for both buttons")
+        self.linked.setChecked(config.linked)
+        layout.addWidget(self.linked, 0, Qt.AlignmentFlag.AlignLeft)
 
         body = QHBoxLayout()
         body.setSpacing(16)
         editor_card = Card()
+        self.editor_card = editor_card
         editor_card.setMinimumWidth(390)
-        title = QLabel("Button settings")
-        title.setObjectName("sectionTitle")
-        editor_card.content.addWidget(title)
-        self.channel_tabs = QTabWidget()
+        editor_card.setSizePolicy(
+            QSizePolicy.Policy.Preferred,
+            QSizePolicy.Policy.Maximum,
+        )
+        self.channel_tabs = _CurrentPageStack()
+        self.channel_tabs.setSizePolicy(
+            QSizePolicy.Policy.Expanding,
+            QSizePolicy.Policy.Maximum,
+        )
         self.editors = {
-            "left": ChannelEditor("left", config.left),
-            "right": ChannelEditor("right", config.right),
+            "left": ChannelEditor(
+                "left", config.left, enabled=config.left_enabled
+            ),
+            "right": ChannelEditor(
+                "right", config.right, enabled=config.right_enabled
+            ),
         }
+        self.left_enabled = self.editors["left"].enabled
+        self.right_enabled = self.editors["right"].enabled
         self.editors["left"].suppress.setChecked(config.suppress_lmb)
         self.editors["right"].suppress.setChecked(config.suppress_rmb)
         if self.editors["right"].xtilt is not None:
             self.editors["right"].xtilt.setChecked(config.rmb_aux_xtilt)
-        self.channel_scroll_areas: dict[str, QScrollArea] = {}
-        for channel, label in (("left", "Left button"), ("right", "Right button")):
-            scroll = QScrollArea()
-            scroll.setObjectName("settingsScroll")
-            scroll.setWidgetResizable(True)
-            scroll.setHorizontalScrollBarPolicy(Qt.ScrollBarPolicy.ScrollBarAlwaysOff)
-            scroll.setVerticalScrollBarPolicy(Qt.ScrollBarPolicy.ScrollBarAsNeeded)
-            scroll.setFrameShape(QFrame.Shape.NoFrame)
-            scroll.setWidget(self.editors[channel])
-            self.channel_scroll_areas[channel] = scroll
-            self.channel_tabs.addTab(scroll, label)
+        for channel in ("left", "right"):
+            self.channel_tabs.addWidget(self.editors[channel])
+            self.editors[channel].calibrate_button.clicked.connect(
+                lambda _checked=False, selected=channel: self._begin_calibration(selected)
+            )
+            self.editors[channel].reset_button.clicked.connect(
+                lambda _checked=False, selected=channel: self._reset_channel_settings(selected)
+            )
+            self.editors[channel].advanced_button.toggled.connect(
+                lambda _checked=False: QTimer.singleShot(
+                    0, self._resize_editor_card
+                )
+            )
+            self.editors[channel].curve.currentIndexChanged.connect(
+                lambda _index: QTimer.singleShot(0, self._resize_editor_card)
+            )
         editor_card.content.addWidget(self.channel_tabs)
-        body.addWidget(editor_card, 5)
+        body.addWidget(editor_card, 5, Qt.AlignmentFlag.AlignTop)
 
         graph_column = QVBoxLayout()
         graph_card = Card()
-        graph_header = QHBoxLayout()
-        graph_title = QLabel("Sensitivity mapping")
+        graph_title = QLabel("Output Pressure")
         graph_title.setObjectName("sectionTitle")
-        graph_header.addWidget(graph_title)
-        graph_header.addStretch(1)
-        self.mapping_state = _label("Press Start for live input", muted=True)
-        graph_header.addWidget(self.mapping_state)
-        graph_card.content.addLayout(graph_header)
+        graph_card.content.addWidget(graph_title)
         self.mapping_graph = MappingGraph()
-        graph_card.content.addWidget(self.mapping_graph, 1)
+        self.mapping_graph.setFixedHeight(310)
+        graph_card.content.addWidget(self.mapping_graph)
         stats = QHBoxLayout()
-        raw_card, self.raw_metric = metric_card("Raw", "—")
-        mapped_card, self.mapped_metric = metric_card("Mapped", "—")
-        effective_card, self.effective_metric = metric_card("Effective", "—")
-        for card in (raw_card, mapped_card, effective_card):
+        raw_card, self.raw_metric = metric_card("Raw Pressure", "—")
+        input_card, self.input_metric = metric_card("Input Pressure", "—")
+        output_card, self.output_metric = metric_card("Output Pressure", "—")
+        for card in (raw_card, input_card, output_card):
             stats.addWidget(card, 1)
         graph_card.content.addLayout(stats)
-        graph_column.addWidget(graph_card, 1)
-
-        restore_card = Card(padding=14)
-        restore_row = QHBoxLayout()
-        restore_row.addWidget(_label("Default settings"), 1)
-        self.restore_button = QPushButton("Restore defaults")
-        self.restore_button.clicked.connect(self._restore_defaults)
-        restore_row.addWidget(self.restore_button)
-        restore_card.content.addLayout(restore_row)
-        graph_column.addWidget(restore_card)
+        graph_card.setSizePolicy(QSizePolicy.Policy.Expanding, QSizePolicy.Policy.Maximum)
+        graph_column.addWidget(graph_card, 0, Qt.AlignmentFlag.AlignTop)
         body.addLayout(graph_column, 7)
-        layout.addLayout(body, 1)
+        layout.addLayout(body)
+        layout.addStretch(1)
 
         self._connect_mapping_controls()
         self.left_enabled.toggled.connect(self._pressure_options_changed)
         self.right_enabled.toggled.connect(self._pressure_options_changed)
         self.linked.toggled.connect(self._pressure_options_changed)
-        self.channel_tabs.currentChanged.connect(lambda _index: self._redraw_mapping())
-        self._pressure_options_changed()
-        return content
+        self.channel_tabs.currentChanged.connect(self._channel_selected)
+        self._pressure_options_changed(mark_dirty=False)
+        return self._scroll_page(content)
 
     def _build_mouse_page(self, config: RuntimeConfig) -> QScrollArea:
         content, layout = _page_container()
+        content.setMaximumWidth(720)
         layout.setSpacing(16)
         hardware = Card()
         title = QLabel("Hardware while mapping")
@@ -677,16 +781,18 @@ class MainWindow(QMainWindow):
         self.theme = theme_for(name)
         QApplication.instance().setStyleSheet(stylesheet(self.theme))
         self._qt_settings.setValue("theme", name)
-        self.theme_button.setText("☀  Light mode" if name == "dark" else "◐  Dark mode")
+        self.theme_selector.blockSignals(True)
+        self.theme_selector.setCurrentIndex(
+            max(0, self.theme_selector.findData(name))
+        )
+        self.theme_selector.blockSignals(False)
         switches = [
-            self.left_enabled,
-            self.right_enabled,
-            self.linked,
             self.debug_mode,
             self.minimize_to_tray,
             self.release_teardown,
         ]
         for editor in self.editors.values():
+            switches.extend((editor.enabled, editor.suppress))
             if editor.xtilt is not None:
                 switches.append(editor.xtilt)
         for widget in switches:
@@ -694,11 +800,9 @@ class MainWindow(QMainWindow):
         self.mapping_graph.set_theme(self.theme)
         self.stroke_graph.set_theme(self.theme)
 
-    def _toggle_theme(self) -> None:
-        self.apply_theme("light" if self.theme_name == "dark" else "dark")
-
     def _select_page(self, index: int) -> None:
         self.pages.setCurrentIndex(index)
+        self.page_title.setText(("Pressure", "Mouse", "Stroke analysis", "Logs")[index])
         if index == 2:
             self._refresh_strokes(select_latest=False)
 
@@ -717,45 +821,81 @@ class MainWindow(QMainWindow):
                 editor.pressure_influence.valueChanged,
             ):
                 signal.connect(lambda *_args, channel=name: self._mapping_control_changed(channel))
+            editor.suppress.toggled.connect(
+                lambda *_args, channel=name: self._mapping_control_changed(channel)
+            )
+            if editor.xtilt is not None:
+                editor.xtilt.toggled.connect(self._mark_dirty)
+
+    def _connect_non_mapping_controls(self) -> None:
+        for signal in (
+            self.dpi.valueChanged,
+            self.haptics["left"].valueChanged,
+            self.haptics["right"].valueChanged,
+            self.backend.currentIndexChanged,
+            self.debug_mode.toggled,
+            self.minimize_to_tray.toggled,
+            self.injection_hz.currentIndexChanged,
+            self.release_teardown.toggled,
+        ):
+            signal.connect(self._mark_dirty)
 
     def _mapping_control_changed(self, channel: str) -> None:
         if self._loading:
             return
-        if self.linked.isChecked() and channel == "left":
-            self._copy_left_to_right()
+        self._mark_dirty()
         self._redraw_mapping()
 
-    def _copy_left_to_right(self) -> None:
-        left, right = self.editors["left"], self.editors["right"]
-        self._loading = True
-        try:
-            right.raw_min.setValue(left.raw_min.value())
-            right.raw_max.setValue(left.raw_max.value())
-            right.curve.setCurrentIndex(right.curve.findData(left.curve.currentData()))
-            right.curve_strength.setValue(left.curve_strength.value())
-            right.contact.setCurrentIndex(right.contact.findData(left.contact.currentData()))
-            right.deadzone.setValue(left.deadzone.value())
-            right.pressure_floor.setValue(left.pressure_floor.value())
-            right.path_stabilization.setValue(left.path_stabilization.value())
-            right.pressure_influence.setValue(left.pressure_influence.value())
-        finally:
-            self._loading = False
+    def _pressure_options_changed(
+        self, *_args: Any, mark_dirty: bool = True
+    ) -> None:
+        self._update_channel_tabs()
+        if mark_dirty:
+            self._mark_dirty()
+        self._redraw_mapping()
 
-    def _pressure_options_changed(self, *_args: Any) -> None:
-        both = self.left_enabled.isChecked() and self.right_enabled.isChecked()
-        self.linked.setEnabled(both)
-        if not both and self.linked.isChecked():
-            self.linked.setChecked(False)
-        self.channel_tabs.setTabEnabled(0, self.left_enabled.isChecked())
-        self.channel_tabs.setTabEnabled(
-            1,
-            self.right_enabled.isChecked() and not self.linked.isChecked(),
+    def _channel_selected(self, index: int) -> None:
+        self.channel_buttons[index].setChecked(True)
+        self._update_channel_tabs()
+        self._redraw_mapping()
+
+    def _update_channel_tabs(self) -> None:
+        linked = self.linked.isChecked()
+        states = (
+            self.left_enabled.isChecked(),
+            self.right_enabled.isChecked(),
         )
-        if self.linked.isChecked():
-            self._copy_left_to_right()
-            if self.channel_tabs.currentIndex() == 1:
-                self.channel_tabs.setCurrentIndex(0)
-        self._redraw_mapping()
+        for index, (name, enabled) in enumerate(zip(("Left click", "Right click"), states)):
+            state = "On" if enabled else "Off"
+            suffix = f" · {state} · Linked" if linked else f" · {state}"
+            self.channel_buttons[index].setText(name + suffix)
+        self.editors["left"].settings_content.setVisible(states[0])
+        self.editors["left"].linked_notice.setVisible(False)
+        self.editors["right"].settings_content.setVisible(states[1] and not linked)
+        self.editors["right"].linked_notice.setVisible(states[1] and linked)
+        self.channel_tabs.updateGeometry()
+        current = self.channel_tabs.currentWidget()
+        if current is not None:
+            current.updateGeometry()
+        QTimer.singleShot(0, self._resize_editor_card)
+
+    def _resize_editor_card(self) -> None:
+        current = self.channel_tabs.currentWidget()
+        if current is None:
+            return
+        current_height = max(1, current.sizeHint().height())
+        self.channel_tabs.setFixedHeight(current_height)
+        margins = self.editor_card.content.contentsMargins()
+        card_height = current_height + margins.top() + margins.bottom()
+        self.editor_card.setFixedHeight(card_height)
+        self.editor_card.updateGeometry()
+
+    def _mark_dirty(self, *_args: Any) -> None:
+        if self._loading:
+            return
+        self.settings_dirty = True
+        self.save_button.setText("Apply changes")
+        self.save_button.setEnabled(not self.busy)
 
     def _channel_settings(self, channel: str) -> DevSettings:
         editor = self.editors[channel]
@@ -826,13 +966,25 @@ class MainWindow(QMainWindow):
             self.nav_buttons[3].setChecked(True)
             return False
         self.sidebar_backend.setText(
-            "VMulti output" if backend == "vmulti" else "Synthetic output"
+            "Connected"
+        )
+        self.sidebar_backend.setToolTip(
+            "VMulti virtual pen output" if backend == "vmulti" else "Synthetic pen output"
+        )
+        self.settings_dirty = False
+        self.save_button.setText("Applied")
+        self.save_button.setEnabled(False)
+        QTimer.singleShot(
+            1200,
+            lambda: self.save_button.setText("Apply changes")
+            if not self.settings_dirty
+            else None,
         )
         self.write_system("Settings saved.")
         return True
 
     def _save_or_apply(self) -> None:
-        if self.busy or not self._apply_settings():
+        if self.busy or not self.settings_dirty or not self._apply_settings():
             return
         if self.running:
             self.save_button.setText("Applying…")
@@ -843,22 +995,39 @@ class MainWindow(QMainWindow):
                 self.controller.apply_device_settings(**device),
             )
 
-    def _restore_defaults(self) -> None:
+    def _reset_channel_settings(self, channel: str) -> None:
+        channel_label = f"{channel}-click"
         answer = QMessageBox.question(
             self,
-            "Restore default settings?",
-            "This will replace the current pressure and mouse settings with the recommended defaults.",
-            QMessageBox.StandardButton.RestoreDefaults | QMessageBox.StandardButton.Cancel,
+            f"Reset {channel_label} settings?",
+            f"This will restore the recommended pressure settings for {channel_label} only.",
+            QMessageBox.StandardButton.Reset | QMessageBox.StandardButton.Cancel,
             QMessageBox.StandardButton.Cancel,
         )
-        if answer != QMessageBox.StandardButton.RestoreDefaults:
+        if answer != QMessageBox.StandardButton.Reset:
             return
+        defaults = RuntimeConfig()
+        source = defaults.left if channel == "left" else defaults.right
+        editor = self.editors[channel]
+        self._loading = True
         try:
-            config = self.service.restore_defaults()
-            self._load_config(config)
-            self.write_system("Default settings restored.")
-        except Exception as exc:
-            self.write_system(f"Could not restore defaults: {exc}", level="ERROR")
+            editor.raw_min.setValue(source.raw_min)
+            editor.raw_max.setValue(source.raw_max)
+            editor.curve.setCurrentIndex(editor.curve.findData(source.curve))
+            editor.curve_strength.setValue(round(source.curve_strength * 10))
+            editor.contact.setCurrentIndex(editor.contact.findData(source.contact_preset))
+            editor.deadzone.setValue(source.deadzone_low)
+            editor.pressure_floor.setValue(source.pressure_floor)
+            editor.path_stabilization.setValue(source.path_stabilization)
+            editor.pressure_influence.setValue(source.pressure_influence)
+            editor.suppress.setChecked(
+                defaults.suppress_lmb if channel == "left" else defaults.suppress_rmb
+            )
+        finally:
+            self._loading = False
+        self._mark_dirty()
+        self._redraw_mapping()
+        self.write_system(f"{channel_label.title()} settings reset. Apply changes to save them.")
 
     def _load_config(self, config: RuntimeConfig) -> None:
         self._loading = True
@@ -889,17 +1058,125 @@ class MainWindow(QMainWindow):
             self.haptics["right"].setValue(config.session_haptic_right)
         finally:
             self._loading = False
-        self._pressure_options_changed()
+        self._pressure_options_changed(mark_dirty=False)
+
+    def _begin_calibration(self, channel: str) -> None:
+        if self.busy or self.calibrating or not self._apply_settings():
+            return
+        self.calibrating = True
+        self._set_status("Calibrating…", "busy")
+        self.start_button.setEnabled(False)
+        self.save_button.setEnabled(False)
+        for editor in self.editors.values():
+            editor.calibrate_button.setEnabled(False)
+
+        dialog = QDialog(self)
+        dialog.setWindowTitle(f"Calibrate {channel}-click pressure")
+        dialog.setModal(True)
+        dialog.setMinimumWidth(430)
+        dialog.setWindowFlag(Qt.WindowType.WindowCloseButtonHint, False)
+        dialog_layout = QVBoxLayout(dialog)
+        dialog_layout.setContentsMargins(24, 22, 24, 22)
+        dialog_layout.setSpacing(12)
+        title = QLabel(f"Calibrate {channel}-click pressure")
+        title.setObjectName("sectionTitle")
+        dialog_layout.addWidget(title)
+        self.calibration_instruction = _label(
+            "Release the button and get ready.", wrap=True
+        )
+        dialog_layout.addWidget(self.calibration_instruction)
+        self.calibration_step = _label("Preparing…", muted=True)
+        dialog_layout.addWidget(self.calibration_step)
+        self.calibration_value = _label("Live pressure: —", muted=True)
+        dialog_layout.addWidget(self.calibration_value)
+        dialog_layout.addWidget(
+            _label(
+                "The calibration advances automatically after each countdown.",
+                muted=True,
+                wrap=True,
+            )
+        )
+        self.calibration_dialog = dialog
+        dialog.show()
+
+        future = self.controller.calibrate(
+            channel,
+            config_store=self.config_store,
+            progress_cb=lambda payload: self.events.put(
+                ("calibration_progress", payload)
+            ),
+        )
+        self._watch_future("calibration_complete", future)
+
+    def _handle_calibration_progress(self, payload: dict[str, Any]) -> None:
+        if self.calibration_dialog is None:
+            return
+        phase = str(payload.get("phase", "prepare"))
+        instruction = str(payload.get("instruction", ""))
+        if phase == "countdown":
+            remaining = int(payload.get("countdown", 0))
+            next_phase = str(payload.get("next_phase", "next step")).title()
+            self.calibration_instruction.setText(instruction)
+            self.calibration_step.setText(f"{next_phase} starts in {remaining}…")
+        else:
+            phase_labels = {
+                "prepare": "Get ready",
+                "idle": "Release",
+                "light": "Light press",
+                "heavy": "Firm press",
+                "done": "Complete",
+            }
+            self.calibration_instruction.setText(instruction)
+            self.calibration_step.setText(phase_labels.get(phase, phase.title()))
+        value = int(payload.get("value", 0))
+        self.calibration_value.setText(f"Live pressure: {value}")
+
+    def _finish_calibration(
+        self,
+        result: dict[str, dict[str, int]] | None,
+        *,
+        error: Exception | None = None,
+    ) -> None:
+        if result:
+            self._loading = True
+            try:
+                for channel, values in result.items():
+                    editor = self.editors[channel]
+                    editor.raw_min.setValue(int(values["raw_min"]))
+                    editor.raw_max.setValue(int(values["raw_max"]))
+            finally:
+                self._loading = False
+            self._mark_dirty()
+            self._apply_settings()
+            self._redraw_mapping()
+            self.write_system("Pressure calibration saved.")
+        elif error is not None:
+            self.write_system(f"Calibration failed: {error}", level="ERROR")
+        if self.calibration_dialog is not None:
+            self.calibration_dialog.accept()
+            self.calibration_dialog = None
+        self.calibrating = False
+        for editor in self.editors.values():
+            editor.calibrate_button.setEnabled(True)
+        self.start_button.setEnabled(not self.detecting)
+        self.save_button.setEnabled(self.settings_dirty)
+        self._set_status(
+            "Running" if self.running else "Stopped",
+            "running" if self.running else "stopped",
+        )
 
     def _backend_changed(self, *_args: Any) -> None:
         synthetic = self.backend.currentData() == "synthetic"
         self.release_teardown.setVisible(synthetic)
-        self.sidebar_backend.setText("Synthetic output" if synthetic else "VMulti output")
+        self.sidebar_backend.setText("Connected")
+        self.sidebar_backend.setToolTip(
+            "Synthetic pen output" if synthetic else "VMulti virtual pen output"
+        )
 
     # ---------- mapping and analysis ----------
     def _visible_mapping_channels(self) -> tuple[str, ...]:
-        if self.linked.isChecked() and self.left_enabled.isChecked() and self.right_enabled.isChecked():
-            return ("left", "right")
+        if self.linked.isChecked():
+            return ("left",)
         selected = "left" if self.channel_tabs.currentIndex() == 0 else "right"
         return (selected,)
 
@@ -911,7 +1188,10 @@ class MainWindow(QMainWindow):
                 settings = self._channel_settings(channel)
             except Exception:
                 continue
-            series[channel] = sensitivity_mapping_points(settings)
+            series[channel] = [
+                (raw, effective_pressure_for_raw(settings, raw))
+                for raw in range(MappingGraph.RAW_MIN, MappingGraph.RAW_MAX + 1, 4)
+            ]
             raw_ranges[channel] = (settings.raw_min, settings.raw_max)
         self.mapping_graph.set_data(
             series,
@@ -958,7 +1238,7 @@ class MainWindow(QMainWindow):
 
     # ---------- runtime lifecycle ----------
     def _toggle_bridge(self) -> None:
-        if self.busy:
+        if self.busy or self.calibrating:
             return
         if self.running:
             self._begin_stop()
@@ -967,13 +1247,13 @@ class MainWindow(QMainWindow):
 
     def _begin_start(self) -> None:
         self.busy = True
-        self._set_status("Starting", "busy")
+        self._set_status("Starting…", "busy")
         self.start_button.setEnabled(False)
         self._watch_future("started", self.controller.start(device_settings=self._device_settings()))
 
     def _begin_stop(self) -> None:
         self.busy = True
-        self._set_status("Stopping", "busy")
+        self._set_status("Stopping…", "busy")
         self.start_button.setEnabled(False)
         self._watch_future("stopped", self.controller.stop())
 
@@ -996,15 +1276,23 @@ class MainWindow(QMainWindow):
         self.running = running
         self.busy = False
         self.start_button.setText("Stop" if running else "Start")
+        self.start_button.setToolTip(
+            "Stop pressure output (Ctrl+Shift+F12)"
+            if running
+            else "Apply the visible settings and start pressure output (Ctrl+F12)"
+        )
         self.start_button.setEnabled(not self.detecting)
-        self.save_button.setText("Apply settings live" if running else "Save settings")
-        self.save_button.setEnabled(True)
-        self.restore_button.setEnabled(not running)
+        self.save_button.setText("Apply changes")
+        self.save_button.setEnabled(self.settings_dirty)
+        for editor in self.editors.values():
+            editor.calibrate_button.setEnabled(not self.calibrating)
         self.backend.setEnabled(not running)
         self.injection_hz.setEnabled(not running)
-        self._set_status("Running" if running else "Stopped", "running" if running else "stopped")
-        if not running:
-            self.mapping_state.setText("Press Start for live input")
+        self.mapping_graph.set_live_preview(running)
+        self._set_status(
+            "Running" if running else "Stopped",
+            "running" if running else "stopped",
+        )
 
     def _set_status(self, text: str, state: str) -> None:
         object_name = {
@@ -1013,7 +1301,7 @@ class MainWindow(QMainWindow):
             "error": "statusError",
         }.get(state, "statusStopped")
         self.status_label.setObjectName(object_name)
-        self.status_label.setText(f"● {text}")
+        self.status_label.setText(text)
         self.status_label.style().unpolish(self.status_label)
         self.status_label.style().polish(self.status_label)
 
@@ -1028,7 +1316,12 @@ class MainWindow(QMainWindow):
             elif kind == "telemetry":
                 self._handle_telemetry(payload)
             elif kind == "start_hotkey":
-                if not self.running and not self.busy and not self.detecting:
+                if (
+                    not self.running
+                    and not self.busy
+                    and not self.detecting
+                    and not self.calibrating
+                ):
                     self._toggle_bridge()
             elif kind == "started":
                 self._set_running(True)
@@ -1037,11 +1330,17 @@ class MainWindow(QMainWindow):
             elif kind == "device_settings_detected":
                 self._handle_device_detected(payload)
             elif kind == "device_settings_applied":
-                self.save_button.setText("Apply settings live")
-                self.save_button.setEnabled(True)
+                self.save_button.setText("Applied")
+                self.save_button.setEnabled(False)
                 self.write_system(
                     f"Mouse settings applied: {payload['dpi']} DPI, haptics L{payload['haptic_left']}/R{payload['haptic_right']}."
                 )
+            elif kind == "calibration_progress":
+                self._handle_calibration_progress(payload)
+            elif kind == "calibration_complete":
+                self._finish_calibration(payload)
+            elif kind == "calibration_complete_error":
+                self._finish_calibration(None, error=payload)
             elif kind in {"runtime_error", "force_stopped"}:
                 self._set_running(False)
                 self._set_status("Bridge stopped", "error" if kind == "runtime_error" else "stopped")
@@ -1084,16 +1383,17 @@ class MainWindow(QMainWindow):
         selected = "left" if self.channel_tabs.currentIndex() == 0 else "right"
         raw = self._latest_raw[selected]
         mapped = self._latest_mapped[selected]
+        settings_channel = "left" if self.linked.isChecked() else selected
         try:
-            effective = effective_pressure_for_raw(self._channel_settings(selected), raw)
+            effective = effective_pressure_for_raw(self._channel_settings(settings_channel), raw)
         except Exception:
             effective = mapped
         hz = float(payload.get("hz", 0.0))
+        self.input_metric.setText(f"{mapped / 1024:.0%}")
+        self.output_metric.setText(f"{effective / 1024:.0%}")
         self.raw_metric.setText(str(raw))
-        self.mapped_metric.setText(f"{mapped / 1024:.0%}")
-        self.effective_metric.setText(f"{effective / 1024:.0%}")
-        self.mapping_state.setText(f"{selected.title()} button · live")
-        self.hz_label.setText(f"{hz:.1f} Hz")
+        if self.running:
+            self._set_status(f"Running · {hz:.0f} Hz", "running")
 
     # ---------- logs, tray, shutdown ----------
     def _write_log(self, entry: LogEntry) -> None:

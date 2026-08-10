@@ -9,7 +9,7 @@ import time
 from concurrent.futures import Future
 from concurrent.futures import TimeoutError as FutureTimeoutError
 from dataclasses import dataclass
-from typing import Any
+from typing import Any, Callable
 
 from superstrike_pressure.bridge.curves import (
     PressureConfig,
@@ -17,6 +17,8 @@ from superstrike_pressure.bridge.curves import (
     normalize_curve_name,
 )
 from superstrike_pressure.ui.stroke_analysis import stroke_analysis_data
+from superstrike_pressure.web.calibration import run_calibration
+from superstrike_pressure.web.config_store import ConfigStore
 from superstrike_pressure.web.models import CURVE_STRENGTH_MAX, CURVE_STRENGTH_MIN
 from superstrike_pressure.web.runtime_service import RuntimeService
 
@@ -232,6 +234,18 @@ class BridgeController:
                 haptic_left=haptic_left,
                 haptic_right=haptic_right,
             ),
+            self._loop,
+        )
+
+    def calibrate(
+        self,
+        channel: str,
+        *,
+        config_store: ConfigStore,
+        progress_cb: Callable[[dict[str, Any]], None],
+    ) -> Future[dict[str, dict[str, int]]]:
+        return asyncio.run_coroutine_threadsafe(
+            run_calibration(channel, self.service, progress_cb, config_store),
             self._loop,
         )
 
