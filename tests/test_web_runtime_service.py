@@ -336,7 +336,6 @@ class RuntimeServiceTests(unittest.IsolatedAsyncioTestCase):
                     "deadzone_high": 15,
                     "contact_preset": "firm",
                     "pressure_floor": 18,
-                    "rapid_release_threshold": 7,
                 },
             }
         )
@@ -348,7 +347,6 @@ class RuntimeServiceTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(holder["emitter"].config.contact_threshold, 18)
         self.assertEqual(holder["emitter"].config.release_threshold, 12)
         self.assertEqual(holder["emitter"].config.min_contact_pressure, 184)
-        self.assertEqual(holder["emitter"].config.rapid_release_threshold, 7)
         self.assertEqual(holder["emitter"].config.right_contact_threshold, 18)
         self.assertTrue(holder["emitter"].config.release_teardown)
         self.assertEqual(session.open_calls, 1)
@@ -391,7 +389,6 @@ class RuntimeServiceTests(unittest.IsolatedAsyncioTestCase):
                     "pressure_influence": 70,
                     "onset_buffer": True,
                     "stationary_pressure_updates": True,
-                    "rapid_release_threshold": 9,
                 },
             }
         )
@@ -406,7 +403,6 @@ class RuntimeServiceTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(emitter_config.right_pressure_influence, 70)
         self.assertTrue(emitter_config.right_onset_buffer)
         self.assertTrue(emitter_config.right_stationary_pressure_updates)
-        self.assertEqual(emitter_config.right_rapid_release_threshold, 9)
 
         await service.stop_stream()
 
@@ -512,7 +508,11 @@ class RuntimeServiceTests(unittest.IsolatedAsyncioTestCase):
         service.launch_config.hz = 240.0
 
         await service.start_stream()
-        await asyncio.sleep(0.06)
+        deadline = asyncio.get_running_loop().time() + 0.25
+        while len(holder["emitter"].updates) < 3:
+            if asyncio.get_running_loop().time() >= deadline:
+                break
+            await asyncio.sleep(0.005)
 
         # One pressure report should feed several independent cursor/pen ticks.
         self.assertGreaterEqual(len(holder["emitter"].updates), 3)

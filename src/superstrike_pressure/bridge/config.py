@@ -31,10 +31,6 @@ class ChannelConfig:
     # Re-emit a held contact point when a fresh hardware pressure sample
     # changes meaningfully, allowing pressure-sensitive stationary dabs.
     stationary_pressure_updates: bool = False
-    # End synthetic contact immediately on the first fresh pressure sample at
-    # or below this percentage, then wait for physical button-up before a new
-    # stroke. Zero disables the drawing-specific rapid-release behavior.
-    rapid_release_threshold: int = 2
 
 
 @dataclass

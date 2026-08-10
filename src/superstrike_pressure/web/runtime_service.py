@@ -411,9 +411,6 @@ class RuntimeService:
                     stationary_pressure_updates=(
                         validated.left.stationary_pressure_updates
                     ),
-                    rapid_release_threshold=(
-                        validated.left.rapid_release_threshold
-                    ),
                     right_contact_threshold=right_presets["contact_threshold"],
                     right_release_threshold=right_presets["release_threshold"],
                     right_min_contact_pressure=round(
@@ -425,9 +422,6 @@ class RuntimeService:
                     right_true_low_latency=validated.right.true_low_latency,
                     right_stationary_pressure_updates=(
                         validated.right.stationary_pressure_updates
-                    ),
-                    right_rapid_release_threshold=(
-                        validated.right.rapid_release_threshold
                     ),
                     suppress_lmb=(
                         validated.left_enabled and validated.suppress_lmb
@@ -852,7 +846,6 @@ class RuntimeService:
             stationary_pressure_updates=(
                 self._config.left.stationary_pressure_updates
             ),
-            rapid_release_threshold=self._config.left.rapid_release_threshold,
             right_contact_threshold=right_thresholds["contact_threshold"],
             right_release_threshold=right_thresholds["release_threshold"],
             right_min_contact_pressure=round(
@@ -864,9 +857,6 @@ class RuntimeService:
             right_true_low_latency=self._config.right.true_low_latency,
             right_stationary_pressure_updates=(
                 self._config.right.stationary_pressure_updates
-            ),
-            right_rapid_release_threshold=(
-                self._config.right.rapid_release_threshold
             ),
             pressure_interp_steps=max(1, int(round(self.launch_config.hz / 60.0))),
             suppress_lmb=(self._config.left_enabled and self._config.suppress_lmb),

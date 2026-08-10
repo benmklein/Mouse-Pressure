@@ -10,6 +10,8 @@ from superstrike_pressure.bridge.tablet_emitter import (
     VMultiPenEmitter,
     VMultiPenInjectorAdapter,
     WriteResult,
+    enumerate_vmulti_candidates,
+    resolve_vmulti_path,
 )
 
 
@@ -51,6 +53,61 @@ class _FakeVMulti:
 
     def close(self) -> None:
         pass
+
+
+def test_project_owned_vmulti_identity_and_control_collection_are_preferred(
+    monkeypatch,
+) -> None:
+    pen_path = rb"\\?\hid#vid_f055&pid_0001&col01#pen"
+    control_path = rb"\\?\hid#vid_f055&pid_0001&col02#control"
+    monkeypatch.setattr(
+        "superstrike_pressure.bridge.tablet_emitter.hid.enumerate",
+        lambda: [
+            {
+                "path": pen_path,
+                "vendor_id": 0xF055,
+                "product_id": 0x0001,
+                "usage_page": 0x000D,
+                "usage": 0x0002,
+                "manufacturer_string": "Superstrike",
+                "product_string": "Superstrike VMulti Virtual Pen",
+            },
+            {
+                "path": control_path,
+                "vendor_id": 0xF055,
+                "product_id": 0x0001,
+                "usage_page": 0xFF00,
+                "usage": 0x0001,
+                "manufacturer_string": "Superstrike",
+                "product_string": "Superstrike VMulti Virtual Pen",
+            },
+        ],
+    )
+
+    candidates = enumerate_vmulti_candidates()
+
+    assert {candidate.path for candidate in candidates} == {pen_path, control_path}
+    assert resolve_vmulti_path(requested_path=None, log=lambda _line: None) == control_path
+
+
+def test_legacy_vmulti_identity_remains_available(monkeypatch) -> None:
+    legacy_path = rb"\\?\hid#vid_00ff&pid_bacc&col05#legacy"
+    monkeypatch.setattr(
+        "superstrike_pressure.bridge.tablet_emitter.hid.enumerate",
+        lambda: [
+            {
+                "path": legacy_path,
+                "vendor_id": 0x00FF,
+                "product_id": 0xBACC,
+                "usage_page": 0xFF00,
+                "usage": 0x0001,
+            }
+        ],
+    )
+
+    candidates = enumerate_vmulti_candidates()
+
+    assert [candidate.path for candidate in candidates] == [legacy_path]
 
 
 def test_vmulti_format_a_places_signed_tilt_in_descriptor_bytes() -> None:
@@ -169,3 +226,72 @@ def test_vmulti_adapter_maps_synthetic_degrees_to_x_tilt_report_value() -> None:
     assert (ok, error) == (True, 0)
     assert fake.last_report is not None
     assert fake.last_report["tilt_x"] == 85
+
+
+def test_vmulti_adapter_uses_hid_subpixels_between_mouse_coordinates() -> None:
+    adapter = VMultiPenInjectorAdapter(
+        desktop_input=_DesktopInput(),
+        log=lambda _line: None,
+    )
+    fake = _FakeVMulti()
+    adapter._vmulti = fake  # type: ignore[assignment]  # noqa: SLF001
+
+    adapter.inject(
+        flags=POINTER_FLAG_DOWN | POINTER_FLAG_INRANGE | POINTER_FLAG_INCONTACT,
+        x=100,
+        y=100,
+        pressure_1024=500,
+        tag="down",
+    )
+    integer_100 = fake.last_report["x"]  # type: ignore[index]
+    adapter.inject(
+        flags=POINTER_FLAG_INRANGE | POINTER_FLAG_INCONTACT,
+        x=101,
+        y=100,
+        pressure_1024=500,
+        tag="move_x",
+    )
+    half_x = fake.last_report["x"]  # type: ignore[index]
+    integer_101 = round(101 / (fake.screen_w - 1) * 0x7FFF)
+
+    assert integer_100 < half_x < integer_101
+
+    adapter.inject(
+        flags=POINTER_FLAG_INRANGE | POINTER_FLAG_INCONTACT,
+        x=101,
+        y=101,
+        pressure_1024=500,
+        tag="move_y",
+    )
+    diagonal_report = dict(fake.last_report or {})
+    integer_y_100 = round(100 / (fake.screen_h - 1) * 0x7FFF)
+    integer_y_101 = round(101 / (fake.screen_h - 1) * 0x7FFF)
+    assert integer_y_100 < diagonal_report["y"] < integer_y_101
+
+    # Pressure-only reports must retain the reconstructed subpixel instead of
+    # creeping toward the integer desktop coordinate.
+    adapter.inject(
+        flags=POINTER_FLAG_INRANGE | POINTER_FLAG_INCONTACT,
+        x=101,
+        y=101,
+        pressure_1024=550,
+        tag="pressure_only",
+    )
+    assert fake.last_report is not None
+    assert (fake.last_report["x"], fake.last_report["y"]) == (
+        diagonal_report["x"],
+        diagonal_report["y"],
+    )
+
+    adapter.inject(
+        flags=POINTER_FLAG_UP,
+        x=101,
+        y=101,
+        pressure_1024=0,
+        tag="up",
+    )
+    assert fake.last_report is not None
+    assert (fake.last_report["x"], fake.last_report["y"]) == (
+        diagonal_report["x"],
+        diagonal_report["y"],
+    )

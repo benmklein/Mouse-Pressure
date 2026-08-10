@@ -3,6 +3,8 @@
 from __future__ import annotations
 
 import json
+import queue
+import threading
 import time
 from datetime import datetime
 from pathlib import Path
@@ -20,6 +22,15 @@ class StrokeTraceRecorder:
         self._events: list[dict[str, Any]] = []
         self._metadata: dict[str, Any] = {}
         self._sequence = 0
+        self._write_queue: queue.Queue[
+            tuple[Path, dict[str, Any]] | None
+        ] = queue.Queue()
+        self._writer = threading.Thread(
+            target=self._writer_main,
+            name="superstrike-trace-writer",
+            daemon=True,
+        )
+        self._writer.start()
 
     def begin(self, **metadata: Any) -> None:
         if self.active:
@@ -53,7 +64,7 @@ class StrokeTraceRecorder:
         if not any(event["kind"] == "inject" for event in self._events):
             return None
 
-        stamp = datetime.now().strftime("%Y%m%d-%H%M%S-%f")[:-3]
+        stamp = datetime.now().strftime("%Y%m%d-%H%M%S-%f")
         path = self.directory / f"stroke-{stamp}.json"
         payload = {
             "schema_version": 1,
@@ -61,6 +72,10 @@ class StrokeTraceRecorder:
             "metadata": self._metadata,
             "events": self._events,
         }
+        self._write_queue.put((path, payload))
+        return path
+
+    def _write_payload(self, path: Path, payload: dict[str, Any]) -> None:
         temporary = path.with_suffix(".json.tmp")
         try:
             self.directory.mkdir(parents=True, exist_ok=True)
@@ -72,6 +87,27 @@ class StrokeTraceRecorder:
             except OSError:
                 pass
             self.log(f"TRACE write failed for {path}: {exc}")
-            return None
+            return
         self.log(f"TRACE saved {path.resolve()}")
-        return path
+
+    def _writer_main(self) -> None:
+        while True:
+            item = self._write_queue.get()
+            try:
+                if item is None:
+                    return
+                path, payload = item
+                self._write_payload(path, payload)
+            finally:
+                self._write_queue.task_done()
+
+    def flush(self) -> None:
+        """Wait for all queued trace writes; never called on the input path."""
+        self._write_queue.join()
+
+    def close(self) -> None:
+        """Flush diagnostics and stop the background writer."""
+        if self._writer.is_alive():
+            self.flush()
+            self._write_queue.put(None)
+            self._writer.join(timeout=2.0)

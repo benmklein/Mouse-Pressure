@@ -29,8 +29,9 @@ from superstrike_pressure.sniff.hidpp_pressure import (
     normalize_raw_pressure,
 )
 
-VMULTI_VID = 0x00FF
-VMULTI_PID = 0xBACC
+VMULTI_VID = 0xF055
+VMULTI_PID = 0x0001
+VMULTI_LEGACY_IDENTITIES = frozenset({(0x00FF, 0xBACC), (0x00FF, 0xCAFE)})
 VMULTI_CONTROL_USAGE_PAGE = 0xFF00
 VMULTI_CONTROL_USAGE = 0x0001
 VMULTI_DEFAULT_COL05_PATH = (
@@ -89,7 +90,13 @@ def clamp_i(v: int, lo: int, hi: int) -> int:
     return v
 
 
-def map_range(v: int, in_lo: int, in_hi: int, out_lo: int, out_hi: int) -> int:
+def map_range(
+    v: int | float,
+    in_lo: int | float,
+    in_hi: int | float,
+    out_lo: int,
+    out_hi: int,
+) -> int:
     if in_hi <= in_lo:
         return out_lo
     t = (v - in_lo) / float(in_hi - in_lo)
@@ -248,7 +255,10 @@ def enumerate_vmulti_candidates() -> list[VMultiDeviceInfo]:
         product = to_text(d.get("product_string"))
         text = " ".join([manufacturer, product, to_text(path)]).lower()
 
-        if vid == VMULTI_VID and pid == VMULTI_PID:
+        if (vid, pid) == (VMULTI_VID, VMULTI_PID) or (
+            vid,
+            pid,
+        ) in VMULTI_LEGACY_IDENTITIES:
             out.append(
                 VMultiDeviceInfo(
                     path=bytes(path),
@@ -298,7 +308,7 @@ def resolve_vmulti_path(
 
         log("Requested VMulti path not found, falling back to enumerated candidates")
 
-    # Try known-good Col05 control endpoints first.
+    # Try known-good legacy Col05 control endpoints first when present.
     for known in (VMULTI_DEFAULT_COL05_PATH, VMULTI_ALT_COL05_PATH):
         want = _path_norm(known)
         for c in candidates:
@@ -308,9 +318,14 @@ def resolve_vmulti_path(
     ranked = sorted(
         candidates,
         key=lambda c: (
-            0 if "col05" in c.path_text.lower() else 1,
+            0
+            if (
+                c.usage_page == VMULTI_CONTROL_USAGE_PAGE
+                and c.usage == VMULTI_CONTROL_USAGE
+            )
+            else 1,
             0 if (c.vid == VMULTI_VID and c.pid == VMULTI_PID) else 1,
-            0 if (c.usage_page == VMULTI_CONTROL_USAGE_PAGE and c.usage == VMULTI_CONTROL_USAGE) else 1,
+            0 if "col05" in c.path_text.lower() else 1,
             len(c.path_text),
         ),
     )
@@ -319,9 +334,9 @@ def resolve_vmulti_path(
 
 
 class VMultiPenEmitter:
-    """Emit control-wrapped pen reports to VMulti Col05 control collection.
+    """Emit control-wrapped pen reports to the VMulti control collection.
 
-    Inner pen payload (9 bytes total):
+    Inner pen payload (10 bytes total):
       [0]  Report ID (0x05)
       [1]  Status
       [2]  X lo
@@ -335,7 +350,7 @@ class VMultiPenEmitter:
 
     Wrapped control report:
       [0]  0x40 (REPORTID_CONTROL)
-      [1]  0x09 (inner report length)
+      [1]  0x0A (inner report length)
       [2:] inner pen payload bytes above
     """
 
@@ -370,8 +385,26 @@ class VMultiPenEmitter:
             kb = known.encode("utf-8")
             if kb not in open_attempts:
                 open_attempts.append(kb)
-        for c in enumerate_vmulti_candidates():
-            if c.path not in open_attempts and "col05" in c.path_text.lower():
+        for c in sorted(
+            enumerate_vmulti_candidates(),
+            key=lambda item: (
+                0
+                if (
+                    item.usage_page == VMULTI_CONTROL_USAGE_PAGE
+                    and item.usage == VMULTI_CONTROL_USAGE
+                )
+                else 1,
+                0
+                if (item.vid == VMULTI_VID and item.pid == VMULTI_PID)
+                else 1,
+                0 if "col05" in item.path_text.lower() else 1,
+            ),
+        ):
+            is_control = (
+                c.usage_page == VMULTI_CONTROL_USAGE_PAGE
+                and c.usage == VMULTI_CONTROL_USAGE
+            ) or "col05" in c.path_text.lower()
+            if c.path not in open_attempts and is_control:
                 open_attempts.append(c.path)
 
         opened = False
@@ -384,7 +417,7 @@ class VMultiPenEmitter:
             except OSError as e:
                 self.log(f"open_path failed path={to_text(candidate)!r} error={e}")
         if not opened:
-            raise RuntimeError("Unable to open VMulti Col05 control endpoint")
+            raise RuntimeError("Unable to open VMulti control endpoint")
 
         self.dev.set_nonblocking(True)
         path_text = to_text(self.path)
@@ -734,6 +767,8 @@ class VMultiPenInjectorAdapter:
             log=log,
             log_writes=False,
         )
+        self._previous_contact_position: tuple[float, float] | None = None
+        self._last_emitted_position: tuple[float, float] | None = None
 
     def open(self) -> None:
         self._vmulti.open()
@@ -746,6 +781,57 @@ class VMultiPenInjectorAdapter:
             self._log(f"WARN VMulti final out-of-range failed: {exc}")
         finally:
             self._vmulti.close()
+            self._previous_contact_position = None
+            self._last_emitted_position = None
+
+    def _subpixel_position(
+        self,
+        *,
+        flags: int,
+        x: int | float,
+        y: int | float,
+    ) -> tuple[float, float]:
+        """Recover tablet subpixels from consecutive integer mouse samples.
+
+        A physical tablet reports absolute coordinates at much finer than
+        screen-pixel resolution. Raw mouse positions arrive on the integer
+        desktop grid, but VMulti still exposes roughly 8 coordinate units per
+        pixel on a 4K-wide desktop. The midpoint of consecutive samples is a
+        causal half-sample reconstruction that uses those HID units, removes
+        the alternating staircase of diagonal mouse motion, and costs only
+        half of one Raw Input interval.
+        """
+        raw = (float(x), float(y))
+        in_contact = bool(flags & POINTER_FLAG_INCONTACT) and not bool(
+            flags & POINTER_FLAG_UP
+        )
+        if flags & POINTER_FLAG_DOWN:
+            self._previous_contact_position = raw
+            self._last_emitted_position = raw
+            return raw
+        if in_contact:
+            previous = self._previous_contact_position
+            if previous is None:
+                emitted = raw
+            elif raw == previous:
+                # A pressure-only report must not creep the pen from the last
+                # midpoint toward the integer cursor coordinate.
+                emitted = self._last_emitted_position or raw
+            else:
+                emitted = (
+                    (previous[0] + raw[0]) * 0.5,
+                    (previous[1] + raw[1]) * 0.5,
+                )
+            self._previous_contact_position = raw
+            self._last_emitted_position = emitted
+            return emitted
+        if flags & POINTER_FLAG_UP and self._last_emitted_position is not None:
+            emitted = self._last_emitted_position
+        else:
+            emitted = raw
+        self._previous_contact_position = None
+        self._last_emitted_position = None
+        return emitted
 
     def get_cursor_pos(self) -> tuple[int, int]:
         return self._desktop_input.get_cursor_pos()
@@ -766,21 +852,26 @@ class VMultiPenInjectorAdapter:
         self,
         *,
         flags: int,
-        x: int,
-        y: int,
+        x: int | float,
+        y: int | float,
         pressure_1024: int,
         tag: str,
         tilt_x: int | None = None,
     ) -> tuple[bool, int]:
+        subpixel_x, subpixel_y = self._subpixel_position(
+            flags=flags,
+            x=x,
+            y=y,
+        )
         tablet_x = map_range(
-            int(x),
+            subpixel_x,
             self._vmulti.screen_left,
             self._vmulti.screen_left + max(1, self._vmulti.screen_w - 1),
             0,
             VMULTI_COORD_MAX,
         )
         tablet_y = map_range(
-            int(y),
+            subpixel_y,
             self._vmulti.screen_top,
             self._vmulti.screen_top + max(1, self._vmulti.screen_h - 1),
             0,
@@ -966,7 +1057,7 @@ def parse_args() -> argparse.Namespace:
     p.add_argument(
         "--vmulti-path",
         default=VMULTI_DEFAULT_COL05_PATH,
-        help="Preferred VMulti Col05 control path.",
+        help="Preferred VMulti vendor control-collection path.",
     )
     p.add_argument(
         "--vmulti-write-mode",

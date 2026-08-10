@@ -23,11 +23,13 @@ from superstrike_pressure.bridge.synthetic_pen import (  # noqa: E402
     RI_MOUSE_LEFT_BUTTON_DOWN,
     RI_MOUSE_LEFT_BUTTON_UP,
     WM_LBUTTONDOWN,
+    WM_LBUTTONUP,
     WM_MOUSEMOVE,
     WM_RBUTTONDOWN,
     _MouseLmbSuppressor,
     SyntheticPenConfig,
     SyntheticPenEmitter,
+    map_1024_to_1023,
 )
 
 
@@ -171,47 +173,112 @@ class SyntheticPenReleaseTests(unittest.TestCase):
         self.assertEqual(released.state, "idle")
         self.assertIsNone(emitter.active_button)
 
-    def test_rapid_release_ends_contact_and_latches_until_button_up(self) -> None:
-        lines: list[str] = []
+    def test_pressure_drop_never_ends_button_authoritative_contact(self) -> None:
         config = SyntheticPenConfig(
             contact_threshold=12,
             release_threshold=4,
             onset_buffer=False,
-            rapid_release_threshold=10,
         )
-        emitter = SyntheticPenEmitter(config, log=lines.append)
+        emitter = SyntheticPenEmitter(config, log=lambda _line: None)
         fake = _FakePen()
         fake._lmb = True
         emitter.pen = fake  # type: ignore[assignment]
 
         started = emitter.update(left_mapped=500, right_mapped=0, pressure_fresh=True)
-        released = emitter.update(left_mapped=90, right_mapped=0, pressure_fresh=True)
-        held = emitter.update(left_mapped=500, right_mapped=0, pressure_fresh=True)
+        low = emitter.update(left_mapped=0, right_mapped=0, pressure_fresh=True)
+        recovered = emitter.update(left_mapped=500, right_mapped=0, pressure_fresh=True)
 
         self.assertEqual(started.state, "contact")
-        self.assertEqual(released.state, "idle")
-        self.assertNotEqual(held.state, "contact")
-        self.assertTrue(emitter.pressure_release_latched)
-        self.assertTrue(any("RELEASE reason=rapid_release" in line for line in lines))
+        self.assertEqual(low.state, "contact")
+        self.assertEqual(recovered.state, "contact")
+        self.assertFalse(any(call["tag"] == "release_up" for call in fake.calls))
 
         fake._lmb = False
-        emitter.update(left_mapped=0, right_mapped=0, pressure_fresh=True)
-        self.assertFalse(emitter.pressure_release_latched)
+        released = emitter.update(left_mapped=0, right_mapped=0, pressure_fresh=True)
+        self.assertEqual(released.state, "idle")
+        self.assertEqual(fake.calls[-1]["tag"], "release_up")
 
+    def test_contact_down_uses_physical_anchor_instead_of_stale_pen_cursor(self) -> None:
+        class _AnchorSuppressor:
+            enabled = True
+
+            def heartbeat(self) -> None:
+                pass
+
+            def is_lmb_down(self) -> bool:
+                return True
+
+            def is_rmb_down(self) -> bool:
+                return False
+
+            def current_hardware_position(self) -> tuple[int, int]:
+                return (1531, 324)
+
+            def drain_hardware_positions(self) -> list[tuple[float, int, int]]:
+                return []
+
+        emitter, fake = self._mk_emitter(release_teardown=False)
+        emitter.config.onset_buffer = False
+        fake.pos = (1265, 306)  # stale VMulti-promoted OS cursor position
+        emitter._suppressor = _AnchorSuppressor()  # type: ignore[assignment]  # noqa: SLF001
+
+        emitter.update(left_mapped=500, right_mapped=0, pressure_fresh=True)
+
+        self.assertEqual(fake.calls[0]["tag"], "contact")
+        self.assertEqual((fake.calls[0]["x"], fake.calls[0]["y"]), (1531, 324))
+
+    def test_low_startup_pressure_does_not_release_button_contact(self) -> None:
+        config = SyntheticPenConfig(
+            contact_threshold=10,
+            release_threshold=6,
+            onset_buffer=False,
+            min_contact_pressure=358,
+        )
+        emitter = SyntheticPenEmitter(config, log=lambda _line: None)
+        fake = _FakePen()
         fake._lmb = True
-        restarted = emitter.update(
-            left_mapped=500,
+        emitter.pen = fake  # type: ignore[assignment]
+
+        started = emitter.update(
+            left_mapped=19,
             right_mapped=0,
             pressure_fresh=True,
         )
-        self.assertEqual(restarted.state, "contact")
+        startup_low = emitter.update(
+            left_mapped=19,
+            right_mapped=0,
+            pressure_fresh=True,
+        )
+        risen = emitter.update(
+            left_mapped=393,
+            right_mapped=0,
+            pressure_fresh=True,
+        )
 
-    def test_rapid_release_never_stamps_endpoint_or_clicks_through(self) -> None:
+        self.assertEqual(started.state, "contact")
+        self.assertEqual(startup_low.state, "contact")
+        self.assertEqual(risen.state, "contact")
+        self.assertFalse(any(call["tag"] == "release_up" for call in fake.calls))
+
+        still_contact = emitter.update(
+            left_mapped=19,
+            right_mapped=0,
+            pressure_fresh=True,
+        )
+        self.assertEqual(still_contact.state, "contact")
+        fake._lmb = False
+        released = emitter.update(
+            left_mapped=19,
+            right_mapped=0,
+            pressure_fresh=True,
+        )
+        self.assertEqual(released.state, "idle")
+
+    def test_button_up_release_never_stamps_endpoint_or_clicks_through(self) -> None:
         config = SyntheticPenConfig(
             contact_threshold=12,
             release_threshold=4,
             onset_buffer=False,
-            rapid_release_threshold=2,
             suppress_lmb=True,
             no_click_through=False,
         )
@@ -223,17 +290,18 @@ class SyntheticPenReleaseTests(unittest.TestCase):
 
         emitter.update(left_mapped=500, right_mapped=0, pressure_fresh=True)
         fake.pos = (450, 300)
-        released = emitter.update(left_mapped=0, right_mapped=0, pressure_fresh=True)
+        low = emitter.update(left_mapped=0, right_mapped=0, pressure_fresh=True)
         fake._lmb = False
-        emitter.update(left_mapped=0, right_mapped=0, pressure_fresh=True)
+        released = emitter.update(left_mapped=0, right_mapped=0, pressure_fresh=True)
 
+        self.assertEqual(low.state, "contact")
         self.assertEqual(released.state, "idle")
         self.assertFalse(
             any(call["tag"] == "release_final_contact" for call in fake.calls)
         )
         self.assertEqual(fake.left_clicks, 0)
 
-    def test_moving_stroke_drains_trailing_positions_before_rapid_release(self) -> None:
+    def test_button_up_drains_trailing_positions_before_release(self) -> None:
         class _TrailingMotionSuppressor:
             def __init__(self) -> None:
                 self.down = True
@@ -258,7 +326,6 @@ class SyntheticPenReleaseTests(unittest.TestCase):
             release_threshold=4,
             onset_buffer=False,
             min_contact_pressure=100,
-            rapid_release_threshold=2,
         )
         emitter = SyntheticPenEmitter(config, log=lambda _line: None)
         suppressor = _TrailingMotionSuppressor()
@@ -281,23 +348,7 @@ class SyntheticPenReleaseTests(unittest.TestCase):
 
         self.assertEqual(moving.state, "contact")
         self.assertEqual(requested.state, "contact")
-        self.assertEqual(emitter._pressure_release_pending, "rapid_release")  # noqa: SLF001
-        carry_pressure = emitter._release_carry_pressure  # noqa: SLF001
-        self.assertGreater(carry_pressure, config.min_contact_pressure)
         self.assertFalse(any(call["tag"] == "release_up" for call in fake.calls))
-
-        emitter._release_motion_grace_deadline = time.perf_counter() - 1.0  # noqa: SLF001
-        suppressor.positions = [(time.perf_counter(), 415, 302)]
-        renewed = emitter.update(
-            left_mapped=0,
-            right_mapped=0,
-            pressure_fresh=False,
-        )
-        self.assertEqual(renewed.state, "contact")
-        self.assertGreater(  # noqa: SLF001
-            emitter._release_motion_grace_deadline,
-            time.perf_counter(),
-        )
 
         suppressor.down = False
         suppressor.positions = [
@@ -311,7 +362,6 @@ class SyntheticPenReleaseTests(unittest.TestCase):
         )
         self.assertEqual(flushed.state, "contact")
         self.assertEqual((fake.calls[-1]["x"], fake.calls[-1]["y"]), (430, 310))
-        self.assertGreaterEqual(int(fake.calls[-1]["pressure"]), carry_pressure)
         self.assertFalse(any(call["tag"] == "release_up" for call in fake.calls))
 
         released = emitter.update(
@@ -323,14 +373,114 @@ class SyntheticPenReleaseTests(unittest.TestCase):
         self.assertEqual(fake.calls[-1]["tag"], "release_up")
         self.assertEqual((fake.calls[-1]["x"], fake.calls[-1]["y"]), (430, 310))
 
-    def test_pressure_fallback_cannot_recontact_or_click_through_during_same_hold(
+    def test_low_then_recovered_pressure_preserves_single_contact(self) -> None:
+        config = SyntheticPenConfig(
+            contact_threshold=10,
+            release_threshold=6,
+            onset_buffer=False,
+            min_contact_pressure=358,
+            debug_mode=True,
+        )
+        emitter = SyntheticPenEmitter(config, log=lambda _line: None)
+        fake = _FakePen()
+        fake._lmb = True
+        emitter.pen = fake  # type: ignore[assignment]
+
+        emitter.update(left_mapped=500, right_mapped=0, pressure_fresh=True)
+        low = emitter.update(
+            left_mapped=19,
+            right_mapped=0,
+            pressure_fresh=True,
+        )
+        self.assertEqual(low.state, "contact")
+
+        recovered = emitter.update(
+            left_mapped=393,
+            right_mapped=0,
+            pressure_fresh=True,
+        )
+        self.assertEqual(recovered.state, "contact")
+        self.assertEqual(
+            sum(bool(int(call["flags"]) & POINTER_FLAG_DOWN) for call in fake.calls),
+            1,
+        )
+        self.assertFalse(any(call["tag"] == "release_up" for call in fake.calls))
+
+    def test_captured_pressure_failures_cannot_change_button_contact_topology(
+        self,
+    ) -> None:
+        captured_sequences = {
+            "missing_stroke_startup": [19, 19, 393, 531, 621, 688, 704],
+            "half_e_transient": [
+                86,
+                114,
+                86,
+                59,
+                31,
+                19,
+                118,
+                232,
+                342,
+                417,
+                519,
+                641,
+                712,
+                731,
+            ],
+        }
+        for name, pressures in captured_sequences.items():
+            with self.subTest(name=name):
+                emitter = SyntheticPenEmitter(
+                    SyntheticPenConfig(
+                        contact_threshold=10,
+                        release_threshold=6,
+                        onset_buffer=False,
+                        min_contact_pressure=358,
+                    ),
+                    log=lambda _line: None,
+                )
+                fake = _FakePen()
+                fake._lmb = True
+                emitter.pen = fake  # type: ignore[assignment]
+
+                for pressure in pressures:
+                    sample = emitter.update(
+                        left_mapped=pressure,
+                        right_mapped=0,
+                        pressure_fresh=True,
+                    )
+                    self.assertEqual(sample.state, "contact")
+
+                self.assertEqual(
+                    sum(
+                        bool(int(call["flags"]) & POINTER_FLAG_DOWN)
+                        for call in fake.calls
+                    ),
+                    1,
+                )
+                self.assertFalse(
+                    any(call["tag"] == "release_up" for call in fake.calls)
+                )
+
+                fake._lmb = False
+                released = emitter.update(
+                    left_mapped=pressures[-1],
+                    right_mapped=0,
+                    pressure_fresh=False,
+                )
+                self.assertEqual(released.state, "idle")
+                self.assertEqual(
+                    sum(call["tag"] == "release_up" for call in fake.calls),
+                    1,
+                )
+
+    def test_repeated_zero_pressure_cannot_split_contact_during_same_hold(
         self,
     ) -> None:
         config = SyntheticPenConfig(
             contact_threshold=12,
             release_threshold=4,
             onset_buffer=False,
-            rapid_release_threshold=0,
             suppress_lmb=True,
             no_click_through=False,
         )
@@ -347,7 +497,11 @@ class SyntheticPenReleaseTests(unittest.TestCase):
         )
         emitter.update(left_mapped=0, right_mapped=0, pressure_fresh=True)
         emitter.update(left_mapped=0, right_mapped=0, pressure_fresh=True)
-        released = emitter.update(left_mapped=0, right_mapped=0, pressure_fresh=True)
+        still_contact = emitter.update(
+            left_mapped=0,
+            right_mapped=0,
+            pressure_fresh=True,
+        )
         rebound = emitter.update(
             left_mapped=500,
             right_mapped=0,
@@ -355,25 +509,17 @@ class SyntheticPenReleaseTests(unittest.TestCase):
         )
 
         self.assertEqual(started.state, "contact")
-        self.assertEqual(released.state, "idle")
-        self.assertNotEqual(rebound.state, "contact")
-        self.assertTrue(emitter.pressure_release_latched)
+        self.assertEqual(still_contact.state, "contact")
+        self.assertEqual(rebound.state, "contact")
         self.assertFalse(
             any(call["tag"] == "release_final_contact" for call in fake.calls)
         )
+        self.assertFalse(any(call["tag"] == "release_up" for call in fake.calls))
 
         fake._lmb = False
-        emitter.update(left_mapped=0, right_mapped=0, pressure_fresh=True)
-        self.assertFalse(emitter.pressure_release_latched)
+        released = emitter.update(left_mapped=0, right_mapped=0, pressure_fresh=True)
+        self.assertEqual(released.state, "idle")
         self.assertEqual(fake.left_clicks, 0)
-
-        fake._lmb = True
-        restarted = emitter.update(
-            left_mapped=500,
-            right_mapped=0,
-            pressure_fresh=True,
-        )
-        self.assertEqual(restarted.state, "contact")
 
     def test_auxiliary_right_pressure_modifies_xtilt_without_own_stroke(self) -> None:
         config = SyntheticPenConfig(
@@ -482,6 +628,67 @@ class SyntheticPenReleaseTests(unittest.TestCase):
         suppressor._handle_raw_mouse(0xA1, ignored_after_up)  # noqa: SLF001
         self.assertEqual(suppressor.drain_hardware_positions(), [])
 
+    def test_button_anchor_reconciles_idle_raw_drift_at_next_stroke(self) -> None:
+        suppressor = _MouseLmbSuppressor(log=lambda _line: None)
+        suppressor._raw_input_active = True  # noqa: SLF001
+        suppressor._raw_direct_mode = True  # noqa: SLF001
+        suppressor._raw_device_handle = 0xA1  # noqa: SLF001
+        suppressor._raw_motion_device_handle = 0xA1  # noqa: SLF001
+        suppressor._selected_raw_identity = "VID_046D&PID_C54D"  # noqa: SLF001
+        suppressor._raw_device_identities[0xA1] = "VID_046D&PID_C54D"  # noqa: SLF001
+        suppressor._logical_position_initialized = True  # noqa: SLF001
+        suppressor._raw_x = 500  # noqa: SLF001
+        suppressor._raw_y = 400  # noqa: SLF001
+
+        idle_move = RAWMOUSE()
+        idle_move.lLastX = 120
+        idle_move.lLastY = -45
+        suppressor._handle_raw_mouse(0xA1, idle_move)  # noqa: SLF001
+
+        self.assertEqual(suppressor.drain_hardware_positions(), [])
+        self.assertEqual((suppressor._raw_x, suppressor._raw_y), (620, 355))  # noqa: SLF001
+        self.assertTrue(suppressor._idle_raw_position_fresh)  # noqa: SLF001
+
+        suppressor._button_anchor = (time.perf_counter(), 615, 360)  # noqa: SLF001
+        down = RAWMOUSE()
+        down.usButtonFlags = RI_MOUSE_LEFT_BUTTON_DOWN
+        suppressor._handle_raw_mouse(0xA1, down)  # noqa: SLF001
+
+        self.assertEqual((suppressor._raw_x, suppressor._raw_y), (615, 360))  # noqa: SLF001
+        self.assertFalse(suppressor._idle_raw_position_fresh)  # noqa: SLF001
+
+    def test_late_hook_down_reconciles_raw_input_contact_before_motion(self) -> None:
+        suppressor = _MouseLmbSuppressor(log=lambda _line: None)
+        suppressor._raw_input_active = True  # noqa: SLF001
+        suppressor._raw_direct_mode = True  # noqa: SLF001
+        suppressor._raw_device_handle = 0xA1  # noqa: SLF001
+        suppressor._raw_motion_device_handle = 0xA1  # noqa: SLF001
+        suppressor._selected_raw_identity = "VID_046D&PID_C54D"  # noqa: SLF001
+        suppressor._raw_device_identities[0xA1] = "VID_046D&PID_C54D"  # noqa: SLF001
+        suppressor._logical_position_initialized = True  # noqa: SLF001
+        suppressor._idle_raw_position_fresh = True  # noqa: SLF001
+        suppressor._raw_x = 900  # noqa: SLF001
+        suppressor._raw_y = 500  # noqa: SLF001
+
+        down = RAWMOUSE()
+        down.usButtonFlags = RI_MOUSE_LEFT_BUTTON_DOWN
+        suppressor._handle_raw_mouse(0xA1, down)  # noqa: SLF001
+        self.assertEqual((suppressor._raw_x, suppressor._raw_y), (900, 500))  # noqa: SLF001
+
+        suppressor._handle_physical_hook_button(  # noqa: SLF001
+            WM_LBUTTONDOWN,
+            observed_at=time.perf_counter(),
+            x=1320,
+            y=740,
+        )
+
+        self.assertEqual((suppressor._raw_x, suppressor._raw_y), (1320, 740))  # noqa: SLF001
+        self.assertEqual(suppressor.drain_hardware_positions(), [])
+        self.assertEqual(
+            suppressor.motion_diagnostics().get("contact_anchor_corrected"),
+            1,
+        )
+
     def test_raw_input_associates_composite_motion_handle_by_vid_pid(self) -> None:
         lines: list[str] = []
         suppressor = _MouseLmbSuppressor(log=lines.append)
@@ -512,6 +719,70 @@ class SyntheticPenReleaseTests(unittest.TestCase):
         self.assertEqual(
             [(x, y) for _ts, x, y in suppressor.drain_hardware_positions()],
             [(308, 397)],
+        )
+
+    def test_hook_up_waits_for_raw_input_up_after_final_motion(self) -> None:
+        suppressor = _MouseLmbSuppressor(log=lambda _line: None)
+        suppressor.enabled = True
+        suppressor._raw_input_active = True  # noqa: SLF001
+        suppressor._raw_direct_mode = True  # noqa: SLF001
+        suppressor._raw_contact_active = True  # noqa: SLF001
+        suppressor._raw_device_handle = 0xA1  # noqa: SLF001
+        suppressor._raw_motion_device_handle = 0xA1  # noqa: SLF001
+        suppressor._selected_raw_identity = "VID_046D&PID_C54D"  # noqa: SLF001
+        suppressor._raw_device_identities[0xA1] = "VID_046D&PID_C54D"  # noqa: SLF001
+        suppressor._logical_position_initialized = True  # noqa: SLF001
+        suppressor._raw_x = 500  # noqa: SLF001
+        suppressor._raw_y = 400  # noqa: SLF001
+        suppressor._lmb_down = True  # noqa: SLF001
+
+        now = time.perf_counter()
+        suppressor._handle_physical_hook_button(  # noqa: SLF001
+            WM_LBUTTONUP,
+            observed_at=now,
+            x=500,
+            y=400,
+        )
+        self.assertTrue(suppressor.is_lmb_down())
+
+        final_packet = RAWMOUSE()
+        final_packet.usButtonFlags = RI_MOUSE_LEFT_BUTTON_UP
+        final_packet.lLastX = 9
+        suppressor._handle_raw_mouse(0xA1, final_packet)  # noqa: SLF001
+
+        self.assertFalse(suppressor.is_lmb_down())
+        self.assertEqual(
+            [(x, y) for _ts, x, y in suppressor.drain_hardware_positions()],
+            [(509, 400)],
+        )
+        diagnostics = suppressor.motion_diagnostics()
+        self.assertEqual(diagnostics["hook_up_deferred"], 1)
+        self.assertEqual(diagnostics["raw_up_received"], 1)
+        self.assertEqual(diagnostics["hook_up_timeout"], 0)
+
+    def test_hook_up_fails_open_if_raw_input_up_is_lost(self) -> None:
+        suppressor = _MouseLmbSuppressor(log=lambda _line: None)
+        suppressor.enabled = True
+        suppressor._raw_input_active = True  # noqa: SLF001
+        suppressor._raw_contact_active = True  # noqa: SLF001
+        suppressor._lmb_down = True  # noqa: SLF001
+
+        now = time.perf_counter()
+        suppressor._handle_physical_hook_button(  # noqa: SLF001
+            WM_LBUTTONUP,
+            observed_at=now,
+            x=500,
+            y=400,
+        )
+        suppressor._resolve_deferred_hook_releases(  # noqa: SLF001
+            now + 0.020
+        )
+
+        self.assertFalse(suppressor.is_lmb_down())
+        self.assertFalse(suppressor._raw_contact_active)  # noqa: SLF001
+        self.assertEqual(
+            suppressor.motion_diagnostics()["hook_up_timeout"],
+            1,
         )
 
     def test_native_hook_positions_are_ordered_screen_coordinates(self) -> None:
@@ -959,6 +1230,7 @@ class SyntheticPenReleaseTests(unittest.TestCase):
         emitter, fake = self._mk_emitter(release_teardown=False)
         emitter.config.onset_buffer = False
         emitter.config.min_contact_pressure = 123
+        emitter._event_driven_movement = True  # noqa: SLF001
         fake._lmb = True
 
         first = emitter.update(left_mapped=40, right_mapped=0, pressure_fresh=True)
@@ -967,6 +1239,29 @@ class SyntheticPenReleaseTests(unittest.TestCase):
         self.assertEqual(len(fake.calls), 1)
         self.assertEqual(fake.calls[0]["pressure"], 123)
         self.assertFalse(emitter.onset_catchup_pending)
+        visible_floor = map_1024_to_1023(123)
+        self.assertEqual(emitter._pressure_interp_value, visible_floor)  # noqa: SLF001
+        self.assertEqual(  # noqa: SLF001
+            emitter._pressure_interp_start_value,
+            visible_floor,
+        )
+        self.assertGreaterEqual(  # noqa: SLF001
+            emitter._pressure_interp_target,
+            visible_floor,
+        )
+
+        # A newer hardware sample must ramp from the pressure already visible
+        # in Krita, rather than from a hidden zero state below the floor.
+        emitter.update(left_mapped=400, right_mapped=0, pressure_fresh=True)
+        self.assertGreaterEqual(  # noqa: SLF001
+            emitter._pressure_interp_value,
+            visible_floor,
+        )
+        self.assertGreaterEqual(  # noqa: SLF001
+            emitter._pressure_interp_start_value,
+            visible_floor,
+        )
+        self.assertEqual(emitter._pressure_interp_target, 400.0)  # noqa: SLF001
 
     def test_native_mouse_move_path_is_preserved_between_pen_ticks(self) -> None:
         class _FakeSuppressor:
@@ -1179,7 +1474,6 @@ class SyntheticPenReleaseTests(unittest.TestCase):
         first_low = emitter.update(left_mapped=0, right_mapped=0, pressure_fresh=True)
 
         self.assertEqual(first_low.state, "contact")
-        self.assertEqual(emitter.low_pressure_fresh_frames, 1)
         self.assertEqual(emitter._pressure_interp_target, 0.0)  # noqa: SLF001
         self.assertEqual(fake.calls, [])
 
@@ -1620,15 +1914,13 @@ class SyntheticPenReleaseTests(unittest.TestCase):
         glitch = emitter.update(left_mapped=0, right_mapped=0, pressure_fresh=True)
 
         self.assertEqual(glitch.state, "contact")
-        self.assertEqual(emitter.low_pressure_fresh_frames, 1)
-        self.assertGreater(glitch.pen_1024, 700)
+        self.assertGreater(glitch.pen_1024, 0)
         self.assertFalse(any(call["tag"] == "release_up" for call in fake.calls))
 
         recovered = emitter.update(left_mapped=800, right_mapped=0, pressure_fresh=True)
         self.assertEqual(recovered.state, "contact")
-        self.assertEqual(emitter.low_pressure_fresh_frames, 0)
 
-    def test_pressure_fallback_requires_three_fresh_lows_and_never_stamps_blob(self) -> None:
+    def test_repeated_fresh_lows_wait_for_button_up(self) -> None:
         emitter, fake = self._mk_emitter(release_teardown=False)
         fake._lmb = True
         emitter.state = "contact"
@@ -1641,7 +1933,12 @@ class SyntheticPenReleaseTests(unittest.TestCase):
 
         self.assertEqual(first.state, "contact")
         self.assertEqual(second.state, "contact")
-        self.assertEqual(third.state, "idle")
+        self.assertEqual(third.state, "contact")
+        self.assertFalse(any(call["tag"] == "release_up" for call in fake.calls))
+
+        fake._lmb = False
+        released = emitter.update(left_mapped=0, right_mapped=0, pressure_fresh=False)
+        self.assertEqual(released.state, "idle")
         release_calls = [call for call in fake.calls if str(call["tag"]).startswith("release_")]
         self.assertEqual(len(release_calls), 1)
         self.assertEqual(release_calls[0]["tag"], "release_up")
@@ -1662,12 +1959,13 @@ class SyntheticPenReleaseTests(unittest.TestCase):
             def __init__(self) -> None:
                 self.x = 400
                 self.moves_remaining = 3
+                self.down = True
 
             def heartbeat(self) -> None:
                 return
 
             def is_lmb_down(self) -> bool:
-                return True
+                return self.down
 
             def drain_hardware_positions(self):
                 if self.moves_remaining <= 0:
@@ -1685,7 +1983,7 @@ class SyntheticPenReleaseTests(unittest.TestCase):
         self.assertEqual(first.state, "contact")
         self.assertEqual(second.state, "contact")
         self.assertEqual(third.state, "contact")
-        emitter._release_motion_grace_deadline = time.perf_counter() - 1.0  # noqa: SLF001
+        emitter._suppressor.down = False  # type: ignore[union-attr]  # noqa: SLF001
         released = emitter.update(left_mapped=0, right_mapped=0, pressure_fresh=False)
         self.assertEqual(released.state, "idle")
         contact_calls = [

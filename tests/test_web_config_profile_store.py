@@ -36,7 +36,6 @@ def _sample_runtime_config() -> RuntimeConfig:
             curve="soft",
             contact_preset="light",
             stationary_pressure_updates=True,
-            rapid_release_threshold=8,
         ),
         right=ChannelConfig(
             raw_min=84,
@@ -70,7 +69,6 @@ class ConfigStoreTests(unittest.TestCase):
             self.assertEqual(loaded.left.pressure_influence, 100)
             self.assertFalse(loaded.left.onset_buffer)
             self.assertFalse(loaded.left.stationary_pressure_updates)
-            self.assertEqual(loaded.left.rapid_release_threshold, 2)
             self.assertEqual(loaded.left.curve, "soft")
             self.assertEqual(loaded.left.curve_strength, 3.0)
             self.assertEqual(loaded.right.curve_strength, 3.1)
@@ -120,7 +118,6 @@ class ConfigStoreTests(unittest.TestCase):
             self.assertEqual(loaded.left.curve, "soft")
             self.assertEqual(loaded.right.curve, "hard")
             self.assertTrue(loaded.left.stationary_pressure_updates)
-            self.assertEqual(loaded.left.rapid_release_threshold, 8)
             self.assertFalse(loaded.right.stationary_pressure_updates)
             self.assertEqual(loaded.app_profiles["krita.exe"], "krita")
 

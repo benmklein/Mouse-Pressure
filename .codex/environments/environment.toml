@@ -48,7 +48,7 @@ command = ".venv\\Scripts\\ss-visualize.exe"
 [[actions]]
 name = "Analyze Last Stroke"
 icon = "debug"
-command = ".venv\\Scripts\\python.exe scripts\\analyze_stroke_trace.py work\\stroke_traces"
+command = ".venv\\Scripts\\python.exe scripts\\analyze_stroke_trace.py"
 
 [[actions]]
 name = "Tests"

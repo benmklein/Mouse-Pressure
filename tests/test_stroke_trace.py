@@ -1,6 +1,8 @@
 from __future__ import annotations
 
 import json
+import threading
+import time
 from pathlib import Path
 
 from superstrike_pressure.bridge.stroke_trace import StrokeTraceRecorder
@@ -21,6 +23,7 @@ def test_trace_recorder_writes_complete_stroke_atomically(tmp_path: Path) -> Non
     )
 
     output = recorder.finish("release")
+    recorder.flush()
 
     assert output is not None
     payload = json.loads(output.read_text(encoding="utf-8"))
@@ -33,6 +36,7 @@ def test_trace_recorder_writes_complete_stroke_atomically(tmp_path: Path) -> Non
     ]
     assert not list(tmp_path.glob("*.tmp"))
     assert any("TRACE saved" in line for line in lines)
+    recorder.close()
 
 
 def test_trace_without_injection_is_discarded(tmp_path: Path) -> None:
@@ -42,6 +46,7 @@ def test_trace_without_injection_is_discarded(tmp_path: Path) -> None:
 
     assert recorder.finish("no_contact") is None
     assert list(tmp_path.iterdir()) == []
+    recorder.close()
 
 
 def test_trace_write_failure_does_not_escape_stroke_cleanup(tmp_path: Path) -> None:
@@ -52,6 +57,39 @@ def test_trace_write_failure_does_not_escape_stroke_cleanup(tmp_path: Path) -> N
     recorder.begin()
     recorder.record("inject", x=1, y=2, pressure=300, flags=4, ok=True)
 
-    assert recorder.finish("release") is None
+    output = recorder.finish("release")
+    recorder.flush()
+    assert output is not None
+    assert not output.exists()
     assert recorder.active is False
     assert any("TRACE write failed" in line for line in lines)
+    recorder.close()
+
+
+def test_trace_serialization_never_blocks_stroke_release(tmp_path: Path) -> None:
+    recorder = StrokeTraceRecorder(str(tmp_path), lambda _line: None)
+    writer_started = threading.Event()
+    allow_writer = threading.Event()
+    original_write = recorder._write_payload  # noqa: SLF001
+
+    def delayed_write(path: Path, payload: dict[str, object]) -> None:
+        writer_started.set()
+        allow_writer.wait(timeout=1.0)
+        original_write(path, payload)
+
+    recorder._write_payload = delayed_write  # type: ignore[method-assign]  # noqa: SLF001
+    recorder.begin()
+    recorder.record("inject", x=1, y=2, pressure=300, flags=4, ok=True)
+
+    started_at = time.perf_counter()
+    output = recorder.finish("release")
+    elapsed = time.perf_counter() - started_at
+
+    assert output is not None
+    assert elapsed < 0.01
+    assert writer_started.wait(timeout=1.0)
+    assert not output.exists()
+    allow_writer.set()
+    recorder.flush()
+    assert output.exists()
+    recorder.close()

@@ -84,12 +84,6 @@ def _channel_from_dict(raw: Any, defaults: ChannelConfig) -> ChannelConfig:
             "stationary_pressure_updates",
             defaults.stationary_pressure_updates,
         ),
-        rapid_release_threshold=int(
-            raw.get(
-                "rapid_release_threshold",
-                defaults.rapid_release_threshold,
-            )
-        ),
     )
     errors = validate_channel_config(asdict(channel))
     if errors:
