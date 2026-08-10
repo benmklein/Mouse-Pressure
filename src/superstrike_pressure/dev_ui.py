@@ -5,7 +5,9 @@ from __future__ import annotations
 import asyncio
 import sys
 import threading
+import time
 from concurrent.futures import Future
+from concurrent.futures import TimeoutError as FutureTimeoutError
 from dataclasses import dataclass
 from typing import Any
 
@@ -179,6 +181,8 @@ class BridgeController:
         self.service = service
         self._loop = asyncio.new_event_loop()
         self._ready = threading.Event()
+        self._close_lock = threading.Lock()
+        self._closed = False
         self._thread = threading.Thread(
             target=self._run_loop,
             name="superstrike-dev-runtime",
@@ -231,18 +235,44 @@ class BridgeController:
             self._loop,
         )
 
-    def close(self, timeout: float = 4.0) -> None:
+    def close(self, timeout: float = 4.0) -> bool:
+        """Stop the runtime loop without allowing cleanup to hang the UI.
+
+        Returns ``True`` when the service and loop stopped within the timeout.
+        Repeated calls are safe and return immediately.
+        """
+        with self._close_lock:
+            if self._closed:
+                return not self._thread.is_alive()
+            self._closed = True
         if not self._thread.is_alive():
-            return
+            return True
+
+        deadline = time.monotonic() + max(0.0, float(timeout))
+        graceful = True
 
         async def stop_if_needed() -> None:
             if self.service.stream_active:
                 await self.service.stop_stream()
 
-        future = asyncio.run_coroutine_threadsafe(stop_if_needed(), self._loop)
-        future.result(timeout=timeout)
-        self._loop.call_soon_threadsafe(self._loop.stop)
-        self._thread.join(timeout=timeout)
+        future: Future[None] | None = None
+        try:
+            future = asyncio.run_coroutine_threadsafe(stop_if_needed(), self._loop)
+            future.result(timeout=max(0.0, deadline - time.monotonic()))
+        except FutureTimeoutError:
+            graceful = False
+            if future is not None:
+                future.cancel()
+        except Exception:
+            # Cleanup errors must not strand the desktop window on "Closing".
+            graceful = False
+        finally:
+            try:
+                self._loop.call_soon_threadsafe(self._loop.stop)
+            except RuntimeError:
+                pass
+            self._thread.join(timeout=max(0.0, deadline - time.monotonic()))
+        return graceful and not self._thread.is_alive()
 
 
 def main() -> int:

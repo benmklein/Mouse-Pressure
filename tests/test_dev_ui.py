@@ -1,5 +1,8 @@
 from __future__ import annotations
 
+import asyncio
+import time
+
 from superstrike_pressure.dev_ui import (
     BridgeController,
     effective_pressure_for_raw,
@@ -28,6 +31,16 @@ class _FakeRuntimeService:
     async def stop_stream(self) -> None:
         self.stop_calls += 1
         self.stream_active = False
+
+
+class _StalledRuntimeService(_FakeRuntimeService):
+    def __init__(self) -> None:
+        super().__init__()
+        self.stream_active = True
+
+    async def stop_stream(self) -> None:
+        self.stop_calls += 1
+        await asyncio.Event().wait()
 
 
 def test_dev_settings_build_linked_runtime_patch() -> None:
@@ -237,3 +250,17 @@ def test_bridge_controller_passes_session_device_settings() -> None:
         assert service.started_with == settings
     finally:
         controller.close()
+
+
+def test_bridge_controller_close_is_bounded_and_idempotent() -> None:
+    service = _StalledRuntimeService()
+    controller = BridgeController(service)  # type: ignore[arg-type]
+
+    started = time.monotonic()
+    assert controller.close(timeout=0.1) is False
+    elapsed = time.monotonic() - started
+
+    assert elapsed < 0.5
+    assert service.stop_calls == 1
+    controller.close(timeout=0.1)
+    assert service.stop_calls == 1

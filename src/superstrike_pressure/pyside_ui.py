@@ -7,6 +7,7 @@ import json
 import queue
 import sys
 import threading
+import time
 from concurrent.futures import Future
 from pathlib import Path
 from typing import Any
@@ -59,7 +60,11 @@ from superstrike_pressure.ui.qt_widgets import (
     StrokeGraph,
     metric_card,
 )
-from superstrike_pressure.ui.windows_shell import StartHotkeyListener, asset_path
+from superstrike_pressure.ui.windows_shell import (
+    SingleInstanceGuard,
+    StartHotkeyListener,
+    asset_path,
+)
 from superstrike_pressure.web.config_store import ConfigStore
 from superstrike_pressure.web.log_bus import LogBus, LogEntry
 from superstrike_pressure.web.runtime_service import RuntimeService
@@ -277,6 +282,9 @@ class MainWindow(QMainWindow):
         self.detecting = True
         self.closing = False
         self._allow_close = False
+        self._close_complete = threading.Event()
+        self._close_deadline = 0.0
+        self._close_error: str | None = None
         self._loading = False
         self._latest_raw = {"left": 0, "right": 0}
         self._latest_mapped = {"left": 0, "right": 0}
@@ -1134,30 +1142,23 @@ class MainWindow(QMainWindow):
             try:
                 self.start_hotkey.close()
                 self.controller.close()
+            except Exception as exc:
+                self._close_error = str(exc)
             finally:
-                self.events.put(("closed", None))
+                self._close_complete.set()
 
         def poll_closed() -> None:
-            drained = False
-            retained: list[tuple[str, Any]] = []
-            while True:
-                try:
-                    item = self.events.get_nowait()
-                except queue.Empty:
-                    break
-                if item[0] == "closed":
-                    drained = True
-                else:
-                    retained.append(item)
-            for item in retained:
-                self.events.put(item)
-            if drained:
+            timed_out = time.monotonic() >= self._close_deadline
+            if self._close_complete.is_set() or timed_out:
                 self._allow_close = True
+                self.event_timer.stop()
                 self.tray.hide()
+                self.close()
                 QApplication.quit()
             else:
                 QTimer.singleShot(50, poll_closed)
 
+        self._close_deadline = time.monotonic() + 6.0
         threading.Thread(target=close_runtime, name="superstrike-qt-close", daemon=True).start()
         QTimer.singleShot(50, poll_closed)
 
@@ -1167,6 +1168,18 @@ def main() -> int:
     app.setApplicationName("Superstrike Pressure")
     app.setOrganizationName("Superstrike")
     app.setQuitOnLastWindowClosed(False)
+    try:
+        instance_guard = SingleInstanceGuard()
+    except OSError as exc:
+        print(f"WARN: could not create the single-instance lock: {exc}")
+        instance_guard = None
+    if instance_guard is not None and not instance_guard.acquired:
+        QMessageBox.information(
+            None,
+            "Superstrike Pressure",
+            "Superstrike Pressure is already running. Check the taskbar or system tray.",
+        )
+        return 0
     log_bus = LogBus(maxlen=1000)
     try:
         backend = "vmulti" if enumerate_vmulti_candidates() else "synthetic"
@@ -1182,10 +1195,16 @@ def main() -> int:
         controller = BridgeController(service)
     except Exception as exc:
         print(f"ERROR: could not initialize control panel: {exc}")
+        if instance_guard is not None:
+            instance_guard.close()
         return 1
     window = MainWindow(service, controller, log_bus, config_store)
     window.show()
-    return int(app.exec())
+    try:
+        return int(app.exec())
+    finally:
+        if instance_guard is not None:
+            instance_guard.close()
 
 
 if __name__ == "__main__":

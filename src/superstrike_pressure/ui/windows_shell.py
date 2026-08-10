@@ -5,12 +5,47 @@ from __future__ import annotations
 import ctypes
 import threading
 import time
-from typing import Any
 from pathlib import Path
+from typing import Any
 
 
 def asset_path(name: str) -> Path:
     return Path(__file__).resolve().parents[1] / "assets" / name
+
+
+class SingleInstanceGuard:
+    """Hold a named Windows mutex for the lifetime of the desktop process."""
+
+    ERROR_ALREADY_EXISTS = 183
+    DEFAULT_NAME = r"Local\SuperstrikePressure.SingleInstance.v1"
+
+    def __init__(self, name: str = DEFAULT_NAME) -> None:
+        kernel32 = ctypes.WinDLL("kernel32", use_last_error=True)
+        kernel32.CreateMutexW.argtypes = [ctypes.c_void_p, ctypes.c_bool, ctypes.c_wchar_p]
+        kernel32.CreateMutexW.restype = ctypes.c_void_p
+        kernel32.CloseHandle.argtypes = [ctypes.c_void_p]
+        kernel32.CloseHandle.restype = ctypes.c_bool
+        ctypes.set_last_error(0)
+        handle = kernel32.CreateMutexW(None, False, name)
+        if not handle:
+            raise ctypes.WinError(ctypes.get_last_error())
+        self._kernel32 = kernel32
+        self._handle: int | None = int(handle)
+        self.acquired = ctypes.get_last_error() != self.ERROR_ALREADY_EXISTS
+        if not self.acquired:
+            self.close()
+
+    def close(self) -> None:
+        handle = self._handle
+        self._handle = None
+        if handle is not None:
+            self._kernel32.CloseHandle(handle)
+
+    def __enter__(self) -> SingleInstanceGuard:
+        return self
+
+    def __exit__(self, *_exc: object) -> None:
+        self.close()
 
 
 class StartHotkeyListener:
