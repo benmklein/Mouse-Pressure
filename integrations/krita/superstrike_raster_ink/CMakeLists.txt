@@ -1,6 +1,7 @@
 set(kritatoolsuperstrikeink_SOURCES
     tool_superstrike_ink.cpp
     kis_tool_superstrike_ink.cpp
+    perfect_freehand_outline.cpp
     superstrike_ink_filter.cpp
     superstrike_icons.qrc
 )

@@ -91,6 +91,51 @@ class LowLatencyInkFilter:
         return [self.update(point) for point in points]
 
 
+class StartupPressurePreviewFilter:
+    """Ease only the live startup pressure while leaving position untouched."""
+
+    def __init__(
+        self,
+        *,
+        duration_ms: float = 65.0,
+        cutoff_hz: float = 30.0,
+        default_hz: float = 240.0,
+    ) -> None:
+        self.duration_ms = max(0.0, float(duration_ms))
+        self.cutoff_hz = max(0.001, float(cutoff_hz))
+        self.default_dt_s = 1.0 / max(1.0, float(default_hz))
+        self.reset()
+
+    def reset(self) -> None:
+        self._started_at_ms: float | None = None
+        self._last_time_ms: float | None = None
+        self._pressure = 0.0
+
+    def update(self, point: InkPoint) -> InkPoint:
+        if self._started_at_ms is None or self._last_time_ms is None:
+            self._started_at_ms = float(point.time_ms)
+            self._last_time_ms = float(point.time_ms)
+            self._pressure = float(point.pressure)
+            return point
+
+        elapsed_ms = float(point.time_ms) - self._started_at_ms
+        dt_s = (float(point.time_ms) - self._last_time_ms) / 1000.0
+        if dt_s <= 0.0 or dt_s > 0.1:
+            dt_s = self.default_dt_s
+        target = float(point.pressure)
+        if 0.0 <= elapsed_ms <= self.duration_ms:
+            if target > self._pressure:
+                self._pressure = _lerp(
+                    self._pressure,
+                    target,
+                    _alpha(self.cutoff_hz, dt_s),
+                )
+        else:
+            self._pressure = target
+        self._last_time_ms = float(point.time_ms)
+        return replace(point, pressure=self._pressure)
+
+
 def _cumulative_lengths(points: list[InkPoint]) -> list[float]:
     lengths = [0.0]
     for left, right in zip(points, points[1:]):
@@ -291,6 +336,8 @@ def prepare_replay_stroke(
     spacing_px: float = 1.0,
     max_tail_px: float = 72.0,
     adaptive_tails: bool = True,
+    startup_correction_max_ms: float = 65.0,
+    minimum_start_pressure_ratio: float = 0.45,
 ) -> list[InkPoint]:
     """Densify final replay and infer visible tails from pressure change points.
 
@@ -298,7 +345,8 @@ def prepare_replay_stroke(
     occupy a large fraction of the visible line, even though it is well behaved
     on a longer stroke. Repeated pressure events at the same coordinate are
     collapsed into one distance-domain sample. Endpoint tails are detected from
-    local pressure rather than the total length or duration of the stroke.
+    local pressure rather than total stroke length. Startup correction is also
+    time-gated so a deliberate slow light-to-heavy ramp is left unchanged.
     """
     source = list(points)
     if len(source) < 2:
@@ -358,7 +406,11 @@ def prepare_replay_stroke(
             sustain_end = min(len(local), position + 7)
             if min(smoothed[position:sustain_end]) < body * 0.6:
                 continue
-            return edge_distance, max(pressure, body * 0.8)
+            if from_start:
+                elapsed_ms = dense[local[position][1]].time_ms - dense[0].time_ms
+                if elapsed_ms < 0.0 or elapsed_ms > startup_correction_max_ms:
+                    return None
+            return edge_distance, body
         return None
 
     start_tail = detect_tail(from_start=True)
@@ -371,7 +423,11 @@ def prepare_replay_stroke(
         pressure = point.pressure
         if start_tail is not None and distance < start_tail[0]:
             progress = max(0.0, min(1.0, distance / start_tail[0]))
-            pressure = start_tail[1] * (0.06 + 0.94 * progress**0.55)
+            start_ratio = max(0.0, min(1.0, minimum_start_pressure_ratio))
+            corrected_pressure = start_tail[1] * (
+                start_ratio + (1.0 - start_ratio) * progress**0.55
+            )
+            pressure = max(pressure, corrected_pressure)
         remaining = total_length - distance
         if end_tail is not None and remaining < end_tail[0]:
             progress = max(0.0, min(1.0, remaining / end_tail[0]))

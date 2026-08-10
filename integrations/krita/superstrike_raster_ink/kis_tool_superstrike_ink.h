@@ -8,7 +8,6 @@
 
 #include <QKeySequence>
 #include <QVector>
-#include <optional>
 #include <vector>
 
 #include <KoPointerEvent.h>
@@ -21,6 +20,7 @@
 
 class KisDoubleSliderSpinBox;
 class QCheckBox;
+class QComboBox;
 class SuperstrikeReplayHelper;
 
 class KisToolSuperstrikeInk : public KisToolFreehand
@@ -38,31 +38,49 @@ public:
     void endPrimaryAction(KoPointerEvent *event) override;
 
 private Q_SLOTS:
-    void setMinCutoff(qreal value);
-    void setSpeedCoefficient(qreal value);
-    void setLiveSmoothing(bool enabled);
+    void setInkMode(int mode);
+    void setPathAssistStrength(qreal value);
+    void setPressureSmoothing(qreal value);
     void setFinalAmount(qreal value);
     void setFinalPasses(qreal value);
-    void setFinalRefinement(bool enabled);
     void setAdaptiveTails(bool enabled);
     void setMaximumTailLength(qreal value);
+    void setPerfectFreehandStreamline(qreal value);
+    void setPerfectFreehandSmoothing(qreal value);
+    void setPerfectFreehandThinning(qreal value);
 
 private:
+    enum class InkMode {
+        NativeBrush = 0,
+        PathAssist = 1,
+        PerfectInk = 2,
+    };
+
     void rememberEvent(KoPointerEvent *event);
     void replayRefinedStroke();
+    void renderPerfectFreehandStroke();
+    QPointF pathAssistedPosition(KoPointerEvent *event, bool begin);
+    qreal assistedPressure(qreal pressure, ulong timeMs, bool begin);
+    qreal zoomAssistMultiplier() const;
     QPointF documentPositionFromWidget(const QPointF &point) const;
+    QPointF imagePositionFromWidget(const QPointF &point) const;
 
-    SuperstrikeInkFilter m_filter;
     SuperstrikeReplayHelper *m_replayHelper {nullptr};
     std::vector<KoPointerEventWrapper> m_events;
     QVector<QPointF> m_rawPoints;
-    qreal m_minCutoffHz {18.0};
-    qreal m_speedCoefficient {0.08};
-    qreal m_finalAmount {0.42};
+    InkMode m_inkMode {InkMode::NativeBrush};
+    qreal m_pathAssistStrength {0.2};
+    qreal m_pressureSmoothing {0.25};
+    QPointF m_pathAssistPoint;
+    bool m_pathAssistInitialized {false};
+    qreal m_assistedPressure {0.0};
+    ulong m_assistedPressureTimeMs {0};
+    qreal m_finalAmount {0.0};
     qreal m_maximumTailLengthPx {72.0};
-    int m_finalPasses {2};
-    bool m_liveSmoothing {false};
-    bool m_finalRefinement {true};
+    qreal m_perfectFreehandStreamline {0.5};
+    qreal m_perfectFreehandSmoothing {0.5};
+    qreal m_perfectFreehandThinning {1.0};
+    int m_finalPasses {0};
     bool m_adaptiveTails {true};
 };
 

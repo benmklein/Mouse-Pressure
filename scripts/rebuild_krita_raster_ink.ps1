@@ -85,6 +85,8 @@ foreach ($iconName in @(
 }
 Copy-Item -LiteralPath (Join-Path $pluginSource 'superstrike_raster_ink.action') `
     -Destination (Join-Path $distDirectory 'superstrike_raster_ink.action') -Force
+Copy-Item -LiteralPath (Join-Path $pluginSource 'THIRD_PARTY_NOTICES.md') `
+    -Destination (Join-Path $distDirectory 'THIRD_PARTY_NOTICES.md') -Force
 
 $hash = (Get-FileHash -LiteralPath $distPlugin -Algorithm SHA256).Hash
 Write-Host "Built $distPlugin"

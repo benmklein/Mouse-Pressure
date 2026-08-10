@@ -52,6 +52,7 @@ $installedPlugin = Join-Path $userPluginRoot 'kritatoolsuperstrikeink.dll'
 $userPicsRoot = Join-Path $env:APPDATA 'krita\pics'
 $userActionsRoot = Join-Path $env:APPDATA 'krita\actions'
 $actionName = 'superstrike_raster_ink.action'
+$noticeName = 'THIRD_PARTY_NOTICES.md'
 $iconNames = @(
     'superstrike_mouse.png',
     'dark_superstrike_mouse.png',
@@ -76,6 +77,10 @@ if ($Uninstall) {
     $installedAction = Join-Path $userActionsRoot $actionName
     if (Test-Path -LiteralPath $installedAction) {
         Remove-Item -LiteralPath $installedAction -Force
+    }
+    $installedNotice = Join-Path $userPluginRoot $noticeName
+    if (Test-Path -LiteralPath $installedNotice) {
+        Remove-Item -LiteralPath $installedNotice -Force
     }
     if (Test-Path -LiteralPath $builtInJunction) {
         $junction = Get-Item -LiteralPath $builtInJunction -Force
@@ -133,6 +138,12 @@ try {
     }
     Copy-Item -LiteralPath $sourceAction `
         -Destination (Join-Path $userActionsRoot $actionName) -Force
+    $sourceNotice = Join-Path $pluginDirectory $noticeName
+    if (-not (Test-Path -LiteralPath $sourceNotice -PathType Leaf)) {
+        throw "Plugin third-party notice does not exist: $sourceNotice"
+    }
+    Copy-Item -LiteralPath $sourceNotice `
+        -Destination (Join-Path $userPluginRoot $noticeName) -Force
 } catch [System.IO.IOException] {
     throw "Krita is using the installed Superstrike plugin. Save your work, fully exit Krita, then run this installer again."
 }

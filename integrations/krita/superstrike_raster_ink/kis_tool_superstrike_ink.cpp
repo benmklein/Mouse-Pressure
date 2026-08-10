@@ -4,11 +4,15 @@
  */
 
 #include "kis_tool_superstrike_ink.h"
+#include "perfect_freehand_outline.h"
 
 #include <algorithm>
 #include <cmath>
+#include <memory>
 #include <QCheckBox>
+#include <QComboBox>
 #include <QLabel>
+#include <QPainterPath>
 #include <QTabletEvent>
 #include <QtMath>
 
@@ -20,12 +24,18 @@
 #include <canvas/kis_canvas2.h>
 #include <canvas/kis_coordinates_converter.h>
 #include <kis_cursor.h>
+#include <kis_figure_painting_tool_helper.h>
+#include <kis_paintop_preset.h>
+#include <kis_paintop_settings.h>
 #include <kis_slider_spin_box.h>
 #include <kis_smoothing_options.h>
 #include <kis_tool_freehand_helper.h>
 #include <kundo2magicstring.h>
 
 namespace {
+constexpr qreal STARTUP_CORRECTION_MAX_MS = 65.0;
+constexpr qreal MINIMUM_START_PRESSURE_RATIO = 0.45;
+
 struct ReplaySample
 {
     QPointF point;
@@ -40,6 +50,33 @@ struct ReplaySample
 qreal interpolate(qreal left, qreal right, qreal amount)
 {
     return left + (right - left) * amount;
+}
+
+std::unique_ptr<QTabletEvent> copyTabletEventWithPressure(
+    const QTabletEvent *source,
+    qreal pressure)
+{
+    if (!source) {
+        return {};
+    }
+    auto event = std::make_unique<QTabletEvent>(
+        source->type(),
+        source->posF(),
+        source->globalPosF(),
+        source->deviceType(),
+        source->pointerType(),
+        qBound<qreal>(0.0, pressure, 1.0),
+        source->xTilt(),
+        source->yTilt(),
+        source->tangentialPressure(),
+        source->rotation(),
+        source->z(),
+        source->modifiers(),
+        source->uniqueId(),
+        source->button(),
+        source->buttons());
+    event->setTimestamp(source->timestamp());
+    return event;
 }
 
 struct DetectedTail
@@ -113,9 +150,16 @@ DetectedTail detectTail(const QVector<ReplaySample> &samples,
             }
         }
         if (sustained) {
+            if (fromStart) {
+                const qint64 elapsedMs = qint64(sample.timeMs) -
+                    qint64(samples.front().timeMs);
+                if (elapsedMs < 0 || elapsedMs > STARTUP_CORRECTION_MAX_MS) {
+                    return {};
+                }
+            }
             return {true,
                     edgeDistance,
-                    qMax(sample.pressure, bodyPressure * 0.8)};
+                    bodyPressure};
         }
     }
     return {};
@@ -205,8 +249,11 @@ QVector<ReplaySample> prepareReplaySamples(
         if (startTail.valid && sample.distance < startTail.length) {
             const qreal progress = qBound<qreal>(
                 0.0, sample.distance / startTail.length, 1.0);
-            sample.pressure = startTail.bodyPressure *
-                (0.06 + 0.94 * std::pow(progress, 0.55));
+            const qreal correctedPressure = startTail.bodyPressure *
+                (MINIMUM_START_PRESSURE_RATIO +
+                 (1.0 - MINIMUM_START_PRESSURE_RATIO) *
+                     std::pow(progress, 0.55));
+            sample.pressure = qMax(sample.pressure, correctedPressure);
         }
         const qreal remaining = totalLength - sample.distance;
         if (endTail.valid && remaining < endTail.length) {
@@ -258,16 +305,20 @@ void KisToolSuperstrikeInk::activate(const QSet<KoShape *> &shapes)
 {
     KisToolFreehand::activate(shapes);
     const KConfigGroup config = KSharedConfig::openConfig()->group(toolId());
-    m_minCutoffHz = config.readEntry("minCutoffHz", 18.0);
-    m_speedCoefficient = config.readEntry("speedCoefficient", 0.08);
-    m_liveSmoothing = config.readEntry("liveSmoothing", false);
-    m_finalAmount = config.readEntry("finalAmount", 0.42);
-    m_finalPasses = config.readEntry("finalPasses", 2);
-    m_finalRefinement = config.readEntry("finalRefinement", true);
+    const int storedMode = config.readEntry("inkMode", 0);
+    m_inkMode = static_cast<InkMode>(qBound(0, storedMode, 2));
+    m_pathAssistStrength = config.readEntry("pathAssistStrength", 0.2);
+    m_pressureSmoothing = config.readEntry("pressureSmoothing", 0.25);
+    m_finalAmount = config.readEntry("finalAmount", 0.0);
+    m_finalPasses = config.readEntry("finalPasses", 0);
     m_adaptiveTails = config.readEntry("adaptiveTails", true);
     m_maximumTailLengthPx = config.readEntry("maximumTailLengthPx", 72.0);
-    m_filter.setMinCutoff(m_minCutoffHz);
-    m_filter.setSpeedCoefficient(m_speedCoefficient);
+    m_perfectFreehandStreamline = config.readEntry(
+        "perfectFreehandStreamline", 0.5);
+    m_perfectFreehandSmoothing = config.readEntry(
+        "perfectFreehandSmoothing", 0.5);
+    m_perfectFreehandThinning = config.readEntry(
+        "perfectFreehandThinning", 1.0);
 }
 
 void KisToolSuperstrikeInk::rememberEvent(KoPointerEvent *event)
@@ -286,18 +337,108 @@ QPointF KisToolSuperstrikeInk::documentPositionFromWidget(
     return kritaCanvas->coordinatesConverter()->widgetToDocument(point);
 }
 
+QPointF KisToolSuperstrikeInk::imagePositionFromWidget(
+    const QPointF &point) const
+{
+    const auto *kritaCanvas = dynamic_cast<KisCanvas2 *>(canvas());
+    if (!kritaCanvas) {
+        return point;
+    }
+    return kritaCanvas->coordinatesConverter()->widgetToImage(point);
+}
+
+QPointF KisToolSuperstrikeInk::pathAssistedPosition(KoPointerEvent *event,
+                                                    bool begin)
+{
+    const QPointF rawPoint = convertDocumentToWidget(event->point);
+    if (begin || !m_pathAssistInitialized) {
+        m_pathAssistPoint = rawPoint;
+        m_pathAssistInitialized = true;
+    } else {
+        // Perfect Freehand's streamline is a causal interpolation toward the
+        // newest input point. Keep the range deliberately mild here: even at
+        // maximum assistance this trails by less than one input sample, so
+        // the active Krita brush remains responsive and owns all pressure,
+        // texture, spacing, opacity, and sensor behavior.
+        const qreal strength = qBound<qreal>(
+            0.0, m_pathAssistStrength * zoomAssistMultiplier(), 1.0);
+        const qreal follow = 1.0 - 0.35 * strength;
+        m_pathAssistPoint += (rawPoint - m_pathAssistPoint) * follow;
+    }
+    return documentPositionFromWidget(m_pathAssistPoint);
+}
+
+qreal KisToolSuperstrikeInk::zoomAssistMultiplier() const
+{
+    const auto *kritaCanvas = dynamic_cast<KisCanvas2 *>(canvas());
+    if (!kritaCanvas) {
+        return 1.0;
+    }
+    const qreal zoom = qMax<qreal>(0.01,
+        kritaCanvas->coordinatesConverter()->effectiveZoom());
+    if (zoom >= 1.0) {
+        return 1.0;
+    }
+    // At low canvas zoom, one integer screen-pixel input step expands into
+    // several image pixels. Increase assistance gradually to hide that
+    // quantization when the stroke is inspected at 100% later.
+    return 1.0 + 0.5 * std::log2(1.0 / zoom);
+}
+
+qreal KisToolSuperstrikeInk::assistedPressure(qreal pressure,
+                                              ulong timeMs,
+                                              bool begin)
+{
+    pressure = qBound<qreal>(0.0, pressure, 1.0);
+    const qreal smoothing = qBound<qreal>(
+        0.0, m_pressureSmoothing * zoomAssistMultiplier(), 1.0);
+    if (begin || smoothing <= 0.000001) {
+        m_assistedPressure = pressure;
+        m_assistedPressureTimeMs = timeMs;
+        return pressure;
+    }
+    qreal dtSeconds = timeMs > m_assistedPressureTimeMs
+        ? qreal(timeMs - m_assistedPressureTimeMs) / 1000.0
+        : 1.0 / 240.0;
+    if (dtSeconds <= 0.0 || dtSeconds > 0.1) {
+        dtSeconds = 1.0 / 240.0;
+    }
+    const qreal cutoffHz = interpolate(40.0, 8.0, smoothing);
+    const qreal alpha = 1.0 - std::exp(-2.0 * M_PI * cutoffHz * dtSeconds);
+    m_assistedPressure = interpolate(m_assistedPressure, pressure, alpha);
+    m_assistedPressureTimeMs = timeMs;
+    return m_assistedPressure;
+}
+
 void KisToolSuperstrikeInk::beginPrimaryAction(KoPointerEvent *event)
 {
     m_events.clear();
     m_rawPoints.clear();
-    m_filter.reset();
-    rememberEvent(event);
-    const QPointF position = m_liveSmoothing
-        ? documentPositionFromWidget(m_filter.update(
-              convertDocumentToWidget(event->point), event->time()))
-        : event->point;
-    KoPointerEvent filteredEvent(event, position);
-    KisToolFreehand::beginPrimaryAction(&filteredEvent);
+    m_pathAssistInitialized = false;
+    if (m_inkMode == InkMode::PerfectInk) {
+        rememberEvent(event);
+    }
+
+    if (m_inkMode == InkMode::PathAssist) {
+        const KoPointerEventWrapper original = event->deepCopyEvent();
+        const auto *tablet = dynamic_cast<const QTabletEvent *>(
+            original.baseQtEvent.data());
+        auto assistedTablet = copyTabletEventWithPressure(
+            tablet, assistedPressure(event->pressure(), event->time(), true));
+        if (assistedTablet) {
+            KoPointerEvent assistedEvent(
+                assistedTablet.get(), pathAssistedPosition(event, true));
+            KisToolFreehand::beginPrimaryAction(&assistedEvent);
+        } else {
+            KoPointerEvent assistedEvent(
+                event, pathAssistedPosition(event, true));
+            KisToolFreehand::beginPrimaryAction(&assistedEvent);
+        }
+    } else {
+        // Native Brush and the Perfect Ink preview receive Krita's original
+        // event unchanged. In particular, do not remap or smooth pressure.
+        KisToolFreehand::beginPrimaryAction(event);
+    }
     if (mode() != KisTool::PAINT_MODE) {
         m_events.clear();
         m_rawPoints.clear();
@@ -306,13 +447,27 @@ void KisToolSuperstrikeInk::beginPrimaryAction(KoPointerEvent *event)
 
 void KisToolSuperstrikeInk::continuePrimaryAction(KoPointerEvent *event)
 {
-    rememberEvent(event);
-    const QPointF position = m_liveSmoothing
-        ? documentPositionFromWidget(m_filter.update(
-              convertDocumentToWidget(event->point), event->time()))
-        : event->point;
-    KoPointerEvent filteredEvent(event, position);
-    KisToolFreehand::continuePrimaryAction(&filteredEvent);
+    if (m_inkMode == InkMode::PerfectInk) {
+        rememberEvent(event);
+    }
+    if (m_inkMode == InkMode::PathAssist) {
+        const KoPointerEventWrapper original = event->deepCopyEvent();
+        const auto *tablet = dynamic_cast<const QTabletEvent *>(
+            original.baseQtEvent.data());
+        auto assistedTablet = copyTabletEventWithPressure(
+            tablet, assistedPressure(event->pressure(), event->time(), false));
+        if (assistedTablet) {
+            KoPointerEvent assistedEvent(
+                assistedTablet.get(), pathAssistedPosition(event, false));
+            KisToolFreehand::continuePrimaryAction(&assistedEvent);
+        } else {
+            KoPointerEvent assistedEvent(
+                event, pathAssistedPosition(event, false));
+            KisToolFreehand::continuePrimaryAction(&assistedEvent);
+        }
+    } else {
+        KisToolFreehand::continuePrimaryAction(event);
+    }
 }
 
 void KisToolSuperstrikeInk::replayRefinedStroke()
@@ -397,6 +552,114 @@ void KisToolSuperstrikeInk::replayRefinedStroke()
     }
 }
 
+void KisToolSuperstrikeInk::renderPerfectFreehandStroke()
+{
+    if (m_events.empty() || m_rawPoints.isEmpty()) {
+        return;
+    }
+    const QVector<QPointF> refined = SuperstrikeInkFilter::refine(
+        m_rawPoints, m_finalAmount, m_finalPasses);
+    QVector<ReplaySample> replay = prepareReplaySamples(
+        refined,
+        m_events,
+        false,
+        m_maximumTailLengthPx);
+    if (replay.isEmpty()) {
+        return;
+    }
+
+    if (m_adaptiveTails && replay.size() >= 4) {
+        const qreal totalLength = replay.back().distance;
+        const DetectedTail outlineStartTail = detectTail(
+            replay, totalLength, true, m_maximumTailLengthPx);
+        const DetectedTail outlineEndTail = detectTail(
+            replay, totalLength, false, m_maximumTailLengthPx);
+        int firstIndex = 0;
+        int lastIndex = replay.size() - 1;
+        if (outlineStartTail.valid) {
+            while (firstIndex < lastIndex &&
+                   replay[firstIndex].distance < outlineStartTail.length) {
+                ++firstIndex;
+            }
+        }
+        if (outlineEndTail.valid) {
+            const qreal cutoff = totalLength - outlineEndTail.length;
+            while (lastIndex > firstIndex &&
+                   replay[lastIndex].distance > cutoff) {
+                --lastIndex;
+            }
+        }
+        if (lastIndex > firstIndex) {
+            replay = replay.mid(firstIndex, lastIndex - firstIndex + 1);
+        }
+    }
+
+    QVector<PerfectFreehandSample> samples;
+    samples.reserve(replay.size());
+    for (const ReplaySample &sample : replay) {
+        // KisFigurePaintingToolHelper forwards polygon vertices directly to
+        // KisPainter, whose geometry is expressed in image pixels. The live
+        // freehand path uses document coordinates, so it intentionally keeps
+        // using documentPositionFromWidget() elsewhere.
+        samples.push_back({imagePositionFromWidget(sample.point),
+                           sample.pressure});
+    }
+
+    qreal brushDiameter = 16.0;
+    const KisPaintOpPresetSP preset = currentPaintOpPreset();
+    if (preset && preset->settings()) {
+        brushDiameter = qMax<qreal>(0.1,
+            preset->settings()->paintOpSize());
+    }
+    PerfectFreehandOptions options;
+    options.thinning = m_perfectFreehandThinning;
+    options.smoothing = m_perfectFreehandSmoothing;
+    options.streamline = m_perfectFreehandStreamline;
+    options.complete = true;
+    // perfect-freehand's `size` is the diameter at 0.5 pressure. Krita's
+    // brush size is its maximum diameter, so normalize the outline to keep
+    // full pressure aligned with the size shown in Krita's toolbar.
+    options.size = brushDiameter /
+        qMax<qreal>(0.05, 1.0 + options.thinning);
+
+    const QVector<QPointF> outline = PerfectFreehandOutline::getStroke(
+        samples, options);
+    if (outline.size() < 3) {
+        replayRefinedStroke();
+        return;
+    }
+
+    m_replayHelper->cancelPreview();
+    KisFigurePaintingToolHelper helper(
+        kundo2_i18n("Superstrike Perfect Freehand Stroke"),
+        image(),
+        currentNode(),
+        canvas()->resourceManager(),
+        KisToolShapeUtils::StrokeStyleNone,
+        KisToolShapeUtils::FillStyleForegroundColor);
+    // Perfect Freehand's outline points are intentionally sparse. Its
+    // reference renderer joins them with quadratic curves through successive
+    // midpoints; drawing straight polygon edges makes large strokes look
+    // faceted and turns round endpoint caps into visible bevels.
+    //
+    // QPainterPath defaults to odd-even filling, which cuts holes where the
+    // variable-width outline crosses itself (for example in a handwritten
+    // loop). Use non-zero winding so overlapping parts remain solid ink.
+    QPainterPath outlinePath;
+    outlinePath.setFillRule(Qt::WindingFill);
+    outlinePath.moveTo(outline.front());
+    const QPointF firstMidpoint =
+        (outline[1] + outline[2]) / 2.0;
+    outlinePath.quadTo(outline[1], firstMidpoint);
+    for (int index = 2; index < outline.size() - 1; ++index) {
+        const QPointF midpoint =
+            (outline[index] + outline[index + 1]) / 2.0;
+        outlinePath.quadTo(outline[index], midpoint);
+    }
+    outlinePath.closeSubpath();
+    helper.paintPainterPath(outlinePath);
+}
+
 void KisToolSuperstrikeInk::endPrimaryAction(KoPointerEvent *event)
 {
     if (mode() != KisTool::PAINT_MODE) {
@@ -404,10 +667,15 @@ void KisToolSuperstrikeInk::endPrimaryAction(KoPointerEvent *event)
         m_rawPoints.clear();
         return;
     }
-    if (m_finalRefinement && m_rawPoints.size() >= 3) {
-        replayRefinedStroke();
+    if (m_inkMode == InkMode::PerfectInk && m_rawPoints.size() >= 2) {
+        renderPerfectFreehandStroke();
     }
-    KisToolFreehand::endPrimaryAction(event);
+    if (m_inkMode == InkMode::PathAssist) {
+        KoPointerEvent assistedEvent(event, pathAssistedPosition(event, false));
+        KisToolFreehand::endPrimaryAction(&assistedEvent);
+    } else {
+        KisToolFreehand::endPrimaryAction(event);
+    }
     m_events.clear();
     m_rawPoints.clear();
 }
@@ -417,31 +685,50 @@ QWidget *KisToolSuperstrikeInk::createOptionWidget()
     QWidget *optionsWidget = KisToolFreehand::createOptionWidget();
     optionsWidget->setObjectName(toolId() + " option widget");
 
-    auto *liveToggle = new QCheckBox(i18n("Smooth live preview (adds trailing)"), optionsWidget);
-    liveToggle->setChecked(m_liveSmoothing);
-    connect(liveToggle, SIGNAL(toggled(bool)), this, SLOT(setLiveSmoothing(bool)));
-    addOptionWidgetOption(liveToggle, new QLabel(i18n("Live pass:"), optionsWidget));
+    auto *modeCombo = new QComboBox(optionsWidget);
+    modeCombo->addItem(i18n("Native brush"));
+    modeCombo->addItem(i18n("Native brush + Ink Assist"));
+    modeCombo->addItem(i18n("Experimental Perfect Ink"));
+    modeCombo->setCurrentIndex(static_cast<int>(m_inkMode));
+    modeCombo->setToolTip(i18n(
+        "Native modes preserve the active Krita preset and its pressure "
+        "curves. Perfect Ink replaces the stroke with a solid filled outline."));
+    connect(modeCombo,
+            SIGNAL(currentIndexChanged(int)),
+            this,
+            SLOT(setInkMode(int)));
+    addOptionWidgetOption(modeCombo,
+                          new QLabel(i18n("Rendering mode:"), optionsWidget));
 
-    auto *cutoffLabel = new QLabel(i18n("Live smoothing cutoff:"), optionsWidget);
-    auto *cutoff = new KisDoubleSliderSpinBox(optionsWidget);
-    cutoff->setRange(1.0, 80.0, 1);
-    cutoff->setSingleStep(1.0);
-    cutoff->setValue(m_minCutoffHz);
-    connect(cutoff, SIGNAL(valueChanged(qreal)), this, SLOT(setMinCutoff(qreal)));
-    addOptionWidgetOption(cutoff, cutoffLabel);
+    auto *pathStrengthLabel = new QLabel(
+        i18n("Path smoothing:"), optionsWidget);
+    auto *pathStrength = new KisDoubleSliderSpinBox(optionsWidget);
+    pathStrength->setRange(0.0, 1.0, 2);
+    pathStrength->setSingleStep(0.05);
+    pathStrength->setValue(m_pathAssistStrength);
+    pathStrength->setToolTip(i18n(
+        "Applies mild causal streamlining to position only. Pressure and all "
+        "other brush-preset inputs pass through unchanged."));
+    connect(pathStrength,
+            SIGNAL(valueChanged(qreal)),
+            this,
+            SLOT(setPathAssistStrength(qreal)));
+    addOptionWidgetOption(pathStrength, pathStrengthLabel);
 
-    auto *speedLabel = new QLabel(i18n("Speed response:"), optionsWidget);
-    auto *speed = new KisDoubleSliderSpinBox(optionsWidget);
-    speed->setRange(0.0, 0.5, 3);
-    speed->setSingleStep(0.01);
-    speed->setValue(m_speedCoefficient);
-    connect(speed, SIGNAL(valueChanged(qreal)), this, SLOT(setSpeedCoefficient(qreal)));
-    addOptionWidgetOption(speed, speedLabel);
-
-    auto *finalToggle = new QCheckBox(i18n("Refine after release"), optionsWidget);
-    finalToggle->setChecked(m_finalRefinement);
-    connect(finalToggle, SIGNAL(toggled(bool)), this, SLOT(setFinalRefinement(bool)));
-    addOptionWidgetOption(finalToggle, new QLabel(i18n("Final pass:"), optionsWidget));
+    auto *pressureSmoothingLabel = new QLabel(
+        i18n("Pressure smoothing:"), optionsWidget);
+    auto *pressureSmoothing = new KisDoubleSliderSpinBox(optionsWidget);
+    pressureSmoothing->setRange(0.0, 1.0, 2);
+    pressureSmoothing->setSingleStep(0.05);
+    pressureSmoothing->setValue(m_pressureSmoothing);
+    pressureSmoothing->setToolTip(i18n(
+        "Reduces sensor jitter before Krita applies the active preset's own "
+        "pressure curve. Higher values add a small amount of width latency."));
+    connect(pressureSmoothing,
+            SIGNAL(valueChanged(qreal)),
+            this,
+            SLOT(setPressureSmoothing(qreal)));
+    addOptionWidgetOption(pressureSmoothing, pressureSmoothingLabel);
 
     auto *amountLabel = new QLabel(i18n("Final smoothing:"), optionsWidget);
     auto *amount = new KisDoubleSliderSpinBox(optionsWidget);
@@ -460,7 +747,7 @@ QWidget *KisToolSuperstrikeInk::createOptionWidget()
     addOptionWidgetOption(passes, passesLabel);
 
     auto *shortTailToggle = new QCheckBox(
-        i18n("Detect and shape endpoint pressure tails"),
+        i18n("Clip low-pressure endpoint tails"),
         optionsWidget);
     shortTailToggle->setChecked(m_adaptiveTails);
     connect(shortTailToggle,
@@ -481,27 +768,124 @@ QWidget *KisToolSuperstrikeInk::createOptionWidget()
             this,
             SLOT(setMaximumTailLength(qreal)));
     addOptionWidgetOption(tailLength, tailLengthLabel);
+
+    auto *streamlineLabel = new QLabel(i18n("Streamline:"), optionsWidget);
+    auto *streamline = new KisDoubleSliderSpinBox(optionsWidget);
+    streamline->setRange(0.0, 1.0, 2);
+    streamline->setSingleStep(0.01);
+    streamline->setValue(m_perfectFreehandStreamline);
+    connect(streamline,
+            SIGNAL(valueChanged(qreal)),
+            this,
+            SLOT(setPerfectFreehandStreamline(qreal)));
+    addOptionWidgetOption(streamline, streamlineLabel);
+
+    auto *outlineSmoothingLabel = new QLabel(
+        i18n("Outline smoothing:"), optionsWidget);
+    auto *outlineSmoothing = new KisDoubleSliderSpinBox(optionsWidget);
+    outlineSmoothing->setRange(0.0, 1.0, 2);
+    outlineSmoothing->setSingleStep(0.01);
+    outlineSmoothing->setValue(m_perfectFreehandSmoothing);
+    connect(outlineSmoothing,
+            SIGNAL(valueChanged(qreal)),
+            this,
+            SLOT(setPerfectFreehandSmoothing(qreal)));
+    addOptionWidgetOption(outlineSmoothing, outlineSmoothingLabel);
+
+    auto *thinningLabel = new QLabel(i18n("Pressure response:"), optionsWidget);
+    auto *thinning = new KisDoubleSliderSpinBox(optionsWidget);
+    thinning->setRange(0.0, 1.0, 2);
+    thinning->setSingleStep(0.01);
+    thinning->setValue(m_perfectFreehandThinning);
+    thinning->setToolTip(i18n(
+        "Controls how much pressure changes outline width. At 1.0, zero "
+        "pressure produces zero width and full pressure matches the current "
+        "Krita brush diameter."));
+    connect(thinning,
+            SIGNAL(valueChanged(qreal)),
+            this,
+            SLOT(setPerfectFreehandThinning(qreal)));
+    addOptionWidgetOption(thinning, thinningLabel);
+
+    const QList<QWidget *> perfectInkControls = {
+        static_cast<QWidget *>(amount),
+        static_cast<QWidget *>(passes),
+        static_cast<QWidget *>(shortTailToggle),
+        static_cast<QWidget *>(tailLength),
+        static_cast<QWidget *>(streamline),
+                             static_cast<QWidget *>(outlineSmoothing),
+        static_cast<QWidget *>(thinning),
+    };
+    pathStrength->setEnabled(m_inkMode == InkMode::PathAssist);
+    pressureSmoothing->setEnabled(m_inkMode == InkMode::PathAssist);
+    for (QWidget *control : perfectInkControls) {
+        control->setEnabled(m_inkMode == InkMode::PerfectInk);
+    }
+    connect(modeCombo,
+            QOverload<int>::of(&QComboBox::currentIndexChanged),
+            optionsWidget,
+            [pathStrength, pressureSmoothing, perfectInkControls](int mode) {
+                pathStrength->setEnabled(
+                    mode == static_cast<int>(InkMode::PathAssist));
+                pressureSmoothing->setEnabled(
+                    mode == static_cast<int>(InkMode::PathAssist));
+                for (QWidget *control : perfectInkControls) {
+                    control->setEnabled(
+                        mode == static_cast<int>(InkMode::PerfectInk));
+                }
+            });
+    for (QLabel *label : {amountLabel,
+                          passesLabel,
+                          tailLengthLabel,
+                          streamlineLabel,
+                          outlineSmoothingLabel,
+                          thinningLabel}) {
+        connect(modeCombo,
+                QOverload<int>::of(&QComboBox::currentIndexChanged),
+                label,
+                [label](int mode) {
+                    label->setEnabled(
+                        mode == static_cast<int>(InkMode::PerfectInk));
+                });
+        label->setEnabled(m_inkMode == InkMode::PerfectInk);
+    }
+    pathStrengthLabel->setEnabled(m_inkMode == InkMode::PathAssist);
+    pressureSmoothingLabel->setEnabled(m_inkMode == InkMode::PathAssist);
+    connect(modeCombo,
+            QOverload<int>::of(&QComboBox::currentIndexChanged),
+            pathStrengthLabel,
+            [pathStrengthLabel](int mode) {
+                pathStrengthLabel->setEnabled(
+                    mode == static_cast<int>(InkMode::PathAssist));
+            });
+    connect(modeCombo,
+            QOverload<int>::of(&QComboBox::currentIndexChanged),
+            pressureSmoothingLabel,
+            [pressureSmoothingLabel](int mode) {
+                pressureSmoothingLabel->setEnabled(
+                    mode == static_cast<int>(InkMode::PathAssist));
+            });
     return optionsWidget;
 }
 
-void KisToolSuperstrikeInk::setMinCutoff(qreal value)
+void KisToolSuperstrikeInk::setInkMode(int mode)
 {
-    m_minCutoffHz = value;
-    m_filter.setMinCutoff(value);
-    KSharedConfig::openConfig()->group(toolId()).writeEntry("minCutoffHz", value);
+    m_inkMode = static_cast<InkMode>(qBound(0, mode, 2));
+    KSharedConfig::openConfig()->group(toolId()).writeEntry("inkMode", mode);
 }
 
-void KisToolSuperstrikeInk::setSpeedCoefficient(qreal value)
+void KisToolSuperstrikeInk::setPathAssistStrength(qreal value)
 {
-    m_speedCoefficient = value;
-    m_filter.setSpeedCoefficient(value);
-    KSharedConfig::openConfig()->group(toolId()).writeEntry("speedCoefficient", value);
+    m_pathAssistStrength = qBound<qreal>(0.0, value, 1.0);
+    KSharedConfig::openConfig()->group(toolId()).writeEntry(
+        "pathAssistStrength", m_pathAssistStrength);
 }
 
-void KisToolSuperstrikeInk::setLiveSmoothing(bool enabled)
+void KisToolSuperstrikeInk::setPressureSmoothing(qreal value)
 {
-    m_liveSmoothing = enabled;
-    KSharedConfig::openConfig()->group(toolId()).writeEntry("liveSmoothing", enabled);
+    m_pressureSmoothing = qBound<qreal>(0.0, value, 1.0);
+    KSharedConfig::openConfig()->group(toolId()).writeEntry(
+        "pressureSmoothing", m_pressureSmoothing);
 }
 
 void KisToolSuperstrikeInk::setFinalAmount(qreal value)
@@ -516,12 +900,6 @@ void KisToolSuperstrikeInk::setFinalPasses(qreal value)
     KSharedConfig::openConfig()->group(toolId()).writeEntry("finalPasses", m_finalPasses);
 }
 
-void KisToolSuperstrikeInk::setFinalRefinement(bool enabled)
-{
-    m_finalRefinement = enabled;
-    KSharedConfig::openConfig()->group(toolId()).writeEntry("finalRefinement", enabled);
-}
-
 void KisToolSuperstrikeInk::setAdaptiveTails(bool enabled)
 {
     m_adaptiveTails = enabled;
@@ -534,4 +912,25 @@ void KisToolSuperstrikeInk::setMaximumTailLength(qreal value)
     m_maximumTailLengthPx = qBound<qreal>(16.0, value, 128.0);
     KSharedConfig::openConfig()->group(toolId()).writeEntry(
         "maximumTailLengthPx", m_maximumTailLengthPx);
+}
+
+void KisToolSuperstrikeInk::setPerfectFreehandStreamline(qreal value)
+{
+    m_perfectFreehandStreamline = qBound<qreal>(0.0, value, 1.0);
+    KSharedConfig::openConfig()->group(toolId()).writeEntry(
+        "perfectFreehandStreamline", m_perfectFreehandStreamline);
+}
+
+void KisToolSuperstrikeInk::setPerfectFreehandSmoothing(qreal value)
+{
+    m_perfectFreehandSmoothing = qBound<qreal>(0.0, value, 1.0);
+    KSharedConfig::openConfig()->group(toolId()).writeEntry(
+        "perfectFreehandSmoothing", m_perfectFreehandSmoothing);
+}
+
+void KisToolSuperstrikeInk::setPerfectFreehandThinning(qreal value)
+{
+    m_perfectFreehandThinning = qBound<qreal>(0.0, value, 1.0);
+    KSharedConfig::openConfig()->group(toolId()).writeEntry(
+        "perfectFreehandThinning", m_perfectFreehandThinning);
 }

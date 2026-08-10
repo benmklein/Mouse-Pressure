@@ -6,6 +6,7 @@ from pathlib import Path
 from superstrike_pressure.ink.raster_ink import (
     InkPoint,
     LowLatencyInkFilter,
+    StartupPressurePreviewFilter,
     prepare_replay_stroke,
     refine_stroke,
 )
@@ -43,6 +44,27 @@ def test_live_filter_tracks_fast_motion_more_closely_than_slow_motion() -> None:
     slow_fraction = slow.x / 2.0
     fast_fraction = fast.x / 20.0
     assert fast_fraction > slow_fraction
+
+
+def test_startup_preview_eases_pressure_without_filtering_position() -> None:
+    pressure_filter = StartupPressurePreviewFilter()
+    points = [
+        InkPoint(0.0, 0.0, pressure=0.15, time_ms=0.0),
+        InkPoint(20.0, 5.0, pressure=0.15, time_ms=30.0),
+        InkPoint(30.0, 7.0, pressure=0.45, time_ms=44.0),
+        InkPoint(31.0, 8.0, pressure=0.45, time_ms=45.0),
+        InkPoint(40.0, 9.0, pressure=0.5, time_ms=70.0),
+    ]
+
+    preview = [pressure_filter.update(point) for point in points]
+
+    assert [(point.x, point.y) for point in preview] == [
+        (point.x, point.y) for point in points
+    ]
+    assert preview[1].pressure == 0.15
+    assert 0.15 < preview[2].pressure < points[2].pressure
+    assert preview[2].pressure < preview[3].pressure < points[3].pressure
+    assert preview[-1].pressure == points[-1].pressure
 
 
 def test_final_refinement_reduces_straight_line_wobble() -> None:
@@ -109,7 +131,8 @@ def test_replay_densifies_and_detects_gradual_tails() -> None:
     replay = prepare_replay_stroke(points)
 
     assert len(replay) >= 125
-    assert 0.0 < replay[0].pressure < replay[2].pressure
+    assert replay[0].pressure >= (580 / 1024) * 0.45
+    assert replay[0].pressure < replay[2].pressure
     assert replay[2].pressure < replay[8].pressure < replay[30].pressure
     assert replay[-1].pressure < replay[-3].pressure < replay[-9].pressure
 
@@ -125,6 +148,34 @@ def test_long_replay_can_detect_tail_independent_of_total_length() -> None:
 
     assert replay[0].pressure < replay[5].pressure < replay[30].pressure
     assert replay[100].pressure == points[1].pressure
+
+
+def test_startup_correction_ignores_slow_intentional_pressure_ramp() -> None:
+    points = [
+        InkPoint(0.0, 0.0, pressure=0.12, time_ms=0.0),
+        InkPoint(20.0, 0.0, pressure=0.25, time_ms=90.0),
+        InkPoint(45.0, 0.0, pressure=0.8, time_ms=180.0),
+        InkPoint(120.0, 0.0, pressure=0.8, time_ms=240.0),
+    ]
+
+    replay = prepare_replay_stroke(points)
+
+    assert math.isclose(replay[0].pressure, points[0].pressure)
+    assert replay[10].pressure < 0.25
+
+
+def test_startup_correction_backfills_fast_sensor_ramp_without_hairline() -> None:
+    points = [
+        InkPoint(0.0, 0.0, pressure=0.15, time_ms=0.0),
+        InkPoint(12.0, 0.0, pressure=0.18, time_ms=20.0),
+        InkPoint(36.0, 0.0, pressure=0.72, time_ms=38.0),
+        InkPoint(120.0, 0.0, pressure=0.74, time_ms=90.0),
+    ]
+
+    replay = prepare_replay_stroke(points)
+
+    assert replay[0].pressure >= 0.72 * 0.45
+    assert replay[0].pressure < replay[8].pressure < replay[35].pressure
 
 
 def test_adaptive_tail_shaping_can_be_disabled() -> None:
@@ -191,3 +242,87 @@ def test_krita_mouse_icons_are_packaged_for_all_themes() -> None:
         assert (plugin_dir / name).is_file()
         assert name in cmake
         assert name in resources
+
+
+def test_krita_native_brush_is_default_and_preserves_pressure_events() -> None:
+    plugin_dir = (
+        REPO_ROOT / "integrations" / "krita" / "superstrike_raster_ink"
+    )
+    source = (plugin_dir / "kis_tool_superstrike_ink.cpp").read_text(
+        encoding="utf-8"
+    )
+    header = (plugin_dir / "kis_tool_superstrike_ink.h").read_text(
+        encoding="utf-8"
+    )
+
+    assert 'readEntry("inkMode", 0)' in source
+    assert "InkMode m_inkMode {InkMode::NativeBrush};" in header
+    assert 'modeCombo->addItem(i18n("Native brush"))' in source
+    assert 'modeCombo->addItem(i18n("Native brush + Ink Assist"))' in source
+    assert 'modeCombo->addItem(i18n("Experimental Perfect Ink"))' in source
+    assert "KisToolFreehand::beginPrimaryAction(event);" in source
+    assert "KisToolFreehand::continuePrimaryAction(event);" in source
+    assert "do not remap or smooth pressure" in source
+
+
+def test_krita_perfect_freehand_outline_is_built_as_experimental_mode() -> None:
+    plugin_dir = (
+        REPO_ROOT / "integrations" / "krita" / "superstrike_raster_ink"
+    )
+    cmake = (plugin_dir / "CMakeLists.txt").read_text(encoding="utf-8")
+    source = (plugin_dir / "kis_tool_superstrike_ink.cpp").read_text(
+        encoding="utf-8"
+    )
+    header = (plugin_dir / "kis_tool_superstrike_ink.h").read_text(
+        encoding="utf-8"
+    )
+    outline_source = (plugin_dir / "perfect_freehand_outline.cpp").read_text(
+        encoding="utf-8"
+    )
+    notice = (plugin_dir / "THIRD_PARTY_NOTICES.md").read_text(
+        encoding="utf-8"
+    )
+
+    assert "perfect_freehand_outline.cpp" in cmake
+    assert 'readEntry(\n        "perfectFreehandThinning", 1.0)' in source
+    assert "PerfectFreehandOutline::getStroke" in source
+    assert "KisToolShapeUtils::FillStyleForegroundColor" in source
+    assert "coordinatesConverter()->widgetToImage(point)" in source
+    assert "outlinePath.setFillRule(Qt::WindingFill)" in source
+    assert "outlinePath.quadTo(outline[1], firstMidpoint)" in source
+    assert "outlinePath.lineTo(outline[index])" not in source
+    assert "helper.paintPainterPath(outlinePath)" in source
+    assert "const DetectedTail outlineStartTail" in source
+    assert "const DetectedTail outlineEndTail" in source
+    assert "replay = replay.mid(firstIndex, lastIndex - firstIndex + 1)" in source
+    assert "helper.paintPolygon(outline)" not in source
+    assert "m_inkMode == InkMode::PerfectInk" in source
+    assert "qreal m_perfectFreehandThinning {1.0};" in header
+    assert "MIN_STREAMLINE_T = 0.15" in outline_source
+    assert "Stephen Ruiz Ltd" in notice
+
+
+def test_krita_path_assist_only_changes_position() -> None:
+    plugin_dir = (
+        REPO_ROOT / "integrations" / "krita" / "superstrike_raster_ink"
+    )
+    source = (plugin_dir / "kis_tool_superstrike_ink.cpp").read_text(
+        encoding="utf-8"
+    )
+    header = (plugin_dir / "kis_tool_superstrike_ink.h").read_text(
+        encoding="utf-8"
+    )
+
+    assert 'readEntry("pathAssistStrength", 0.2)' in source
+    assert 'readEntry("pressureSmoothing", 0.25)' in source
+    assert "qreal m_pathAssistStrength {0.2};" in header
+    assert "qreal m_pressureSmoothing {0.25};" in header
+    assert "KoPointerEvent assistedEvent(event, pathAssistedPosition" in source
+    assert "KisToolFreehand::endPrimaryAction(&assistedEvent);" in source
+    assert "follow = 1.0 - 0.35 * strength" in source
+    assert "m_pathAssistStrength * zoomAssistMultiplier()" in source
+    assert "m_pressureSmoothing * zoomAssistMultiplier()" in source
+    assert "coordinatesConverter()->effectiveZoom()" in source
+    assert "cutoffHz = interpolate(40.0, 8.0, smoothing)" in source
+    assert "copyTabletEventWithPressure" in source
+    assert "Pressure and all" in source
