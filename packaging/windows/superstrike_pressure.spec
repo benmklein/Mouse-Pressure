@@ -7,8 +7,9 @@ SOURCE = ROOT / "src"
 PACKAGE = SOURCE / "superstrike_pressure"
 
 hidden_imports = [
-    "pystray",
-    "pystray._win32",
+    "PySide6.QtCore",
+    "PySide6.QtGui",
+    "PySide6.QtWidgets",
     "superstrike_pressure.web.device_restore_watchdog",
 ]
 
@@ -27,11 +28,8 @@ a = Analysis(
         "IPython",
         "matplotlib",
         "numpy",
-        "pystray._appindicator",
-        "pystray._darwin",
-        "pystray._gtk",
-        "pystray._xorg",
         "pytest",
+        "tkinter",
         "websockets",
     ],
     noarchive=False,

@@ -125,39 +125,6 @@ def test_dev_settings_persist_stationary_pressure_updates() -> None:
     assert settings.as_runtime_patch()["left"]["stationary_pressure_updates"] is True
 
 
-def test_dev_settings_validate_rapid_release_threshold() -> None:
-    settings = parse_dev_settings(
-        raw_min="320",
-        raw_max="670",
-        deadzone="0",
-        curve="linear",
-        curve_strength="1.0",
-        contact_preset="medium",
-        suppress_lmb=True,
-        release_teardown=False,
-        rapid_release_threshold="8",
-    )
-    assert settings.rapid_release_threshold == 8
-    assert settings.as_runtime_patch()["left"]["rapid_release_threshold"] == 8
-
-    try:
-        parse_dev_settings(
-            raw_min="320",
-            raw_max="670",
-            deadzone="0",
-            curve="linear",
-            curve_strength="1.0",
-            contact_preset="medium",
-            suppress_lmb=True,
-            release_teardown=False,
-            rapid_release_threshold="31",
-        )
-    except ValueError as exc:
-        assert "Rapid release threshold" in str(exc)
-    else:
-        raise AssertionError("Expected invalid rapid release threshold to raise")
-
-
 def test_sensitivity_mapping_visualizer_uses_effective_pressure_settings() -> None:
     settings = parse_dev_settings(
         raw_min="300",

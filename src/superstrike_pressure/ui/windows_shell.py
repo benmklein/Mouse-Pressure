@@ -5,65 +5,12 @@ from __future__ import annotations
 import ctypes
 import threading
 import time
-from pathlib import Path
 from typing import Any
+from pathlib import Path
 
 
 def asset_path(name: str) -> Path:
     return Path(__file__).resolve().parents[1] / "assets" / name
-
-
-class TrayController:
-    """Lazy-loaded notification-area wrapper for the control panel."""
-
-    def __init__(self, image_path: Path) -> None:
-        self.image_path = image_path
-        self._icon: Any | None = None
-        self._thread: threading.Thread | None = None
-
-    def show(self, on_show: Any, on_quit: Any) -> bool:
-        if self._icon is not None:
-            return True
-        try:
-            import pystray
-            from PIL import Image
-
-            image = Image.open(self.image_path).convert("RGBA")
-            icon = pystray.Icon(
-                "superstrike_pressure",
-                image,
-                "Superstrike Pressure",
-                menu=pystray.Menu(
-                    pystray.MenuItem(
-                        "Show",
-                        lambda _icon, _item: on_show(),
-                        default=True,
-                    ),
-                    pystray.MenuItem(
-                        "Quit",
-                        lambda _icon, _item: on_quit(),
-                    ),
-                ),
-            )
-        except Exception:
-            return False
-        self._icon = icon
-        self._thread = threading.Thread(
-            target=icon.run,
-            name="superstrike-tray",
-            daemon=True,
-        )
-        self._thread.start()
-        return True
-
-    def stop(self) -> None:
-        icon = self._icon
-        self._icon = None
-        if icon is not None:
-            try:
-                icon.stop()
-            except Exception:
-                pass
 
 
 class StartHotkeyListener:

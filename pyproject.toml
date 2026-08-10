@@ -8,14 +8,14 @@ license = { text = "MIT" }
 
 dependencies = [
     "hidapi>=0.14",
-    "pillow>=11.0",
-    "pystray>=0.19.5",
+    "PySide6-Essentials>=6.8,<7",
 ]
 
 [project.optional-dependencies]
 dev = [
     "matplotlib>=3.9",
     "ipython>=8.0",
+    "pillow>=11.0",
     "pytest>=8.0",
 ]
 release = [
