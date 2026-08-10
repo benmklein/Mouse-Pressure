@@ -44,6 +44,9 @@ Name: "custom"; Description: "Custom installation"; Flags: iscustom
 [Components]
 Name: "application"; Description: "Superstrike Pressure application"; Types: full compact custom; Flags: fixed
 Name: "krita"; Description: "Superstrike Raster Ink tool for Krita 5.3.3"; Types: full
+#ifdef IncludeVMultiDriver
+Name: "vmulti"; Description: "Superstrike low-latency virtual tablet driver"; Types: full
+#endif
 
 [Files]
 Source: "{#RepositoryRoot}\dist\windows\SuperstrikePressure\*"; DestDir: "{app}"; Flags: ignoreversion recursesubdirs createallsubdirs; Components: application
@@ -51,6 +54,9 @@ Source: "{#RepositoryRoot}\dist\krita\5.3.3\*"; DestDir: "{app}\integrations\kri
 Source: "{#RepositoryRoot}\scripts\install_krita_raster_ink.ps1"; DestDir: "{app}\integrations\krita"; Flags: ignoreversion; Components: krita
 Source: "{#RepositoryRoot}\scripts\install_krita_release.ps1"; DestDir: "{app}\integrations\krita"; Flags: ignoreversion; Components: krita
 Source: "{#RepositoryRoot}\LICENSE"; DestDir: "{app}"; Flags: ignoreversion
+#ifdef IncludeVMultiDriver
+Source: "{#VMultiPayloadDir}\*"; DestDir: "{app}\drivers\vmulti"; Flags: ignoreversion; Components: vmulti
+#endif
 
 [Icons]
 Name: "{group}\Superstrike Pressure"; Filename: "{app}\{#MyAppExeName}"
@@ -60,23 +66,35 @@ Name: "{autodesktop}\Superstrike Pressure"; Filename: "{app}\{#MyAppExeName}"; T
 Name: "desktopicon"; Description: "Create a desktop shortcut"; GroupDescription: "Additional shortcuts:"; Flags: unchecked
 
 [Run]
+#ifdef IncludeVMultiDriver
+Filename: "{app}\drivers\vmulti\SuperstrikeDriverCtl.exe"; Parameters: "install --manifest ""{app}\drivers\vmulti\driver-manifest.json"""; StatusMsg: "Installing the Superstrike virtual tablet driver..."; Flags: runhidden waituntilterminated; Components: vmulti
+#endif
 Filename: "{sys}\WindowsPowerShell\v1.0\powershell.exe"; Parameters: "-NoProfile -ExecutionPolicy Bypass -File ""{app}\integrations\krita\install_krita_release.ps1"" -PayloadRoot ""{app}\integrations\krita"""; StatusMsg: "Installing the Krita integration..."; Flags: runhidden waituntilterminated; Components: krita
 Filename: "{app}\{#MyAppExeName}"; Description: "Launch Superstrike Pressure"; Flags: nowait postinstall skipifsilent
 
 [UninstallRun]
+#ifdef IncludeVMultiDriver
+Filename: "{app}\drivers\vmulti\SuperstrikeDriverCtl.exe"; Parameters: "remove --manifest ""{app}\drivers\vmulti\driver-manifest.json"""; Flags: runhidden waituntilterminated; RunOnceId: "RemoveSuperstrikeVMulti"; Components: vmulti
+#endif
 Filename: "{sys}\WindowsPowerShell\v1.0\powershell.exe"; Parameters: "-NoProfile -ExecutionPolicy Bypass -File ""{app}\integrations\krita\install_krita_release.ps1"" -PayloadRoot ""{app}\integrations\krita"" -Uninstall"; Flags: runhidden waituntilterminated; RunOnceId: "RemoveSuperstrikeKrita"; Components: krita
 
 [Code]
 function VMultiDetected(): Boolean;
 begin
   Result :=
+    RegKeyExists(HKLM64, 'SYSTEM\CurrentControlSet\Enum\ROOT\SUPERSTRIKEVMULTI') or
+    RegKeyExists(HKLM64, 'SYSTEM\CurrentControlSet\Enum\HID\VID_F055&PID_0001') or
     RegKeyExists(HKLM64, 'SYSTEM\CurrentControlSet\Enum\HID\VID_00FF&PID_BACC') or
     RegKeyExists(HKLM64, 'SYSTEM\CurrentControlSet\Enum\HID\VID_00FF&PID_CAFE');
 end;
 
 procedure CurStepChanged(CurStep: TSetupStep);
 begin
-  if (CurStep = ssPostInstall) and not WizardSilent() and not VMultiDetected() then
+  if (CurStep = ssPostInstall) and not WizardSilent() and not VMultiDetected()
+#ifdef IncludeVMultiDriver
+     and not WizardIsComponentSelected('vmulti')
+#endif
+  then
     MsgBox(
       'A compatible VMulti virtual tablet was not detected.' + #13#10 + #13#10 +
       'Superstrike Pressure will use its synthetic Windows Ink fallback. ' +

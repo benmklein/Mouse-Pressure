@@ -42,6 +42,10 @@ jobs:
         shell: pwsh
         run: .\scripts\build_windows.ps1 -Python python -SkipTests
 
+      # Public release jobs can download the separately signed driver artifact
+      # and pass -VMultiPayload <directory>. The build rejects unsigned,
+      # third-party, or checksum-mismatched payloads before Inno Setup runs.
+
       - name: Smoke-test installer lifecycle
         shell: pwsh
         run: .\scripts\test_windows_installer.ps1

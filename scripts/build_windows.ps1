@@ -1,6 +1,7 @@
 [CmdletBinding()]
 param(
     [string]$Python = '',
+    [string]$VMultiPayload = '',
     [switch]$SkipTests,
     [switch]$SkipInstaller,
     [switch]$SkipKritaPlugin
@@ -52,6 +53,21 @@ try {
 
     if ($SkipInstaller) { return }
 
+    $vmultiDefines = @()
+    if ($VMultiPayload) {
+        $VMultiPayload = (Resolve-Path -LiteralPath $VMultiPayload).Path
+        & (Join-Path $repoRoot 'scripts\validate_vmulti_payload.ps1') `
+            -PayloadRoot $VMultiPayload `
+            -Python $Python
+        if ($LASTEXITCODE -ne 0) {
+            throw 'VMulti payload validation failed.'
+        }
+        $vmultiDefines = @(
+            '/DIncludeVMultiDriver=1',
+            "/DVMultiPayloadDir=$VMultiPayload"
+        )
+    }
+
     $iscc = Get-Command ISCC.exe -ErrorAction SilentlyContinue
     if (-not $iscc) {
         $knownPaths = @(
@@ -73,6 +89,7 @@ try {
         throw 'Could not read the application version.'
     }
     & $isccPath "/DMyAppVersion=$version" `
+        @vmultiDefines `
         (Join-Path $repoRoot 'packaging\windows\superstrike_pressure.iss')
     if ($LASTEXITCODE -ne 0) { throw 'Installer build failed.' }
     $installer = Join-Path $distRoot "installer\SuperstrikePressure-$version-Setup.exe"

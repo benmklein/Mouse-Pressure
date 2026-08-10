@@ -8,13 +8,18 @@ from dataclasses import dataclass
 
 import hid
 
-VMULTI_VID = 0x00FF
-KNOWN_PIDS = {0xBACC, 0xCAFE}
+KNOWN_IDENTITIES = {
+    (0xF055, 0x0001),
+    (0x00FF, 0xBACC),
+    (0x00FF, 0xCAFE),
+}
 KNOWN_HWIDS = [
+    r"ROOT\SUPERSTRIKEVMULTI",
+    "VID_F055&PID_0001",
     "VID_00FF&PID_BACC",
     "VID_00FF&PID_CAFE",
 ]
-STRING_TOKENS = ["vmulti", "virtualhid"]
+STRING_TOKENS = ["superstrike virtual pen", "vmulti", "virtualhid"]
 
 
 def _text(value: object) -> str:
@@ -39,7 +44,7 @@ def _matches_device_fields(d: dict) -> bool:
             _text(d.get("path")),
         ]
     ).lower()
-    if vid == VMULTI_VID and pid in KNOWN_PIDS:
+    if (vid, pid) in KNOWN_IDENTITIES:
         return True
     if any(tok in fields for tok in STRING_TOKENS):
         return True
@@ -117,7 +122,7 @@ def check_registry() -> list[str]:
         r"HKLM\SYSTEM\CurrentControlSet\Enum\HID",
         r"HKLM\SYSTEM\CurrentControlSet\Enum\ROOT",
     ]
-    terms = KNOWN_HWIDS + ["vmulti", "VirtualHID"]
+    terms = KNOWN_HWIDS + ["Superstrike Virtual Pen", "vmulti", "VirtualHID"]
     matches: list[str] = []
     for root in roots:
         for term in terms:
@@ -186,11 +191,10 @@ def main() -> int:
         return 0
 
     print("RESULT: VMulti not detected.")
-    print("Install steps:")
-    print("  1. Download vmulti-bin v1.0:")
-    print("     https://github.com/X9VoiD/vmulti-bin/releases/tag/v1.0")
-    print("  2. Install the included driver package (Device Manager / pnputil).")
-    print("  3. Re-run this script: uv run python scripts/check_vmulti.py")
+    print("A compatible virtual tablet driver is not installed.")
+    print("Use the synthetic backend for development, or install the project-owned")
+    print("Microsoft-signed driver when it becomes available in a release installer.")
+    print("Do not redistribute the unrelated Pentablet/X9VoiD binary package.")
     return 1
 
 
