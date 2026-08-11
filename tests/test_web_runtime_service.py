@@ -191,7 +191,7 @@ class _DeferredArmEmitter(_FakeEmitter):
 
 
 class RuntimeServiceTests(unittest.IsolatedAsyncioTestCase):
-    def _service(self, session: _FakeSession):
+    def _service(self, session: _FakeSession, *, backend: str = "synthetic"):
         config = RuntimeConfig(
             linked=False,
             left=ChannelConfig(curve="linear", contact_preset="medium"),
@@ -209,12 +209,65 @@ class RuntimeServiceTests(unittest.IsolatedAsyncioTestCase):
             return emitter
 
         service = RuntimeService(
-            launch_config=LaunchConfig(),
+            launch_config=LaunchConfig(backend=backend),
             config_store=store,
             session_factory=make_session,
             emitter_factory=make_emitter,
         )
         return service, store, emitter_holder
+
+    async def test_telemetry_backend_starts_without_native_output(self) -> None:
+        base = time.perf_counter()
+        session = _FakeSession([(base + 0.01, _frame(420, 350))])
+        service, _, holder = self._service(session, backend="telemetry")
+        received: list[dict] = []
+        service.set_telemetry_callback(received.append)
+
+        await service.start_stream()
+
+        self.assertTrue(service.stream_active)
+        self.assertEqual(holder, {})
+        self.assertIsNone(service._emitter)
+        self.assertIsNone(service._movement_queue)
+        self.assertIsNone(service._movement_task)
+        self.assertTrue(received)
+        self.assertEqual(received[-1]["left_raw"], 420)
+        self.assertEqual(received[-1]["right_raw"], 350)
+        self.assertGreaterEqual(received[-1]["left_norm"], 0.0)
+        self.assertLessEqual(received[-1]["left_norm"], 1.0)
+        self.assertGreaterEqual(received[-1]["right_norm"], 0.0)
+        self.assertLessEqual(received[-1]["right_norm"], 1.0)
+        self.assertEqual(received[-1]["inject_hz"], 0.0)
+
+        await service.stop_stream()
+        self.assertFalse(service.stream_active)
+        self.assertEqual(session.close_calls, 1)
+
+    async def test_telemetry_norm_is_not_disabled_with_pen_channel(self) -> None:
+        base = time.perf_counter()
+        session = _FakeSession([(base + 0.01, _frame(600, 620))])
+        service, _, _ = self._service(session, backend="telemetry")
+        service.apply_config({"left_enabled": False, "right_enabled": False})
+        received: list[dict] = []
+        service.set_telemetry_callback(received.append)
+
+        await service.start_stream()
+
+        self.assertGreater(received[-1]["left_norm"], 0.0)
+        self.assertGreater(received[-1]["right_norm"], 0.0)
+        self.assertEqual(received[-1]["left_mapped"], 0)
+        self.assertEqual(received[-1]["right_mapped"], 0)
+        await service.stop_stream()
+
+    async def test_unknown_backend_fails_before_hardware_or_emitter_open(self) -> None:
+        session = _FakeSession([])
+        service, _, holder = self._service(session, backend="unknown")
+
+        with self.assertRaisesRegex(RuntimeError, "expected 'synthetic', 'vmulti', or 'telemetry'"):
+            await service.start_stream()
+
+        self.assertEqual(session.open_calls, 0)
+        self.assertEqual(holder, {})
 
     async def test_start_stop_stream_emits_telemetry(self) -> None:
         base = time.perf_counter()

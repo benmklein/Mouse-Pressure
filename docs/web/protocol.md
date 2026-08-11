@@ -19,6 +19,19 @@ change to the other thread before continuing.
 - Preferred port: 27842 (fallback: next available, communicated via stdout handshake)
 - All messages: UTF-8 JSON, one message per frame
 
+### Telemetry-only game input
+
+Run the hardware bridge without any virtual pointer, mouse hook, click suppression,
+or pen/tablet injection:
+
+```powershell
+.\.venv\Scripts\python.exe -m mouse_pressure.web.main --backend telemetry --port 27842
+```
+
+This mode intentionally leaves ordinary native mouse input unchanged. It opens
+the HID++ pressure session and publishes the same telemetry/heartbeat protocol.
+`inject_hz` remains present for compatibility and is always `0.0`.
+
 ---
 
 ## Startup Handshake (stdout, not WebSocket)
@@ -184,11 +197,14 @@ Sent at 60 Hz while stream is active. UI must throttle rendering to 30 Hz.
     "right_norm": 0.0,
     "left_mapped": 142,
     "right_mapped": 0,
-    "hz": 59.992
+    "hz": 59.992,
+    "inject_hz": 0.0
   }
 }
 ```
-All values: integers except `left_norm`, `right_norm` (float 0.0–1.0), `hz` (float).
+All values: integers except `left_norm`, `right_norm` (float 0.0–1.0), `hz` and
+`inject_hz` (float). Normalized values always represent calibrated physical
+pressure even when a pen-output channel is disabled.
 
 ### heartbeat
 Sent every 2 seconds regardless of stream state.

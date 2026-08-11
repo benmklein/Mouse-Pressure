@@ -115,6 +115,12 @@ class RuntimeService:
     ) -> None:
         if self._stream_active:
             raise StreamAlreadyActiveError("Stream is already active")
+        backend = str(self.launch_config.backend).strip().lower()
+        if backend not in {"synthetic", "vmulti", "telemetry"}:
+            raise RuntimeError(
+                f"Unknown pen output backend {self.launch_config.backend!r}; "
+                "expected 'synthetic', 'vmulti', or 'telemetry'"
+            )
         requested_device_settings = (
             self._validate_device_settings(device_settings)
             if device_settings is not None
@@ -128,7 +134,7 @@ class RuntimeService:
         # behind the cursor and replay after the physical button is released.
         self._sample_queue = asyncio.Queue(maxsize=1)
         self._raw_sample_queue = asyncio.Queue(maxsize=256)
-        self._movement_queue = asyncio.Queue(maxsize=512)
+        self._movement_queue = None if backend == "telemetry" else asyncio.Queue(maxsize=512)
         self._startup_ready_event = asyncio.Event()
         self._latest_emission_sample = None
         self._last_sample_t = None
@@ -224,32 +230,28 @@ class RuntimeService:
                 raise
 
         deferred_input_arm = False
+        emitter: SyntheticPenEmitter | None = None
         try:
-            emitter = self._emitter_factory(self._emitter_config_from_runtime(), self._log)
-            backend = str(self.launch_config.backend).strip().lower()
-            if backend not in {"synthetic", "vmulti"}:
-                raise RuntimeError(
-                    f"Unknown pen output backend {self.launch_config.backend!r}; "
-                    "expected 'synthetic' or 'vmulti'"
-                )
-            if backend == "vmulti" and isinstance(emitter, SyntheticPenEmitter):
-                emitter.pen = VMultiPenInjectorAdapter(
-                    desktop_input=emitter.pen,
-                    log=self._log,
-                )
-            movement_callback = getattr(emitter, "set_movement_callback", None)
-            if callable(movement_callback):
-                movement_callback(self._signal_movement)
-            force_stop_setter = getattr(emitter, "set_force_stop_callback", None)
-            if callable(force_stop_setter):
-                force_stop_setter(self._schedule_force_stop)
-            open_unarmed = getattr(emitter, "open_unarmed", None)
-            arm_input = getattr(emitter, "arm_input", None)
-            deferred_input_arm = callable(open_unarmed) and callable(arm_input)
-            if deferred_input_arm:
-                open_unarmed()
-            else:
-                emitter.open()
+            if backend != "telemetry":
+                emitter = self._emitter_factory(self._emitter_config_from_runtime(), self._log)
+                if backend == "vmulti" and isinstance(emitter, SyntheticPenEmitter):
+                    emitter.pen = VMultiPenInjectorAdapter(
+                        desktop_input=emitter.pen,
+                        log=self._log,
+                    )
+                movement_callback = getattr(emitter, "set_movement_callback", None)
+                if callable(movement_callback):
+                    movement_callback(self._signal_movement)
+                force_stop_setter = getattr(emitter, "set_force_stop_callback", None)
+                if callable(force_stop_setter):
+                    force_stop_setter(self._schedule_force_stop)
+                open_unarmed = getattr(emitter, "open_unarmed", None)
+                arm_input = getattr(emitter, "arm_input", None)
+                deferred_input_arm = callable(open_unarmed) and callable(arm_input)
+                if deferred_input_arm:
+                    open_unarmed()
+                else:
+                    emitter.open()
         except Exception:
             self._device_found = False
             if original_device_settings is not None:
@@ -276,15 +278,20 @@ class RuntimeService:
         self._reader_thread = threading.Thread(target=self._reader_loop, name="mouse-pressure-reader", daemon=True)
         self._reader_thread.start()
         self._processor_task = asyncio.create_task(self._process_samples())
-        self._movement_task = asyncio.create_task(self._process_movement())
+        self._movement_task = (
+            asyncio.create_task(self._process_movement())
+            if self._movement_queue is not None
+            else None
+        )
         self._health_task = asyncio.create_task(self._monitor_stream_health())
-        if deferred_input_arm:
+        if deferred_input_arm or backend == "telemetry":
             try:
                 ready_event = self._startup_ready_event
                 if ready_event is None:
                     raise RuntimeError("Pressure startup readiness was not initialized")
                 await asyncio.wait_for(ready_event.wait(), timeout=1.0)
-                emitter.arm_input()
+                if deferred_input_arm and emitter is not None:
+                    emitter.arm_input()
             except Exception as exc:
                 await self.stop_stream()
                 if isinstance(exc, TimeoutError):
@@ -294,11 +301,15 @@ class RuntimeService:
                         "try again."
                     ) from exc
                 raise
-            self.log_bus.info("Pressure input primed; mouse button suppression armed")
-        self.log_bus.info(
-            f"Stream started (pressure ~60 Hz, raw mouse event-driven, "
-            f"fallback pen tick {self.launch_config.hz:.0f} Hz)"
-        )
+            if deferred_input_arm:
+                self.log_bus.info("Pressure input primed; mouse button suppression armed")
+        if backend == "telemetry":
+            self.log_bus.info("Telemetry-only pressure stream started; native mouse input unchanged.")
+        else:
+            self.log_bus.info(
+                f"Stream started (pressure ~60 Hz, raw mouse event-driven, "
+                f"fallback pen tick {self.launch_config.hz:.0f} Hz)"
+            )
 
     async def stop_stream(self) -> None:
         if not self._stream_active:
@@ -1160,11 +1171,12 @@ class RuntimeService:
         next_emit = time.perf_counter()
         latest: _RawSample | None = None
         pressure_changed = False
+        telemetry_only = self._emitter is None
         while True:
             # Pressure arrives at about 60 Hz. Once the first report arrives,
             # independently tick the synthetic pen at the configured injection
             # rate so fast cursor motion is represented by more spatial points.
-            if latest is None:
+            if latest is None or telemetry_only:
                 item = await sample_queue.get()
             else:
                 timeout_s = max(0.0, next_emit - time.perf_counter())
@@ -1216,6 +1228,8 @@ class RuntimeService:
             if startup_ready is not None and not startup_ready.is_set():
                 startup_ready.set()
             pressure_changed = False
+            if telemetry_only:
+                latest = None
             if stop_after_emit:
                 break
             next_emit = time.perf_counter() + period
@@ -1230,11 +1244,17 @@ class RuntimeService:
             if silence_s <= self._stream_stall_timeout_s:
                 continue
 
-            message = (
-                f"Pressure stream stalled for {silence_s:.1f}s; "
-                "native clicks were restored and the driver was stopped."
-            )
             emitter = self._emitter
+            if emitter is None:
+                message = (
+                    f"Pressure stream stalled for {silence_s:.1f}s; telemetry "
+                    "stopped and native clicks were unchanged."
+                )
+            else:
+                message = (
+                    f"Pressure stream stalled for {silence_s:.1f}s; "
+                    "native clicks were restored and the driver was stopped."
+                )
             if emitter is not None:
                 emitter.fail_open(message)
             self.log_bus.error(message)
@@ -1278,14 +1298,15 @@ class RuntimeService:
             except Exception as exc:
                 self.log_bus.error(f"Synthetic pen update failed: {exc}")
 
-        injected_at = time.perf_counter()
-        if self._last_inject_monotonic is not None and injected_at > self._last_inject_monotonic:
-            instant_inject_hz = 1.0 / (injected_at - self._last_inject_monotonic)
-            if self._inject_hz <= 0.0:
-                self._inject_hz = instant_inject_hz
-            else:
-                self._inject_hz = (self._inject_hz * 0.9) + (instant_inject_hz * 0.1)
-        self._last_inject_monotonic = injected_at
+        if emitter is not None:
+            injected_at = time.perf_counter()
+            if self._last_inject_monotonic is not None and injected_at > self._last_inject_monotonic:
+                instant_inject_hz = 1.0 / (injected_at - self._last_inject_monotonic)
+                if self._inject_hz <= 0.0:
+                    self._inject_hz = instant_inject_hz
+                else:
+                    self._inject_hz = (self._inject_hz * 0.9) + (instant_inject_hz * 0.1)
+            self._last_inject_monotonic = injected_at
 
         # Companion apps need a heartbeat even while pressure is held steady.
         # Publish on every injection/resample tick; the UI telemetry below
