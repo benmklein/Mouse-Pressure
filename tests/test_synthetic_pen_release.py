@@ -9,7 +9,9 @@ from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "src"))
 
-from superstrike_pressure.bridge.synthetic_pen import (  # noqa: E402
+from mouse_pressure.bridge.synthetic_pen import (  # noqa: E402
+    BUTTON_ANCHOR_WAIT_S,
+    CLEAN_STROKE_ENDING_HOLD_S,
     MOUSE_MOVE_ABSOLUTE,
     POINTER_FLAG_DOWN,
     POINTER_FLAG_INCONTACT,
@@ -22,10 +24,13 @@ from superstrike_pressure.bridge.synthetic_pen import (  # noqa: E402
     RAWMOUSE,
     RI_MOUSE_LEFT_BUTTON_DOWN,
     RI_MOUSE_LEFT_BUTTON_UP,
+    RI_MOUSE_RIGHT_BUTTON_DOWN,
+    RI_MOUSE_RIGHT_BUTTON_UP,
     WM_LBUTTONDOWN,
     WM_LBUTTONUP,
     WM_MOUSEMOVE,
     WM_RBUTTONDOWN,
+    WM_RBUTTONUP,
     _MouseLmbSuppressor,
     SyntheticPenConfig,
     SyntheticPenEmitter,
@@ -530,6 +535,9 @@ class SyntheticPenReleaseTests(unittest.TestCase):
         )
         emitter = SyntheticPenEmitter(config, log=lambda _line: None)
         self.assertIsNotNone(emitter._suppressor)  # noqa: SLF001
+        self.assertFalse(  # noqa: SLF001
+            emitter._suppressor._right_button_owns_contact  # type: ignore[union-attr]
+        )
         emitter._suppressor = None  # type: ignore[assignment]  # noqa: SLF001
         fake = _FakePen()
         emitter.pen = fake  # type: ignore[assignment]
@@ -570,6 +578,227 @@ class SyntheticPenReleaseTests(unittest.TestCase):
         )
 
         self.assertFalse(suppressor._raw_direct_mode)  # noqa: SLF001
+
+    def test_timing_observer_receives_hook_and_raw_events_without_affecting_state(
+        self,
+    ) -> None:
+        suppressor = _MouseLmbSuppressor(
+            log=lambda _line: None,
+            suppress_left=False,
+            suppress_right=False,
+        )
+        observed: list[tuple[str, float, dict[str, int | float | str]]] = []
+        suppressor.set_timing_callback(
+            lambda kind, at, fields: observed.append((kind, at, fields))
+        )
+        hook_at = time.perf_counter()
+        suppressor._handle_physical_hook_button(  # noqa: SLF001
+            WM_LBUTTONDOWN,
+            observed_at=hook_at,
+            x=123,
+            y=456,
+        )
+        raw = RAWMOUSE()
+        raw.usButtonFlags = RI_MOUSE_LEFT_BUTTON_DOWN
+        raw.lLastX = 3
+        raw.lLastY = -2
+        suppressor._handle_raw_mouse(0, raw)  # noqa: SLF001
+
+        self.assertEqual(
+            observed[0],
+            ("hook_left_down", hook_at, {"x": 123, "y": 456}),
+        )
+        self.assertEqual(observed[1][0], "raw_mouse")
+        self.assertEqual(observed[1][2]["button_flags"], RI_MOUSE_LEFT_BUTTON_DOWN)
+        self.assertTrue(suppressor._lmb_down)  # noqa: SLF001
+
+    def test_zero_motion_button_down_wake_is_opt_in_and_channel_scoped(self) -> None:
+        suppressor = _MouseLmbSuppressor(
+            log=lambda _line: None,
+            suppress_left=False,
+            suppress_right=False,
+        )
+        suppressor.enabled = True
+        suppressor._raw_input_active = True  # noqa: SLF001
+        suppressor._cursor_position = lambda: (100, 200)  # type: ignore[method-assign]  # noqa: SLF001
+        suppressor._get_raw_device_identity = (  # type: ignore[method-assign]  # noqa: SLF001
+            lambda _handle: "VID_046D&PID_C54D"
+        )
+        wake_left = False
+        signals: list[str] = []
+        suppressor.set_button_down_wake_callback(
+            lambda button: wake_left and button == "left"
+        )
+        suppressor.set_movement_callback(lambda: signals.append("wake"))
+
+        down = RAWMOUSE()
+        down.usButtonFlags = RI_MOUSE_LEFT_BUTTON_DOWN
+        suppressor._handle_raw_mouse(0xA1, down)  # noqa: SLF001
+        self.assertEqual(signals, [])
+        self.assertFalse(suppressor._input_ready.is_set())  # noqa: SLF001
+
+        up = RAWMOUSE()
+        up.usButtonFlags = RI_MOUSE_LEFT_BUTTON_UP
+        suppressor._handle_raw_mouse(0xA1, up)  # noqa: SLF001
+        signals.clear()
+        suppressor._input_ready.clear()  # noqa: SLF001
+
+        wake_left = True
+        suppressor._handle_raw_mouse(0xA1, down)  # noqa: SLF001
+
+        # Raw Input won the queue race, so the experimental path waits for the
+        # low-level hook's authoritative desktop anchor before waking output.
+        self.assertEqual(signals, [])
+        self.assertFalse(suppressor.is_lmb_down())
+        suppressor._handle_physical_hook_button(  # noqa: SLF001
+            WM_LBUTTONDOWN,
+            observed_at=time.perf_counter(),
+            x=120,
+            y=240,
+        )
+
+        self.assertEqual(signals, ["wake"])
+        self.assertTrue(suppressor._input_ready.is_set())  # noqa: SLF001
+        self.assertTrue(suppressor.is_lmb_down())
+        self.assertEqual((suppressor._raw_x, suppressor._raw_y), (120, 240))  # noqa: SLF001
+        self.assertEqual(
+            suppressor.motion_diagnostics()["anchor_wait_completed"],
+            1,
+        )
+
+    def test_immediate_wake_consumes_down_packet_motion_at_hook_anchor(self) -> None:
+        suppressor = _MouseLmbSuppressor(log=lambda _line: None)
+        suppressor.enabled = True
+        suppressor._raw_input_active = True  # noqa: SLF001
+        suppressor._get_raw_device_identity = (  # type: ignore[method-assign]  # noqa: SLF001
+            lambda _handle: "VID_046D&PID_C54D"
+        )
+        signals: list[str] = []
+        suppressor.set_button_down_wake_callback(lambda button: button == "left")
+        suppressor.set_movement_callback(lambda: signals.append("wake"))
+        suppressor._handle_physical_hook_button(  # noqa: SLF001
+            WM_LBUTTONDOWN,
+            observed_at=time.perf_counter(),
+            x=500,
+            y=400,
+        )
+
+        down = RAWMOUSE()
+        down.usButtonFlags = RI_MOUSE_LEFT_BUTTON_DOWN
+        down.lLastX = 3
+        down.lLastY = -2
+        suppressor._handle_raw_mouse(0xA1, down)  # noqa: SLF001
+
+        self.assertEqual(signals, ["wake"])
+        self.assertEqual((suppressor._raw_x, suppressor._raw_y), (500, 400))  # noqa: SLF001
+        self.assertEqual(suppressor.drain_hardware_positions(), [])
+        self.assertEqual(
+            suppressor.motion_diagnostics()["immediate_button_wake"],
+            1,
+        )
+
+    def test_immediate_wake_anchor_wait_has_bounded_cursor_fallback(self) -> None:
+        suppressor = _MouseLmbSuppressor(log=lambda _line: None)
+        suppressor.enabled = True
+        suppressor._raw_input_active = True  # noqa: SLF001
+        suppressor._cursor_position = lambda: (640, 360)  # type: ignore[method-assign]  # noqa: SLF001
+        suppressor._get_raw_device_identity = (  # type: ignore[method-assign]  # noqa: SLF001
+            lambda _handle: "VID_046D&PID_C54D"
+        )
+        suppressor.set_button_down_wake_callback(lambda button: button == "left")
+
+        down = RAWMOUSE()
+        down.usButtonFlags = RI_MOUSE_LEFT_BUTTON_DOWN
+        suppressor._handle_raw_mouse(0xA1, down)  # noqa: SLF001
+        suppressor._button_anchor_wait_started_at -= (  # noqa: SLF001
+            BUTTON_ANCHOR_WAIT_S + 0.001
+        )
+
+        self.assertTrue(suppressor.is_lmb_down())
+        self.assertEqual((suppressor._raw_x, suppressor._raw_y), (640, 360))  # noqa: SLF001
+        self.assertEqual(
+            suppressor.motion_diagnostics()["anchor_wait_timeout"],
+            1,
+        )
+
+    def test_auxiliary_right_hold_does_not_own_consecutive_left_contacts(self) -> None:
+        suppressor = _MouseLmbSuppressor(
+            log=lambda _line: None,
+            right_button_owns_contact=False,
+        )
+        suppressor.enabled = True
+        suppressor._raw_input_active = True  # noqa: SLF001
+        suppressor._raw_direct_mode = True  # noqa: SLF001
+        suppressor._get_raw_device_identity = (  # type: ignore[method-assign]  # noqa: SLF001
+            lambda _handle: "VID_046D&PID_C54D"
+        )
+        suppressor.set_button_down_wake_callback(lambda button: button == "left")
+
+        suppressor._handle_physical_hook_button(  # noqa: SLF001
+            WM_RBUTTONDOWN,
+            observed_at=time.perf_counter(),
+            x=100,
+            y=100,
+        )
+        right_down = RAWMOUSE()
+        right_down.usButtonFlags = RI_MOUSE_RIGHT_BUTTON_DOWN
+        suppressor._handle_raw_mouse(0xA1, right_down)  # noqa: SLF001
+
+        self.assertTrue(suppressor._rmb_down)  # noqa: SLF001
+        self.assertFalse(suppressor._raw_contact_active)  # noqa: SLF001
+
+        suppressor._handle_physical_hook_button(  # noqa: SLF001
+            WM_LBUTTONDOWN,
+            observed_at=time.perf_counter(),
+            x=500,
+            y=400,
+        )
+        left_down = RAWMOUSE()
+        left_down.usButtonFlags = RI_MOUSE_LEFT_BUTTON_DOWN
+        suppressor._handle_raw_mouse(0xA1, left_down)  # noqa: SLF001
+        self.assertTrue(suppressor._raw_contact_active)  # noqa: SLF001
+        self.assertEqual((suppressor._raw_x, suppressor._raw_y), (500, 400))  # noqa: SLF001
+
+        move = RAWMOUSE()
+        move.lLastX = 10
+        move.lLastY = 5
+        suppressor._handle_raw_mouse(0xA1, move)  # noqa: SLF001
+        self.assertGreater(suppressor._accepted_motion_count, 0)  # noqa: SLF001
+
+        suppressor._handle_physical_hook_button(  # noqa: SLF001
+            WM_LBUTTONUP,
+            observed_at=time.perf_counter(),
+            x=510,
+            y=405,
+        )
+        left_up = RAWMOUSE()
+        left_up.usButtonFlags = RI_MOUSE_LEFT_BUTTON_UP
+        suppressor._handle_raw_mouse(0xA1, left_up)  # noqa: SLF001
+
+        self.assertTrue(suppressor._rmb_down)  # noqa: SLF001
+        self.assertFalse(suppressor._raw_contact_active)  # noqa: SLF001
+
+        suppressor._handle_physical_hook_button(  # noqa: SLF001
+            WM_LBUTTONDOWN,
+            observed_at=time.perf_counter(),
+            x=800,
+            y=600,
+        )
+        suppressor._handle_raw_mouse(0xA1, left_down)  # noqa: SLF001
+
+        self.assertEqual(suppressor._accepted_motion_count, 0)  # noqa: SLF001
+        self.assertEqual((suppressor._raw_x, suppressor._raw_y), (800, 600))  # noqa: SLF001
+
+        suppressor._handle_physical_hook_button(  # noqa: SLF001
+            WM_RBUTTONUP,
+            observed_at=time.perf_counter(),
+            x=800,
+            y=600,
+        )
+        right_up = RAWMOUSE()
+        right_up.usButtonFlags = RI_MOUSE_RIGHT_BUTTON_UP
+        suppressor._handle_raw_mouse(0xA1, right_up)  # noqa: SLF001
+        self.assertFalse(suppressor._rmb_down)  # noqa: SLF001
 
     def test_raw_input_selects_motion_device_and_ignores_other_devices(self) -> None:
         suppressor = _MouseLmbSuppressor(log=lambda _line: None)
@@ -1882,6 +2111,40 @@ class SyntheticPenReleaseTests(unittest.TestCase):
         self.assertEqual(emitter._apply_pressure_influence(512), 512)  # noqa: SLF001
         self.assertEqual(emitter._apply_pressure_influence(912), 712)  # noqa: SLF001
         self.assertEqual(emitter._apply_pressure_influence(112), 312)  # noqa: SLF001
+
+    def test_clean_stroke_endings_discards_a_short_release_pressure_ramp(self) -> None:
+        emitter, _fake = self._mk_emitter(release_teardown=False)
+
+        self.assertEqual(
+            emitter._apply_clean_stroke_ending(800, enabled=True, pressure_fresh=True, button_down=True, now=1.0),  # noqa: SLF001
+            800,
+        )
+        self.assertEqual(
+            emitter._apply_clean_stroke_ending(250, enabled=True, pressure_fresh=True, button_down=True, now=1.010),  # noqa: SLF001
+            800,
+        )
+        self.assertEqual(
+            emitter._apply_clean_stroke_ending(0, enabled=True, pressure_fresh=True, button_down=False, now=1.015),  # noqa: SLF001
+            800,
+        )
+
+    def test_clean_stroke_endings_commits_an_intentional_pressure_drop(self) -> None:
+        emitter, _fake = self._mk_emitter(release_teardown=False)
+        emitter._apply_clean_stroke_ending(800, enabled=True, pressure_fresh=True, button_down=True, now=2.0)  # noqa: SLF001
+
+        held = emitter._apply_clean_stroke_ending(300, enabled=True, pressure_fresh=True, button_down=True, now=2.001)  # noqa: SLF001
+        committed = emitter._apply_clean_stroke_ending(300, enabled=True, pressure_fresh=False, button_down=True, now=2.001 + CLEAN_STROKE_ENDING_HOLD_S + 0.000001)  # noqa: SLF001
+
+        self.assertEqual(held, 800)
+        self.assertEqual(committed, 300)
+
+    def test_clean_stroke_endings_keeps_pressure_increases_immediate(self) -> None:
+        emitter, _fake = self._mk_emitter(release_teardown=False)
+        emitter._apply_clean_stroke_ending(300, enabled=True, pressure_fresh=True, button_down=True, now=3.0)  # noqa: SLF001
+
+        increased = emitter._apply_clean_stroke_ending(700, enabled=True, pressure_fresh=True, button_down=True, now=3.001)  # noqa: SLF001
+
+        self.assertEqual(increased, 700)
 
     def test_cubic_join_continues_previous_direction_without_prediction(self) -> None:
         emitter, _fake = self._mk_emitter(release_teardown=False)

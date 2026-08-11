@@ -6,7 +6,7 @@ from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "src"))
 
-from superstrike_pressure.bridge.curves import normalize_curve_name  # noqa: E402
+from mouse_pressure.bridge.curves import normalize_curve_name  # noqa: E402
 
 
 class CurveAliasTests(unittest.TestCase):

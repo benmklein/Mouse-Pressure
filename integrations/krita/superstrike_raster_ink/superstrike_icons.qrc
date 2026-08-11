@@ -1,7 +1,0 @@
-<RCC>
-    <qresource prefix="/pics">
-        <file alias="superstrike_mouse.png">superstrike_mouse.png</file>
-        <file alias="dark_superstrike_mouse.png">dark_superstrike_mouse.png</file>
-        <file alias="light_superstrike_mouse.png">light_superstrike_mouse.png</file>
-    </qresource>
-</RCC>

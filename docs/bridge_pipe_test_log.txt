@@ -2,7 +2,7 @@ OPEN Col02 path=b'\\\\?\\HID#VID_046D&PID_C54D&MI_02&Col02#7&20812e2d&0&0001#{4d
 TX PRESSURE.enable.short(mode=0x03,arg=0x00) write()=-1 10 01 0C 3C 03 3C 00
 TX PRESSURE.enable.short(mode=0x03,arg=0x00) send_feature_report()=-1
 TX PRESSURE.enable.long_fallback(mode=0x03,arg=0x00) write()=20 11 01 0C 3C 03 3C 00 00 00 00 00 00 00 00 00 00 00 00 00 00
-PIPE listening on \\.\pipe\superstrike_pressure
+PIPE listening on \\.\pipe\mouse_pressure
 BRIDGE running mode=0x03 raw_range=[78,154] curve=s_curve strength=2.00
 PIPE client connected
 [   1.349s] raw= 79 norm=0.0132 mapped=   0
@@ -136,4 +136,4 @@ SUMMARY
 samples=281 rate=36.70Hz
 raw_min_seen=79 raw_max_seen=79
 log_file=docs\bridge_pipe_test_log.txt
-pipe_name=\\.\pipe\superstrike_pressure
+pipe_name=\\.\pipe\mouse_pressure

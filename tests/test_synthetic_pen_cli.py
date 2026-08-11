@@ -1,6 +1,6 @@
 from __future__ import annotations
 
-from superstrike_pressure.bridge.synthetic_pen_cli import build_parser
+from mouse_pressure.bridge.synthetic_pen_cli import build_parser
 
 
 def test_parser_uses_proven_bridge_defaults() -> None:
@@ -13,7 +13,7 @@ def test_parser_uses_proven_bridge_defaults() -> None:
     assert args.curve == "scurve"
     assert args.contact_source == "lmb_and_pressure"
     assert args.release_teardown is False
-    assert args.log_file == "pressure-bridge.log"
+    assert args.log_file == "mouse-pressure.log"
 
 
 def test_parser_accepts_release_and_calibration_options() -> None:

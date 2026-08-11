@@ -13,7 +13,7 @@ if (-not $Python) {
 }
 $PayloadRoot = (Resolve-Path -LiteralPath $PayloadRoot).Path
 
-& $Python -m superstrike_pressure.driver_payload $PayloadRoot
+& $Python -m mouse_pressure.driver_payload $PayloadRoot
 if ($LASTEXITCODE -ne 0) {
     throw 'The VMulti payload failed structural or checksum validation.'
 }
@@ -39,4 +39,4 @@ if ($provisionerSignature.Status -ne 'Valid') {
     throw "The driver provisioner must have a valid Authenticode signature: $provisioner"
 }
 
-Write-Host "Validated signed Superstrike VMulti payload: $PayloadRoot"
+Write-Host "Validated signed Mouse Pressure VMulti payload: $PayloadRoot"

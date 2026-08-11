@@ -4,7 +4,7 @@ import asyncio
 import time
 from unittest.mock import AsyncMock, patch
 
-from superstrike_pressure.dev_ui import (
+from mouse_pressure.dev_ui import (
     BridgeController,
     effective_pressure_for_raw,
     parse_dev_settings,
@@ -62,12 +62,14 @@ def test_dev_settings_build_linked_runtime_patch() -> None:
     assert patch["release_teardown"] is True
     assert patch["left"]["deadzone_low"] == 5
     assert patch["left"]["deadzone_high"] == 5
-    assert patch["left"]["pressure_floor"] == 12
+    assert patch["left"]["pressure_floor"] == 15
     assert patch["left"]["path_stabilization"] == 0
-    assert patch["left"]["pressure_influence"] == 85
+    assert patch["left"]["pressure_influence"] == 100
     assert patch["left"]["onset_buffer"] is False
     assert patch["left"]["true_low_latency"] is False
     assert patch["left"]["stationary_pressure_updates"] is False
+    assert patch["left"]["immediate_button_wake"] is True
+    assert patch["left"]["clean_stroke_endings"] is False
     assert settings.injection_hz == 240.0
 
 
@@ -275,7 +277,7 @@ def test_bridge_controller_routes_calibration_on_runtime_loop() -> None:
 
     try:
         with patch(
-            "superstrike_pressure.dev_ui.run_calibration",
+            "mouse_pressure.dev_ui.run_calibration",
             new=AsyncMock(return_value=result),
         ) as calibrate:
             future = controller.calibrate(

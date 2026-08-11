@@ -1,7 +1,7 @@
 [project]
-name = "superstrike-pressure"
+name = "mouse-pressure-driver"
 version = "0.1.0"
-description = "Bridge Logitech Superstrike HITS analog mouse buttons to drawing tablet pressure input"
+description = "Turn supported analog mouse buttons into drawing tablet pressure input"
 readme = "README.md"
 requires-python = ">=3.12"
 license = { text = "MIT" }
@@ -21,6 +21,9 @@ dev = [
 release = [
     "pyinstaller>=6.22,<7",
 ]
+sandbox = [
+    "pygame-ce>=2.5.8,<3",
+]
 usb = [
     "pyusb>=1.2",
 ]
@@ -29,18 +32,22 @@ web = [
 ]
 
 [project.scripts]
-ss-sniff = "superstrike_pressure.cli:sniff"
-ss-bridge = "superstrike_pressure.cli:bridge"
-ss-visualize = "superstrike_pressure.cli:visualize"
-ss-pressure = "superstrike_pressure.cli:pressure"
-ss-tablet = "superstrike_pressure.cli:tablet"
-ss-pen = "superstrike_pressure.bridge.synthetic_pen_cli:main"
-ss-dev-ui = "superstrike_pressure.dev_ui:main"
-superstrike-pressure = "superstrike_pressure.app:main"
-ss-bridge-ws = "superstrike_pressure.web.main:main"
+mp-sniff = "mouse_pressure.cli:sniff"
+mp-bridge = "mouse_pressure.cli:bridge"
+mp-visualize = "mouse_pressure.cli:visualize"
+mp-pressure = "mouse_pressure.cli:pressure"
+mp-tablet = "mouse_pressure.cli:tablet"
+mp-pen = "mouse_pressure.bridge.synthetic_pen_cli:main"
+mp-dev-ui = "mouse_pressure.dev_ui:main"
+mouse-pressure = "mouse_pressure.app:main"
+mouse-pressure-sandbox = "mouse_pressure_sandbox.main:main"
+mp-bridge-ws = "mouse_pressure.web.main:main"
 
 [tool.pytest.ini_options]
 testpaths = ["tests"]
+
+[tool.hatch.build.targets.wheel]
+packages = ["src/mouse_pressure", "src/mouse_pressure_sandbox"]
 
 [build-system]
 requires = ["hatchling"]

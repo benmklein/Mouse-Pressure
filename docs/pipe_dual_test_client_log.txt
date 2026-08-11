@@ -1,4 +1,4 @@
-PIPE client connecting to \\.\pipe\superstrike_pressure
+PIPE client connecting to \\.\pipe\mouse_pressure
 PIPE connected
 [   0.915s] L raw=79 norm=0.013158 mapped=0 | R raw=78 norm=0.0 mapped=0
 [   0.932s] L raw=79 norm=0.013158 mapped=0 | R raw=78 norm=0.0 mapped=0

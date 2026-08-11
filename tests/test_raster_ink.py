@@ -3,7 +3,7 @@ from __future__ import annotations
 import math
 from pathlib import Path
 
-from superstrike_pressure.ink.raster_ink import (
+from mouse_pressure.ink.raster_ink import (
     InkPoint,
     LowLatencyInkFilter,
     StartupPressurePreviewFilter,
@@ -209,35 +209,35 @@ def test_krita_tool_registers_mouse_icon_and_editable_shortcut() -> None:
         REPO_ROOT
         / "integrations"
         / "krita"
-        / "superstrike_raster_ink"
-        / "kis_tool_superstrike_ink.h"
+        / "mouse_pressure_brush"
+        / "kis_tool_mouse_pressure.h"
     ).read_text(encoding="utf-8")
 
-    assert 'setToolTip(i18n("Superstrike Raster Ink Tool"))' in header
-    assert 'setIconName(koIconNameCStr("superstrike_mouse"))' in header
+    assert 'setToolTip(i18n("Mouse Pressure Brush Tool (Shift+B)"))' in header
+    assert 'setIconName(koIconNameCStr("mouse_pressure_mouse"))' in header
     assert "setShortcut(QKeySequence(Qt::SHIFT | Qt::Key_B))" in header
     action = (
         REPO_ROOT
         / "integrations"
         / "krita"
-        / "superstrike_raster_ink"
-        / "superstrike_raster_ink.action"
+        / "mouse_pressure_brush"
+        / "mouse_pressure_brush.action"
     ).read_text(encoding="utf-8")
-    assert '<Action name="KritaShape/KisToolSuperstrikeInk">' in action
-    assert "<toolTip>Superstrike Raster Ink Tool</toolTip>" in action
+    assert '<Action name="KritaShape/KisToolMousePressure">' in action
+    assert "<toolTip>Mouse Pressure Brush Tool (Shift+B)</toolTip>" in action
     assert "<shortcut>Shift+B</shortcut>" in action
 
 
 def test_krita_mouse_icons_are_packaged_for_all_themes() -> None:
     plugin_dir = (
-        REPO_ROOT / "integrations" / "krita" / "superstrike_raster_ink"
+        REPO_ROOT / "integrations" / "krita" / "mouse_pressure_brush"
     )
     cmake = (plugin_dir / "CMakeLists.txt").read_text(encoding="utf-8")
-    resources = (plugin_dir / "superstrike_icons.qrc").read_text(encoding="utf-8")
+    resources = (plugin_dir / "mouse_pressure_icons.qrc").read_text(encoding="utf-8")
     for name in (
-        "superstrike_mouse.png",
-        "dark_superstrike_mouse.png",
-        "light_superstrike_mouse.png",
+        "mouse_pressure_mouse.png",
+        "dark_mouse_pressure_mouse.png",
+        "light_mouse_pressure_mouse.png",
     ):
         assert (plugin_dir / name).is_file()
         assert name in cmake
@@ -246,20 +246,20 @@ def test_krita_mouse_icons_are_packaged_for_all_themes() -> None:
 
 def test_krita_native_brush_is_default_and_preserves_pressure_events() -> None:
     plugin_dir = (
-        REPO_ROOT / "integrations" / "krita" / "superstrike_raster_ink"
+        REPO_ROOT / "integrations" / "krita" / "mouse_pressure_brush"
     )
-    source = (plugin_dir / "kis_tool_superstrike_ink.cpp").read_text(
+    source = (plugin_dir / "kis_tool_mouse_pressure.cpp").read_text(
         encoding="utf-8"
     )
-    header = (plugin_dir / "kis_tool_superstrike_ink.h").read_text(
+    header = (plugin_dir / "kis_tool_mouse_pressure.h").read_text(
         encoding="utf-8"
     )
 
     assert 'readEntry("inkMode", 0)' in source
     assert "InkMode m_inkMode {InkMode::NativeBrush};" in header
     assert 'modeCombo->addItem(i18n("Native brush"))' in source
-    assert 'modeCombo->addItem(i18n("Native brush + Ink Assist"))' in source
-    assert 'modeCombo->addItem(i18n("Experimental Perfect Ink"))' in source
+    assert 'modeCombo->addItem(i18n("Native brush + Stroke smoothing"))' in source
+    assert 'modeCombo->addItem(i18n("Experimental filled outline"))' in source
     assert "KisToolFreehand::beginPrimaryAction(event);" in source
     assert "KisToolFreehand::continuePrimaryAction(event);" in source
     assert "do not remap or smooth pressure" in source
@@ -267,13 +267,13 @@ def test_krita_native_brush_is_default_and_preserves_pressure_events() -> None:
 
 def test_krita_perfect_freehand_outline_is_built_as_experimental_mode() -> None:
     plugin_dir = (
-        REPO_ROOT / "integrations" / "krita" / "superstrike_raster_ink"
+        REPO_ROOT / "integrations" / "krita" / "mouse_pressure_brush"
     )
     cmake = (plugin_dir / "CMakeLists.txt").read_text(encoding="utf-8")
-    source = (plugin_dir / "kis_tool_superstrike_ink.cpp").read_text(
+    source = (plugin_dir / "kis_tool_mouse_pressure.cpp").read_text(
         encoding="utf-8"
     )
-    header = (plugin_dir / "kis_tool_superstrike_ink.h").read_text(
+    header = (plugin_dir / "kis_tool_mouse_pressure.h").read_text(
         encoding="utf-8"
     )
     outline_source = (plugin_dir / "perfect_freehand_outline.cpp").read_text(
@@ -304,12 +304,12 @@ def test_krita_perfect_freehand_outline_is_built_as_experimental_mode() -> None:
 
 def test_krita_path_assist_only_changes_position() -> None:
     plugin_dir = (
-        REPO_ROOT / "integrations" / "krita" / "superstrike_raster_ink"
+        REPO_ROOT / "integrations" / "krita" / "mouse_pressure_brush"
     )
-    source = (plugin_dir / "kis_tool_superstrike_ink.cpp").read_text(
+    source = (plugin_dir / "kis_tool_mouse_pressure.cpp").read_text(
         encoding="utf-8"
     )
-    header = (plugin_dir / "kis_tool_superstrike_ink.h").read_text(
+    header = (plugin_dir / "kis_tool_mouse_pressure.h").read_text(
         encoding="utf-8"
     )
 

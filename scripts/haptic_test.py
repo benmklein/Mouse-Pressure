@@ -1,4 +1,4 @@
-"""Superstrike haptic motor write-path test harness.
+"""Compatible-mouse haptic motor write-path test harness.
 
 This script exercises haptic intensity writes discovered from G Hub captures.
 All writes are sent on MI_02 Col02 using HID++ long reports and each haptic
@@ -106,7 +106,7 @@ class HapticTestSession:
     def open(self) -> None:
         self.path_col02 = self.discover_col02_path()
         if not self.path_col02:
-            raise RuntimeError("Superstrike receiver MI_02 Col02 not found (046D:C54D Col02)")
+            raise RuntimeError("Supported receiver MI_02 Col02 not found (046D:C54D Col02)")
         self.dev = hid.device()
         self.dev.open_path(self.path_col02)
         self.dev.set_nonblocking(True)

@@ -7,16 +7,19 @@ $ErrorActionPreference = 'Stop'
 $repoRoot = Split-Path -Parent $PSScriptRoot
 if (-not $InstallerPath) {
     $InstallerPath = Get-ChildItem -LiteralPath (Join-Path $repoRoot 'dist\installer') `
-        -Filter 'SuperstrikePressure-*-Setup.exe' -File |
+        -Filter 'MousePressure-*-Setup.exe' -File |
         Sort-Object LastWriteTimeUtc -Descending |
         Select-Object -First 1 -ExpandProperty FullName
 }
 if (-not $InstallerPath) {
-    throw 'No Superstrike Pressure installer was found.'
+    throw 'No Mouse Pressure installer was found.'
 }
 $InstallerPath = (Resolve-Path -LiteralPath $InstallerPath).Path
 $smokeRoot = Join-Path $repoRoot ('work\installer-smoke\' + [guid]::NewGuid().ToString('N'))
-$installRoot = Join-Path $smokeRoot 'Superstrike Pressure'
+$installRoot = Join-Path $smokeRoot 'Mouse Pressure'
+$installLog = Join-Path $smokeRoot 'install.log'
+$uninstallLog = Join-Path $smokeRoot 'uninstall.log'
+[void](New-Item -ItemType Directory -Path $smokeRoot -Force)
 
 function Invoke-CheckedProcess {
     param(
@@ -63,13 +66,18 @@ function Invoke-CheckedProcess {
     '/TYPE=compact',
     '/COMPONENTS=application',
     '/TASKS=',
+    "/LOG=$installLog",
     "/DIR=$installRoot"
 ) -Phase 'Silent install')
 
-$application = Join-Path $installRoot 'SuperstrikePressure.exe'
+$application = Join-Path $installRoot 'MousePressure.exe'
+$sandbox = Join-Path $installRoot 'sandbox\MousePressureSandbox.exe'
 $uninstaller = Join-Path $installRoot 'unins000.exe'
 if (-not (Test-Path -LiteralPath $application -PathType Leaf)) {
     throw "Installed application is missing: $application"
+}
+if (-not (Test-Path -LiteralPath $sandbox -PathType Leaf)) {
+    throw "Installed sandbox is missing: $sandbox"
 }
 if (-not (Test-Path -LiteralPath $uninstaller -PathType Leaf)) {
     throw "Installed uninstaller is missing: $uninstaller"
@@ -88,7 +96,8 @@ if (-not (Test-Path -LiteralPath $uninstaller -PathType Leaf)) {
 [void](Invoke-CheckedProcess -FilePath $uninstaller -Arguments @(
     '/VERYSILENT',
     '/SUPPRESSMSGBOXES',
-    '/NORESTART'
+    '/NORESTART',
+    "/LOG=$uninstallLog"
 ) -Phase 'Silent uninstall')
 
 if (Test-Path -LiteralPath $application) {

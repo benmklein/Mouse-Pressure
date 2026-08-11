@@ -1,0 +1,9 @@
+{
+    "Id": "Mouse Pressure Brush Tool",
+    "Type": "Service",
+    "X-KDE-Library": "kritatoolsmousepressure",
+    "X-KDE-ServiceTypes": [
+        "Krita/Tool"
+    ],
+    "X-Krita-Version": "28"
+}

@@ -1,5 +1,5 @@
-from superstrike_pressure.ui.stroke_analysis import stroke_analysis_data
-from superstrike_pressure.ui.windows_shell import asset_path
+from mouse_pressure.ui.stroke_analysis import stroke_analysis_data
+from mouse_pressure.ui.windows_shell import asset_path
 
 
 def test_packaged_shell_assets_exist() -> None:

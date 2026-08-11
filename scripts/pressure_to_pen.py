@@ -1,6 +1,6 @@
-"""Compatibility wrapper for the installed ``ss-pen`` command."""
+"""Compatibility wrapper for the installed ``mp-pen`` command."""
 
-from superstrike_pressure.bridge.synthetic_pen_cli import main
+from mouse_pressure.bridge.synthetic_pen_cli import main
 
 
 if __name__ == "__main__":

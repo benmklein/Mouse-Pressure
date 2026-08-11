@@ -2,7 +2,7 @@ from __future__ import annotations
 
 from unittest.mock import patch
 
-from superstrike_pressure.sniff.hidpp_pressure import (
+from mouse_pressure.sniff.hidpp_pressure import (
     Feature0CFrame,
     PressureHidppSession,
     WIRED_DEVICE_INDEX,
@@ -137,7 +137,7 @@ def test_wired_session_uses_direct_device_index_for_all_requests() -> None:
     assert all(report[1] == WIRED_DEVICE_INDEX for report in dev.writes)
 
 
-def test_discovery_prefers_wired_superstrike_without_hardcoded_path() -> None:
+def test_discovery_prefers_wired_supported_device_without_hardcoded_path() -> None:
     wired_path = b"wired-user-specific-path"
     wireless_path = b"wireless-user-specific-path"
     devices = [
@@ -165,7 +165,7 @@ def test_discovery_prefers_wired_superstrike_without_hardcoded_path() -> None:
     session = PressureHidppSession(log=lambda _line: None)
 
     with patch(
-        "superstrike_pressure.sniff.hidpp_pressure.hid.enumerate",
+        "mouse_pressure.sniff.hidpp_pressure.hid.enumerate",
         return_value=devices,
     ):
         candidates = session.discover_col02_candidates()

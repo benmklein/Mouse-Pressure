@@ -9,9 +9,9 @@ from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "src"))
 
-from superstrike_pressure.bridge.config import ChannelConfig, LaunchConfig, RuntimeConfig  # noqa: E402
-from superstrike_pressure.web.models import StreamAlreadyActiveError, StreamNotActiveError  # noqa: E402
-from superstrike_pressure.web.runtime_service import RuntimeService  # noqa: E402
+from mouse_pressure.bridge.config import ChannelConfig, LaunchConfig, RuntimeConfig  # noqa: E402
+from mouse_pressure.web.models import StreamAlreadyActiveError, StreamNotActiveError  # noqa: E402
+from mouse_pressure.web.runtime_service import RuntimeService  # noqa: E402
 
 
 def _frame(left_raw: int, right_raw: int) -> list[int]:
@@ -291,7 +291,7 @@ class RuntimeServiceTests(unittest.IsolatedAsyncioTestCase):
         restored = service.restore_defaults(defaults)
 
         self.assertFalse(restored.linked)
-        self.assertTrue(restored.debug_mode)
+        self.assertFalse(restored.debug_mode)
         self.assertTrue(restored.minimize_to_tray)
         self.assertEqual(restored.session_dpi, 1200)
         self.assertEqual(restored.app_profiles, {})
@@ -395,6 +395,8 @@ class RuntimeServiceTests(unittest.IsolatedAsyncioTestCase):
                     "pressure_influence": 70,
                     "onset_buffer": True,
                     "stationary_pressure_updates": True,
+                    "immediate_button_wake": True,
+                    "clean_stroke_endings": True,
                 },
             }
         )
@@ -409,6 +411,8 @@ class RuntimeServiceTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(emitter_config.right_pressure_influence, 70)
         self.assertTrue(emitter_config.right_onset_buffer)
         self.assertTrue(emitter_config.right_stationary_pressure_updates)
+        self.assertTrue(emitter_config.right_immediate_button_wake)
+        self.assertTrue(emitter_config.right_clean_stroke_endings)
 
         await service.stop_stream()
 

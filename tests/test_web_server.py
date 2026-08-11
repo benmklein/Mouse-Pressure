@@ -8,8 +8,8 @@ from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "src"))
 
-from superstrike_pressure.web.log_bus import LogBus  # noqa: E402
-from superstrike_pressure.web.server import BridgeServer  # noqa: E402
+from mouse_pressure.web.log_bus import LogBus  # noqa: E402
+from mouse_pressure.web.server import BridgeServer  # noqa: E402
 
 
 class _FakeRuntimeService:
@@ -95,7 +95,7 @@ class BridgeServerTests(unittest.IsolatedAsyncioTestCase):
             log_bus=log_bus,
         )
 
-        import superstrike_pressure.web.server as server_module
+        import mouse_pressure.web.server as server_module
 
         fake_ws = _FakeWsModule(fail_ports={27842})
         old_import = server_module._import_websockets
@@ -119,7 +119,7 @@ class BridgeServerTests(unittest.IsolatedAsyncioTestCase):
             log_bus=log_bus,
         )
 
-        import superstrike_pressure.web.server as server_module
+        import mouse_pressure.web.server as server_module
 
         fake_ws = _FakeWsModule()
         old_import = server_module._import_websockets

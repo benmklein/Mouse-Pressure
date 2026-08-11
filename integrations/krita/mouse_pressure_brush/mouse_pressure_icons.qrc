@@ -1,0 +1,7 @@
+<RCC>
+    <qresource prefix="/pics">
+        <file alias="mouse_pressure_mouse.png">mouse_pressure_mouse.png</file>
+        <file alias="dark_mouse_pressure_mouse.png">dark_mouse_pressure_mouse.png</file>
+        <file alias="light_mouse_pressure_mouse.png">light_mouse_pressure_mouse.png</file>
+    </qresource>
+</RCC>

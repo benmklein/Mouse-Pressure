@@ -2,7 +2,7 @@ from __future__ import annotations
 
 from dataclasses import dataclass
 
-from superstrike_pressure.bridge.tablet_emitter import (
+from mouse_pressure.bridge.tablet_emitter import (
     POINTER_FLAG_DOWN,
     POINTER_FLAG_INCONTACT,
     POINTER_FLAG_INRANGE,
@@ -61,7 +61,7 @@ def test_project_owned_vmulti_identity_and_control_collection_are_preferred(
     pen_path = rb"\\?\hid#vid_f055&pid_0001&col01#pen"
     control_path = rb"\\?\hid#vid_f055&pid_0001&col02#control"
     monkeypatch.setattr(
-        "superstrike_pressure.bridge.tablet_emitter.hid.enumerate",
+        "mouse_pressure.bridge.tablet_emitter.hid.enumerate",
         lambda: [
             {
                 "path": pen_path,
@@ -69,8 +69,8 @@ def test_project_owned_vmulti_identity_and_control_collection_are_preferred(
                 "product_id": 0x0001,
                 "usage_page": 0x000D,
                 "usage": 0x0002,
-                "manufacturer_string": "Superstrike",
-                "product_string": "Superstrike VMulti Virtual Pen",
+                "manufacturer_string": "Mouse Pressure",
+                "product_string": "Mouse Pressure Virtual Pen",
             },
             {
                 "path": control_path,
@@ -78,8 +78,8 @@ def test_project_owned_vmulti_identity_and_control_collection_are_preferred(
                 "product_id": 0x0001,
                 "usage_page": 0xFF00,
                 "usage": 0x0001,
-                "manufacturer_string": "Superstrike",
-                "product_string": "Superstrike VMulti Virtual Pen",
+                "manufacturer_string": "Mouse Pressure",
+                "product_string": "Mouse Pressure Virtual Pen",
             },
         ],
     )
@@ -93,7 +93,7 @@ def test_project_owned_vmulti_identity_and_control_collection_are_preferred(
 def test_legacy_vmulti_identity_remains_available(monkeypatch) -> None:
     legacy_path = rb"\\?\hid#vid_00ff&pid_bacc&col05#legacy"
     monkeypatch.setattr(
-        "superstrike_pressure.bridge.tablet_emitter.hid.enumerate",
+        "mouse_pressure.bridge.tablet_emitter.hid.enumerate",
         lambda: [
             {
                 "path": legacy_path,

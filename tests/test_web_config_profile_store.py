@@ -9,10 +9,10 @@ from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "src"))
 
-from superstrike_pressure.bridge.config import ChannelConfig, RuntimeConfig  # noqa: E402
-from superstrike_pressure.web.config_store import ConfigStore, resolve_config_dir  # noqa: E402
-from superstrike_pressure.web.models import ProfileNotFoundError, SchemaMismatchError  # noqa: E402
-from superstrike_pressure.web.profile_store import ProfileStore  # noqa: E402
+from mouse_pressure.bridge.config import ChannelConfig, RuntimeConfig  # noqa: E402
+from mouse_pressure.web.config_store import ConfigStore, resolve_config_dir  # noqa: E402
+from mouse_pressure.web.models import ProfileNotFoundError, SchemaMismatchError  # noqa: E402
+from mouse_pressure.web.profile_store import ProfileStore  # noqa: E402
 
 
 def _sample_runtime_config() -> RuntimeConfig:
@@ -36,6 +36,7 @@ def _sample_runtime_config() -> RuntimeConfig:
             curve="soft",
             contact_preset="light",
             stationary_pressure_updates=True,
+            clean_stroke_endings=True,
         ),
         right=ChannelConfig(
             raw_min=84,
@@ -48,11 +49,13 @@ def _sample_runtime_config() -> RuntimeConfig:
 
 
 class ConfigStoreTests(unittest.TestCase):
-    def test_default_profile_enables_only_left_pressure(self) -> None:
+    def test_default_profile_matches_the_recommended_current_profile(self) -> None:
         defaults = RuntimeConfig()
 
         self.assertTrue(defaults.left_enabled)
-        self.assertFalse(defaults.right_enabled)
+        self.assertTrue(defaults.right_enabled)
+        self.assertTrue(defaults.rmb_aux_xtilt)
+        self.assertFalse(defaults.debug_mode)
 
     def test_load_returns_defaults_when_file_missing(self) -> None:
         with tempfile.TemporaryDirectory() as td:
@@ -61,18 +64,20 @@ class ConfigStoreTests(unittest.TestCase):
             self.assertEqual(loaded.schema_version, 1)
             self.assertFalse(loaded.linked)
             self.assertTrue(loaded.left_enabled)
-            self.assertFalse(loaded.right_enabled)
-            self.assertEqual(loaded.left.raw_min, 350)
-            self.assertEqual(loaded.right.raw_max, 680)
-            self.assertEqual(loaded.left.pressure_floor, 25)
+            self.assertTrue(loaded.right_enabled)
+            self.assertEqual(loaded.left.raw_min, 380)
+            self.assertEqual(loaded.right.raw_max, 700)
+            self.assertEqual(loaded.left.pressure_floor, 15)
             self.assertEqual(loaded.left.path_stabilization, 0)
             self.assertEqual(loaded.left.pressure_influence, 100)
             self.assertFalse(loaded.left.onset_buffer)
             self.assertFalse(loaded.left.stationary_pressure_updates)
-            self.assertEqual(loaded.left.curve, "soft")
-            self.assertEqual(loaded.left.curve_strength, 3.0)
-            self.assertEqual(loaded.right.curve_strength, 3.1)
-            self.assertTrue(loaded.debug_mode)
+            self.assertEqual(loaded.left.curve, "linear")
+            self.assertEqual(loaded.left.curve_strength, 1.0)
+            self.assertEqual(loaded.right.curve_strength, 1.0)
+            self.assertTrue(loaded.left.immediate_button_wake)
+            self.assertFalse(loaded.left.clean_stroke_endings)
+            self.assertFalse(loaded.debug_mode)
             self.assertTrue(loaded.minimize_to_tray)
             self.assertTrue(loaded.session_device_settings_follow_normal)
 
@@ -118,6 +123,7 @@ class ConfigStoreTests(unittest.TestCase):
             self.assertEqual(loaded.left.curve, "soft")
             self.assertEqual(loaded.right.curve, "hard")
             self.assertTrue(loaded.left.stationary_pressure_updates)
+            self.assertTrue(loaded.left.clean_stroke_endings)
             self.assertFalse(loaded.right.stationary_pressure_updates)
             self.assertEqual(loaded.app_profiles["krita.exe"], "krita")
 
@@ -145,9 +151,9 @@ class ConfigStoreTests(unittest.TestCase):
 
             self.assertTrue(loaded.suppress_lmb)
             self.assertTrue(loaded.left_enabled)
-            self.assertFalse(loaded.right_enabled)
-            self.assertFalse(loaded.rmb_aux_xtilt)
-            self.assertTrue(loaded.debug_mode)
+            self.assertTrue(loaded.right_enabled)
+            self.assertTrue(loaded.rmb_aux_xtilt)
+            self.assertFalse(loaded.debug_mode)
             self.assertTrue(loaded.minimize_to_tray)
             self.assertFalse(loaded.release_teardown)
             self.assertEqual(loaded.session_dpi, 800)
@@ -156,19 +162,21 @@ class ConfigStoreTests(unittest.TestCase):
             self.assertTrue(loaded.session_device_settings_follow_normal)
             self.assertFalse(loaded.left.stationary_pressure_updates)
             self.assertFalse(loaded.right.stationary_pressure_updates)
+            self.assertTrue(loaded.left.immediate_button_wake)
+            self.assertFalse(loaded.left.clean_stroke_endings)
 
     def test_resolve_config_dir_prefers_env(self) -> None:
         with tempfile.TemporaryDirectory() as td:
-            old_value = os.environ.get("SUPERSTRIKE_CONFIG_DIR")
-            os.environ["SUPERSTRIKE_CONFIG_DIR"] = td
+            old_value = os.environ.get("MOUSE_PRESSURE_CONFIG_DIR")
+            os.environ["MOUSE_PRESSURE_CONFIG_DIR"] = td
             try:
                 resolved = resolve_config_dir()
                 self.assertEqual(resolved, Path(td))
             finally:
                 if old_value is None:
-                    del os.environ["SUPERSTRIKE_CONFIG_DIR"]
+                    del os.environ["MOUSE_PRESSURE_CONFIG_DIR"]
                 else:
-                    os.environ["SUPERSTRIKE_CONFIG_DIR"] = old_value
+                    os.environ["MOUSE_PRESSURE_CONFIG_DIR"] = old_value
 
 
 class ProfileStoreTests(unittest.TestCase):

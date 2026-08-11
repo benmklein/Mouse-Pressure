@@ -8,8 +8,8 @@ from PIL import Image, ImageDraw
 
 
 ROOT = Path(__file__).resolve().parents[1]
-APP_ASSETS = ROOT / "src" / "superstrike_pressure" / "assets"
-KRITA_ASSETS = ROOT / "integrations" / "krita" / "superstrike_raster_ink"
+APP_ASSETS = ROOT / "src" / "mouse_pressure" / "assets"
+KRITA_ASSETS = ROOT / "integrations" / "krita" / "mouse_pressure_brush"
 
 
 def _rounded_line(draw: ImageDraw.ImageDraw, points, *, fill, width: int) -> None:
@@ -75,12 +75,12 @@ def main() -> None:
         sizes=[(16, 16), (20, 20), (24, 24), (32, 32), (48, 48), (64, 64), (128, 128), (256, 256)],
     )
 
-    _mouse_glyph(22, (32, 38, 44, 255)).save(KRITA_ASSETS / "superstrike_mouse.png")
+    _mouse_glyph(22, (32, 38, 44, 255)).save(KRITA_ASSETS / "mouse_pressure_mouse.png")
     _mouse_glyph(22, (32, 38, 44, 255)).save(
-        KRITA_ASSETS / "dark_superstrike_mouse.png"
+        KRITA_ASSETS / "dark_mouse_pressure_mouse.png"
     )
     _mouse_glyph(22, (242, 246, 250, 255)).save(
-        KRITA_ASSETS / "light_superstrike_mouse.png"
+        KRITA_ASSETS / "light_mouse_pressure_mouse.png"
     )
 
 

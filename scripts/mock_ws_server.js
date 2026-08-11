@@ -1,7 +1,7 @@
 #!/usr/bin/env node
 /**
  * scripts/mock_ws_server.js
- * Fake Superstrike Bridge backend for UI development.
+ * Fake Mouse Pressure backend for UI development.
  * Implements the docs/web/protocol.md contract with realistic fake data.
  * The real Python backend is a drop-in replacement on the same protocol.
  *
@@ -74,7 +74,7 @@ function addLog(level, msg) {
 }
 
 addLog('INFO', 'Mock bridge started');
-addLog('INFO', 'Device found: Logitech G Pro X2 Superstrike (mock)');
+addLog('INFO', 'Supported analog mouse found (mock)');
 
 // ---------------------------------------------------------------------------
 // Telemetry simulation

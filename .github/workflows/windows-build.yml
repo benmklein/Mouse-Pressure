@@ -30,7 +30,7 @@ jobs:
           cache: pip
 
       - name: Install project and release tools
-        run: python -m pip install ".[dev,release]"
+        run: python -m pip install ".[dev,release,sandbox]"
 
       - name: Run tests
         run: python -m pytest
@@ -53,14 +53,14 @@ jobs:
       - name: Upload standalone application
         uses: actions/upload-artifact@v4
         with:
-          name: SuperstrikePressure-windows-x64
-          path: dist/windows/SuperstrikePressure
+          name: MousePressure-windows-x64
+          path: dist/windows/MousePressure
           if-no-files-found: error
 
       - name: Upload installer
         uses: actions/upload-artifact@v4
         with:
-          name: SuperstrikePressure-installer
+          name: MousePressure-installer
           path: |
             dist/installer/*.exe
             dist/installer/*.sha256

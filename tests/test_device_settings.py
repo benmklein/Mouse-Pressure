@@ -1,6 +1,6 @@
 from __future__ import annotations
 
-from superstrike_pressure.sniff.hidpp_pressure import PressureHidppSession
+from mouse_pressure.sniff.hidpp_pressure import PressureHidppSession
 
 
 def _reply(feature: int, address: int, payload: list[int]) -> list[int]:

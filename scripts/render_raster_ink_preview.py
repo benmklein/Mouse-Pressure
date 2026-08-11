@@ -7,7 +7,7 @@ from pathlib import Path
 
 import matplotlib.pyplot as plt
 
-from superstrike_pressure.ink.raster_ink import (
+from mouse_pressure.ink.raster_ink import (
     InkPoint,
     LowLatencyInkFilter,
     refine_stroke,

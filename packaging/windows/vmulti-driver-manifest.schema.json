@@ -1,6 +1,6 @@
 {
   "$schema": "https://json-schema.org/draft/2020-12/schema",
-  "title": "Superstrike VMulti release payload",
+  "title": "Mouse Pressure VMulti release payload",
   "type": "object",
   "additionalProperties": false,
   "required": [
@@ -17,8 +17,8 @@
   ],
   "properties": {
     "schema_version": { "const": 1 },
-    "package_id": { "const": "superstrike-vmulti" },
-    "hardware_id": { "const": "ROOT\\SUPERSTRIKEVMULTI" },
+    "package_id": { "const": "mouse-pressure-vmulti" },
+    "hardware_id": { "const": "ROOT\\MOUSEPRESSUREVMULTI" },
     "inf": { "type": "string", "pattern": "^[^/\\\\]+\\.inf$" },
     "catalog": { "type": "string", "pattern": "^[^/\\\\]+\\.cat$" },
     "driver": { "type": "string", "pattern": "^[^/\\\\]+\\.sys$" },

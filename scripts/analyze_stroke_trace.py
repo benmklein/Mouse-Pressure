@@ -1,4 +1,4 @@
-"""Analyze and plot the newest structured Superstrike stroke trace."""
+"""Analyze and plot the newest structured mouse-pressure stroke trace."""
 
 from __future__ import annotations
 
@@ -361,7 +361,7 @@ def main() -> int:
     parser.add_argument(
         "path",
         nargs="?",
-        default=Path.home() / ".superstrike" / "stroke_traces",
+        default=Path.home() / ".mouse-pressure" / "stroke_traces",
     )
     args = parser.parse_args()
 

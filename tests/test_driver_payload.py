@@ -6,7 +6,7 @@ from pathlib import Path
 
 import pytest
 
-from superstrike_pressure.driver_payload import (
+from mouse_pressure.driver_payload import (
     DriverPayloadError,
     validate_driver_payload,
 )
@@ -14,18 +14,18 @@ from superstrike_pressure.driver_payload import (
 
 def _write_payload(root: Path) -> dict[str, object]:
     files = {
-        "superstrike-vmulti.inf": (
+        "mouse-pressure-vmulti.inf": (
             "[Version]\n"
-            "Provider=Superstrike\n"
-            "CatalogFile=superstrike-vmulti.cat\n"
+            "Provider=Mouse Pressure\n"
+            "CatalogFile=mouse-pressure-vmulti.cat\n"
             "[Models]\n"
-            "%Device%=Install,ROOT\\SUPERSTRIKEVMULTI\n"
+            "%Device%=Install,ROOT\\MOUSEPRESSUREVMULTI\n"
             "[CopyFiles]\n"
-            "superstrike-vmulti.sys\n"
+            "mouse-pressure-vmulti.sys\n"
         ).encode(),
-        "superstrike-vmulti.cat": b"signed catalog placeholder",
-        "superstrike-vmulti.sys": b"signed driver placeholder",
-        "SuperstrikeDriverCtl.exe": b"signed provisioner placeholder",
+        "mouse-pressure-vmulti.cat": b"signed catalog placeholder",
+        "mouse-pressure-vmulti.sys": b"signed driver placeholder",
+        "MousePressureDriverCtl.exe": b"signed provisioner placeholder",
         "LICENSE-vmulti.txt": b"MIT license placeholder",
         "THIRD_PARTY_NOTICES.md": b"upstream notices placeholder",
     }
@@ -33,12 +33,12 @@ def _write_payload(root: Path) -> dict[str, object]:
         (root / name).write_bytes(content)
     manifest: dict[str, object] = {
         "schema_version": 1,
-        "package_id": "superstrike-vmulti",
-        "hardware_id": "ROOT\\SUPERSTRIKEVMULTI",
-        "inf": "superstrike-vmulti.inf",
-        "catalog": "superstrike-vmulti.cat",
-        "driver": "superstrike-vmulti.sys",
-        "provisioner": "SuperstrikeDriverCtl.exe",
+        "package_id": "mouse-pressure-vmulti",
+        "hardware_id": "ROOT\\MOUSEPRESSUREVMULTI",
+        "inf": "mouse-pressure-vmulti.inf",
+        "catalog": "mouse-pressure-vmulti.cat",
+        "driver": "mouse-pressure-vmulti.sys",
+        "provisioner": "MousePressureDriverCtl.exe",
         "license": "LICENSE-vmulti.txt",
         "third_party_notices": "THIRD_PARTY_NOTICES.md",
         "sha256": {
@@ -55,8 +55,8 @@ def test_accepts_project_owned_payload_with_matching_hashes(tmp_path: Path) -> N
 
     payload = validate_driver_payload(tmp_path)
 
-    assert payload.files["inf"].name == "superstrike-vmulti.inf"
-    assert payload.files["provisioner"].name == "SuperstrikeDriverCtl.exe"
+    assert payload.files["inf"].name == "mouse-pressure-vmulti.inf"
+    assert payload.files["provisioner"].name == "MousePressureDriverCtl.exe"
 
 
 def test_rejects_vendor_or_legacy_installer_files(tmp_path: Path) -> None:
@@ -69,7 +69,7 @@ def test_rejects_vendor_or_legacy_installer_files(tmp_path: Path) -> None:
 
 def test_rejects_tampered_driver_binary(tmp_path: Path) -> None:
     _write_payload(tmp_path)
-    (tmp_path / "superstrike-vmulti.sys").write_bytes(b"tampered")
+    (tmp_path / "mouse-pressure-vmulti.sys").write_bytes(b"tampered")
 
     with pytest.raises(DriverPayloadError, match="SHA-256 mismatch"):
         validate_driver_payload(tmp_path)

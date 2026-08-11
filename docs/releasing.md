@@ -7,10 +7,11 @@ not authorize redistribution of a third-party VMulti driver.
 
 The installer contains:
 
-- the frozen `SuperstrikePressure.exe` desktop application;
+- the frozen `MousePressure.exe` desktop application;
+- the separately frozen `MousePressureSandbox.exe` pressure-test game;
 - the independent device-settings restoration watchdog hosted by that same
   executable;
-- the Superstrike Raster Ink plugin for the explicitly supported Krita build;
+- the Mouse Pressure Brush plugin for the explicitly supported Krita build;
 - application and Krita integration uninstall support; and
 - VMulti detection with the synthetic Windows Ink backend as the fallback.
 
@@ -22,7 +23,7 @@ be rebuilt and tested before another Krita version is added to the installer.
 Install release dependencies into the project environment:
 
 ```powershell
-.\.venv\Scripts\python.exe -m pip install -e ".[dev,release]"
+.\.venv\Scripts\python.exe -m pip install -e ".[dev,release,sandbox]"
 ```
 
 Build and test the standalone application without requiring Inno Setup:
@@ -39,27 +40,33 @@ After installing Inno Setup, build the application and the unified installer:
 
 Outputs:
 
-- `dist/windows/SuperstrikePressure/` — one-folder application
-- `dist/installer/SuperstrikePressure-<version>-Setup.exe` — installer
+- `dist/windows/MousePressure/` — one-folder application
+- `dist/windows/MousePressureSandbox/` — one-folder pressure sandbox
+- `dist/installer/MousePressure-<version>-Setup.exe` — installer
 
 Use `-SkipKritaPlugin` only for a developer smoke build. A public build must
-contain `dist/krita/5.3.3/kritatoolsuperstrikeink.dll` and its matching action
+contain `dist/krita/5.3.3/kritatoolsmousepressure.dll` and its matching action
 and icon files.
 
 ## Release checklist
 
-1. Confirm `pyproject.toml` and `superstrike_pressure.__version__` match.
+1. Confirm `pyproject.toml` and `mouse_pressure.__version__` match.
 2. Run the complete test suite.
 3. Build from a clean checkout through GitHub Actions.
 4. Install into a clean Windows 10 VM and a clean Windows 11 VM.
 5. Test without VMulti, then with the project-owned signed VMulti package.
-6. Test wired and Lightspeed Superstrike connections on real hardware.
+6. Test wired and Lightspeed connections on supported real hardware.
 7. Test Start, Stop, Force Stop, forced process termination, sleep/wake, and
    unplug/reconnect while temporary DPI and haptic overrides are active.
-8. Test Krita 5.3.3 installation, shortcut customization, upgrade, and uninstall.
-9. Authenticode-sign and timestamp the application files and installer.
-10. Generate SHA-256 checksums, release notes, and the software bill of
+8. Start Pressure Sandbox beside the active driver and verify processed left
+   pressure, processed right pressure, fallback controls, and stale-stream
+   recovery.
+9. Test Krita 5.3.3 installation, shortcut customization, upgrade, and uninstall.
+10. Authenticode-sign and timestamp the application files and installer.
+11. Generate SHA-256 checksums, release notes, and the software bill of
     materials before publishing the GitHub Release.
+12. Include pygame-ce's full LGPL 2.1-or-later text and its pinned source-release
+    notices beside the sandbox's `THIRD_PARTY_NOTICES.md`.
 
 ## Virtual tablet driver
 
@@ -68,13 +75,13 @@ Microsoft-signed `Pentablet HID 1.1` package (`vmulti.inf`, hardware ID
 `pentablet\hid`). The commonly linked `X9VoiD/vmulti-bin` archive contains the
 same package plus legacy DIFx, DevCon, WinTab, and KMDF co-installer files. It
 does not include a redistribution notice. Do not copy either package into a
-Superstrike release.
+Mouse Pressure release.
 
 The release driver lives in the separate
-[`benmklein/superstrike-vmulti`](https://github.com/benmklein/superstrike-vmulti)
+[`benmklein/mouse-pressure-vmulti`](https://github.com/benmklein/mouse-pressure-vmulti)
 repository. It derives its report-forwarding design from the MIT-licensed
 original VMulti implementation, uses the project-specific hardware ID
-`ROOT\SUPERSTRIKEVMULTI`, and exposes only the digitizer and vendor-control
+`ROOT\MOUSEPRESSUREVMULTI`, and exposes only the digitizer and vendor-control
 collections we need. Its x64 build uses Visual Studio 2026 plus the pinned
 10.0.28000 WDK and ships a project-owned SetupAPI/NewDev provisioner instead of
 redistributing DevCon.
@@ -93,7 +100,7 @@ embed a payload, `scripts/validate_vmulti_payload.ps1` verifies:
 Build the unified installer with a signed payload:
 
 ```powershell
-.\scripts\build_windows.ps1 -VMultiPayload C:\release\superstrike-vmulti-x64
+.\scripts\build_windows.ps1 -VMultiPayload C:\release\mouse-pressure-vmulti-x64
 ```
 
 Without `-VMultiPayload`, the normal installer is still produced, detects an

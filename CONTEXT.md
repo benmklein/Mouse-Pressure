@@ -1,4 +1,4 @@
-# Superstrike Pressure Bridge
+# Mouse Pressure Driver — Hardware Research Context
 
 ## What This Project Is
 

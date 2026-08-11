@@ -4,8 +4,8 @@ import json
 import sys
 from pathlib import Path
 
-import superstrike_pressure.web.device_restore_watchdog as watchdog_module
-from superstrike_pressure.web.device_restore_watchdog import (
+import mouse_pressure.web.device_restore_watchdog as watchdog_module
+from mouse_pressure.web.device_restore_watchdog import (
     arm_restore_watchdog,
     restore_device_settings,
     run_watchdog,
@@ -123,7 +123,7 @@ def test_frozen_watchdog_relaunches_installed_executable(
 
     monkeypatch.setattr(watchdog_module.subprocess, "Popen", fake_popen)
     monkeypatch.setattr(sys, "frozen", True, raising=False)
-    monkeypatch.setattr(sys, "executable", r"C:\Program Files\Superstrike Pressure\Superstrike Pressure.exe")
+    monkeypatch.setattr(sys, "executable", r"C:\Program Files\Mouse Pressure\MousePressure.exe")
 
     process, state_path = arm_restore_watchdog(
         config_dir=tmp_path,
@@ -134,7 +134,7 @@ def test_frozen_watchdog_relaunches_installed_executable(
     assert isinstance(process, _Process)
     assert calls == [
         [
-            r"C:\Program Files\Superstrike Pressure\Superstrike Pressure.exe",
+            r"C:\Program Files\Mouse Pressure\MousePressure.exe",
             "--device-restore-watchdog",
             "--parent-pid",
             "123",

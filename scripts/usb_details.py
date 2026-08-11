@@ -9,7 +9,7 @@ WIRESHARK APPROACH (most reliable for initial discovery):
 1. Install Wireshark + USBPcap (included in Wireshark installer on Windows)
 2. Start capturing on the USBPcap interface
 3. Filter by: usb.idVendor == 0x046d
-4. Slowly press and release the left Superstrike button
+4. Slowly press and release the left analog button
 5. Look for HID reports that contain changing byte values
 6. The analog pressure value will show up as a byte (or two bytes)
    that smoothly increases as you press harder

@@ -14,12 +14,12 @@ KNOWN_IDENTITIES = {
     (0x00FF, 0xCAFE),
 }
 KNOWN_HWIDS = [
-    r"ROOT\SUPERSTRIKEVMULTI",
+    r"ROOT\MOUSEPRESSUREVMULTI",
     "VID_F055&PID_0001",
     "VID_00FF&PID_BACC",
     "VID_00FF&PID_CAFE",
 ]
-STRING_TOKENS = ["superstrike virtual pen", "vmulti", "virtualhid"]
+STRING_TOKENS = ["mouse pressure virtual pen", "vmulti", "virtualhid"]
 
 
 def _text(value: object) -> str:
@@ -122,7 +122,7 @@ def check_registry() -> list[str]:
         r"HKLM\SYSTEM\CurrentControlSet\Enum\HID",
         r"HKLM\SYSTEM\CurrentControlSet\Enum\ROOT",
     ]
-    terms = KNOWN_HWIDS + ["Superstrike Virtual Pen", "vmulti", "VirtualHID"]
+    terms = KNOWN_HWIDS + ["Mouse Pressure Virtual Pen", "vmulti", "VirtualHID"]
     matches: list[str] = []
     for root in roots:
         for term in terms:

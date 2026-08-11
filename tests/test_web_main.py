@@ -10,23 +10,23 @@ from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "src"))
 
-from superstrike_pressure.bridge.config import LaunchConfig  # noqa: E402
-from superstrike_pressure.web import main as web_main  # noqa: E402
+from mouse_pressure.bridge.config import LaunchConfig  # noqa: E402
+from mouse_pressure.web import main as web_main  # noqa: E402
 
 
 class WebMainTests(unittest.IsolatedAsyncioTestCase):
     def test_build_launch_config_uses_env_fallback(self) -> None:
         args = web_main._parse_args([])  # noqa: SLF001
-        old_val = os.environ.get("SUPERSTRIKE_CONFIG_DIR")
-        os.environ["SUPERSTRIKE_CONFIG_DIR"] = "C:/tmp/superstrike-test"
+        old_val = os.environ.get("MOUSE_PRESSURE_CONFIG_DIR")
+        os.environ["MOUSE_PRESSURE_CONFIG_DIR"] = "C:/tmp/mouse-pressure-test"
         try:
             launch = web_main._build_launch_config(args)  # noqa: SLF001
         finally:
             if old_val is None:
-                del os.environ["SUPERSTRIKE_CONFIG_DIR"]
+                del os.environ["MOUSE_PRESSURE_CONFIG_DIR"]
             else:
-                os.environ["SUPERSTRIKE_CONFIG_DIR"] = old_val
-        self.assertEqual(launch.config_dir, "C:/tmp/superstrike-test")
+                os.environ["MOUSE_PRESSURE_CONFIG_DIR"] = old_val
+        self.assertEqual(launch.config_dir, "C:/tmp/mouse-pressure-test")
 
     def test_ready_and_error_payload_shape(self) -> None:
         ready = web_main._ready_payload(port=27842)  # noqa: SLF001

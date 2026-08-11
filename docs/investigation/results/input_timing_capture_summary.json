@@ -1,0 +1,325 @@
+{
+  "schema_version": 1,
+  "capture": "work\\input_timing\\input-timing.json",
+  "presses": 112,
+  "configuration": {
+    "raw_min": 379,
+    "raw_max": 652,
+    "floor_percent": 15.0,
+    "floor_equivalent_raw": 419.95
+  },
+  "pressure_cadence_ms": {
+    "n": 7022,
+    "min": 7.9934000968933105,
+    "median": 16.032599844038486,
+    "p90": 18.005500081926584,
+    "p99": 18.13599979504943,
+    "max": 28.009299654513597
+  },
+  "observed": {
+    "preceding_sample_age_ms": {
+      "n": 112,
+      "min": 0.3315000794827938,
+      "median": 7.4073499999940395,
+      "p90": 15.261999797075987,
+      "p99": 17.883399967104197,
+      "max": 23.377900011837482
+    },
+    "next_sample_delay_ms": {
+      "n": 112,
+      "min": 0.12880004942417145,
+      "median": 8.71210009790957,
+      "p90": 14.784800354391336,
+      "p99": 16.77200011909008,
+      "max": 17.766700126230717
+    },
+    "previous_raw": {
+      "n": 112,
+      "min": 312.0,
+      "median": 353.0,
+      "p90": 376.0,
+      "p99": 383.0,
+      "max": 398.0
+    },
+    "next_raw": {
+      "n": 112,
+      "min": 377.0,
+      "median": 397.5,
+      "p90": 521.0,
+      "p99": 582.0,
+      "max": 592.0
+    },
+    "offline_interpolated_click_raw": {
+      "n": 112,
+      "min": 343.0602729434066,
+      "median": 378.8852242107854,
+      "p90": 397.90282718575054,
+      "p99": 410.98452627181007,
+      "max": 435.57994472527366
+    },
+    "first_floor_delay_ms": {
+      "n": 111,
+      "min": 8.475000038743019,
+      "median": 16.8655002489686,
+      "p90": 26.199199724942446,
+      "p99": 30.975700356066227,
+      "max": 352.4310998618603
+    },
+    "path_to_next_sample_counts": {
+      "n": 112,
+      "min": 0.0,
+      "median": 0.0,
+      "p90": 16.32455532033676,
+      "p99": 37.98498013394518,
+      "max": 39.356451097651515
+    },
+    "net_to_next_sample_counts": {
+      "n": 112,
+      "min": 0.0,
+      "median": 0.0,
+      "p90": 16.1245154965971,
+      "p99": 37.33630940518894,
+      "max": 39.11521443121589
+    },
+    "press_duration_ms": {
+      "n": 112,
+      "min": 31.04860009625554,
+      "median": 97.67875005491078,
+      "p90": 904.0124001912773,
+      "p99": 1646.4852998033166,
+      "max": 1932.4399000033736
+    },
+    "max_raw_during_press": {
+      "n": 112,
+      "min": 377.0,
+      "median": 571.0,
+      "p90": 629.0,
+      "p99": 637.0,
+      "max": 643.0
+    }
+  },
+  "strategy_comparison": {
+    "last_sample": {
+      "reference": "offline interpolated pressure at click",
+      "absolute_raw_error": {
+        "n": 112,
+        "min": 1.5752398863683652,
+        "median": 25.656119609539843,
+        "p90": 66.8191189726632,
+        "p99": 94.09809315069788,
+        "max": 96.57994472527366
+      },
+      "absolute_mapped_error_percentage_points": {
+        "n": 112,
+        "min": 0.0,
+        "median": 0.0,
+        "p90": 6.6269118160384535,
+        "p99": 10.658642179742813,
+        "max": 20.72525447812222
+      },
+      "intentional_wait_ms": {
+        "n": 112,
+        "min": 0.0,
+        "median": 0.0,
+        "p90": 0.0,
+        "p99": 0.0,
+        "max": 0.0
+      }
+    },
+    "fixed_floor": {
+      "reference": "offline interpolated pressure at click",
+      "absolute_raw_error": {
+        "n": 112,
+        "min": 8.96547372818992,
+        "median": 41.06477578921462,
+        "p90": 56.89176013027128,
+        "p99": 76.69171951195153,
+        "max": 76.88972705659341
+      },
+      "absolute_mapped_error_percentage_points": {
+        "n": 112,
+        "min": 3.2840563106922787,
+        "median": 14.999999999999996,
+        "p90": 14.999999999999996,
+        "p99": 14.999999999999996,
+        "max": 14.999999999999996
+      },
+      "intentional_wait_ms": {
+        "n": 112,
+        "min": 0.0,
+        "median": 0.0,
+        "p90": 0.0,
+        "p99": 0.0,
+        "max": 0.0
+      }
+    },
+    "learned_click": {
+      "reference": "offline interpolated pressure at click",
+      "absolute_raw_error": {
+        "n": 112,
+        "min": 0.13221047624432458,
+        "median": 7.190512532327517,
+        "p90": 26.514971833318327,
+        "p99": 35.891056505500956,
+        "max": 56.76082575261046
+      },
+      "absolute_mapped_error_percentage_points": {
+        "n": 112,
+        "min": 0.0,
+        "median": 0.0,
+        "p90": 6.924112522252945,
+        "p99": 11.715943689307718,
+        "max": 20.72525447812222
+      },
+      "intentional_wait_ms": {
+        "n": 112,
+        "min": 0.0,
+        "median": 0.0,
+        "p90": 0.0,
+        "p99": 0.0,
+        "max": 0.0
+      }
+    },
+    "learned_next_sample": {
+      "reference": "pressure at strategy emission time",
+      "absolute_raw_error": {
+        "n": 112,
+        "min": 1.0,
+        "median": 19.0,
+        "p90": 124.0,
+        "p99": 185.0,
+        "max": 195.0
+      },
+      "absolute_mapped_error_percentage_points": {
+        "n": 112,
+        "min": 0.3663003663003668,
+        "median": 6.95970695970696,
+        "p90": 45.42124542124542,
+        "p99": 67.76556776556777,
+        "max": 71.42857142857143
+      },
+      "intentional_wait_ms": {
+        "n": 112,
+        "min": 0.0,
+        "median": 0.0,
+        "p90": 0.0,
+        "p99": 0.0,
+        "max": 0.0
+      }
+    },
+    "bounded_slope_next_sample": {
+      "reference": "pressure at strategy emission time",
+      "absolute_raw_error": {
+        "n": 112,
+        "min": 0.0,
+        "median": 13.407947582301915,
+        "p90": 121.90863796475242,
+        "p99": 191.0,
+        "max": 213.0
+      },
+      "absolute_mapped_error_percentage_points": {
+        "n": 112,
+        "min": 0.0,
+        "median": 4.911336110733302,
+        "p90": 44.655178741667555,
+        "p99": 69.96336996336996,
+        "max": 78.02197802197803
+      },
+      "intentional_wait_ms": {
+        "n": 112,
+        "min": 0.0,
+        "median": 0.0,
+        "p90": 0.0,
+        "p99": 0.0,
+        "max": 0.0
+      }
+    },
+    "adaptive_wait_4ms": {
+      "reference": "pressure at strategy emission time",
+      "absolute_raw_error": {
+        "n": 112,
+        "min": 0.0,
+        "median": 14.252636723907472,
+        "p90": 39.39324789194927,
+        "p99": 78.22231907941614,
+        "max": 79.21139982556957
+      },
+      "absolute_mapped_error_percentage_points": {
+        "n": 112,
+        "min": 0.0,
+        "median": 5.220746052713359,
+        "p90": 14.429761132582149,
+        "p99": 28.652864131654262,
+        "max": 29.015164771270904
+      },
+      "intentional_wait_ms": {
+        "n": 112,
+        "min": 0.12880004942417145,
+        "median": 4.0,
+        "p90": 4.0,
+        "p99": 4.0,
+        "max": 4.0
+      }
+    },
+    "adaptive_wait_8ms": {
+      "reference": "pressure at strategy emission time",
+      "absolute_raw_error": {
+        "n": 112,
+        "min": 0.0,
+        "median": 10.49957271072438,
+        "p90": 79.8398190801463,
+        "p99": 119.84285019574179,
+        "max": 145.34653719384642
+      },
+      "absolute_mapped_error_percentage_points": {
+        "n": 112,
+        "min": 0.0,
+        "median": 3.8459973299356713,
+        "p90": 29.245354974412564,
+        "p99": 43.89847992518015,
+        "max": 53.24048981459576
+      },
+      "intentional_wait_ms": {
+        "n": 112,
+        "min": 0.12880004942417145,
+        "median": 8.0,
+        "p90": 8.0,
+        "p99": 8.0,
+        "max": 8.0
+      }
+    },
+    "wait_for_next_sample": {
+      "reference": "pressure at strategy emission time",
+      "absolute_raw_error": {
+        "n": 112,
+        "min": 0.0,
+        "median": 0.0,
+        "p90": 0.0,
+        "p99": 0.0,
+        "max": 0.0
+      },
+      "absolute_mapped_error_percentage_points": {
+        "n": 112,
+        "min": 0.0,
+        "median": 0.0,
+        "p90": 0.0,
+        "p99": 0.0,
+        "max": 0.0
+      },
+      "intentional_wait_ms": {
+        "n": 112,
+        "min": 0.12880004942417145,
+        "median": 8.71210009790957,
+        "p90": 14.784800354391336,
+        "p99": 16.77200011909008,
+        "max": 17.766700126230717
+      }
+    }
+  },
+  "limitations": [
+    "The exact analog value at the digital edge is not directly sampled; the offline click reference linearly interpolates the bracketing 0x10 frames.",
+    "The varied press categories were not labeled during capture.",
+    "Raw Input counts are device motion counts, not display pixels.",
+    "Strategy errors use a linear raw-to-output mapping and do not include a nonlinear pressure curve."
+  ]
+}

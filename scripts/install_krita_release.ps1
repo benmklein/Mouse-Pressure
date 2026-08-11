@@ -8,9 +8,9 @@ param(
 
 $ErrorActionPreference = 'Stop'
 $supportedVersion = '5.3.3'
-$installerScript = Join-Path $PayloadRoot 'install_krita_raster_ink.ps1'
+$installerScript = Join-Path $PayloadRoot 'install_krita_mouse_pressure.ps1'
 $pluginRoot = Join-Path $PayloadRoot $supportedVersion
-$pluginPath = Join-Path $pluginRoot 'kritatoolsuperstrikeink.dll'
+$pluginPath = Join-Path $pluginRoot 'kritatoolsmousepressure.dll'
 
 function Find-KritaRoot {
     $candidates = [System.Collections.Generic.List[string]]::new()

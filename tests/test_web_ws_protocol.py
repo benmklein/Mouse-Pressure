@@ -8,16 +8,16 @@ from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "src"))
 
-from superstrike_pressure.bridge.config import RuntimeConfig  # noqa: E402
-from superstrike_pressure.web.log_bus import LogBus  # noqa: E402
-from superstrike_pressure.web.models import (  # noqa: E402
+from mouse_pressure.bridge.config import RuntimeConfig  # noqa: E402
+from mouse_pressure.web.log_bus import LogBus  # noqa: E402
+from mouse_pressure.web.models import (  # noqa: E402
     ProfileNotFoundError,
     SchemaMismatchError,
     StreamAlreadyActiveError,
     StreamNotActiveError,
     ValidationError,
 )
-from superstrike_pressure.web.ws_protocol import WsProtocolRouter  # noqa: E402
+from mouse_pressure.web.ws_protocol import WsProtocolRouter  # noqa: E402
 
 
 class _FakeRuntimeService:
@@ -230,7 +230,7 @@ class WsProtocolRouterTests(unittest.IsolatedAsyncioTestCase):
             event_sender=events.append,
         )
 
-        import superstrike_pressure.web.ws_protocol as ws_protocol_module
+        import mouse_pressure.web.ws_protocol as ws_protocol_module
 
         async def fake_run_calibration(channel, runtime_service, progress_cb, config_store):
             _ = runtime_service

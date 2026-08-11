@@ -36,7 +36,7 @@ RX PRESSURE.enable.long_fallback(mode=0x03,arg=0x00) len=20 11 01 0C 30 81 C0 7B
 RX PRESSURE.enable.long_fallback(mode=0x03,arg=0x00) len=20 11 01 0C 10 4F 80 4F 00 00 00 00 00 00 00 00 00 00 00 00 00
 RX PRESSURE.enable.long_fallback(mode=0x03,arg=0x00) len=20 11 01 0C 20 4F 80 50 55 00 00 00 00 00 00 00 00 00 00 00 00
 RX PRESSURE.enable.long_fallback(mode=0x03,arg=0x00) len=20 11 01 0C 30 81 C0 7B 15 00 00 00 00 00 00 00 00 00 00 00 00
-PIPE listening on \\.\pipe\superstrike_pressure
+PIPE listening on \\.\pipe\mouse_pressure
 BRIDGE running mode=0x03 left_range=[78,154] right_range=[78,154] curve=s_curve strength=2.00
 [   0.499s] L raw= 79 norm=0.0132 mapped=   0 | R raw= 79 norm=0.0132 mapped=   0
 [   0.708s] L raw= 79 norm=0.0132 mapped=   0 | R raw= 79 norm=0.0132 mapped=   0
@@ -194,4 +194,4 @@ samples=333 rate=43.44Hz
 left_raw_min_seen=78 left_raw_max_seen=96
 right_raw_min_seen=78 right_raw_max_seen=89
 log_file=docs\bridge_dual_test_log.txt
-pipe_name=\\.\pipe\superstrike_pressure
+pipe_name=\\.\pipe\mouse_pressure

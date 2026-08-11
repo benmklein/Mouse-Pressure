@@ -5,7 +5,7 @@ import threading
 import time
 from pathlib import Path
 
-from superstrike_pressure.bridge.stroke_trace import StrokeTraceRecorder
+from mouse_pressure.bridge.stroke_trace import StrokeTraceRecorder
 
 
 def test_trace_recorder_writes_complete_stroke_atomically(tmp_path: Path) -> None:

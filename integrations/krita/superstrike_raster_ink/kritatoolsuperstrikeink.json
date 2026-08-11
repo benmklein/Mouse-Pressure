@@ -1,9 +1,0 @@
-{
-    "Id": "Superstrike Raster Ink Tool",
-    "Type": "Service",
-    "X-KDE-Library": "kritatoolsuperstrikeink",
-    "X-KDE-ServiceTypes": [
-        "Krita/Tool"
-    ],
-    "X-Krita-Version": "28"
-}
