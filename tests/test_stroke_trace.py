@@ -27,6 +27,7 @@ def test_trace_recorder_writes_complete_stroke_atomically(tmp_path: Path) -> Non
 
     assert output is not None
     payload = json.loads(output.read_text(encoding="utf-8"))
+    assert payload["schema_version"] == 2
     assert payload["metadata"]["interpolation"] == "time"
     assert [event["kind"] for event in payload["events"]] == [
         "stroke_begin",
@@ -92,4 +93,34 @@ def test_trace_serialization_never_blocks_stroke_release(tmp_path: Path) -> None
     allow_writer.set()
     recorder.flush()
     assert output.exists()
+    recorder.close()
+
+
+def test_deferred_delivery_events_are_collected_off_input_thread(
+    tmp_path: Path,
+) -> None:
+    recorder = StrokeTraceRecorder(str(tmp_path), lambda _line: None)
+    recorder.begin(output_backend="native_synthetic")
+    recorder.record("inject", x=1, y=2, pressure=300, flags=4, ok=True)
+
+    def collect() -> list[dict[str, object]]:
+        time.sleep(0.02)
+        return [
+            {
+                "kind": "native_delivery",
+                "token": 7,
+                "queue_delay_us": 120,
+            }
+        ]
+
+    started_at = time.perf_counter()
+    output = recorder.finish("release", deferred_events=collect)
+    elapsed = time.perf_counter() - started_at
+
+    assert output is not None
+    assert elapsed < 0.01
+    recorder.flush()
+    payload = json.loads(output.read_text(encoding="utf-8"))
+    assert payload["events"][-1]["kind"] == "native_delivery"
+    assert payload["events"][-1]["token"] == 7
     recorder.close()

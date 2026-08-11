@@ -23,7 +23,12 @@ class StrokeTraceRecorder:
         self._metadata: dict[str, Any] = {}
         self._sequence = 0
         self._write_queue: queue.Queue[
-            tuple[Path, dict[str, Any]] | None
+            tuple[
+                Path,
+                dict[str, Any],
+                Callable[[], list[dict[str, Any]]] | None,
+            ]
+            | None
         ] = queue.Queue()
         self._writer = threading.Thread(
             target=self._writer_main,
@@ -56,7 +61,12 @@ class StrokeTraceRecorder:
             }
         )
 
-    def finish(self, reason: str) -> Path | None:
+    def finish(
+        self,
+        reason: str,
+        *,
+        deferred_events: Callable[[], list[dict[str, Any]]] | None = None,
+    ) -> Path | None:
         if not self.active:
             return None
         self.record("stroke_end", reason=str(reason))
@@ -67,12 +77,12 @@ class StrokeTraceRecorder:
         stamp = datetime.now().strftime("%Y%m%d-%H%M%S-%f")
         path = self.directory / f"stroke-{stamp}.json"
         payload = {
-            "schema_version": 1,
+            "schema_version": 2,
             "created_at": datetime.now().astimezone().isoformat(),
             "metadata": self._metadata,
             "events": self._events,
         }
-        self._write_queue.put((path, payload))
+        self._write_queue.put((path, payload, deferred_events))
         return path
 
     def _write_payload(self, path: Path, payload: dict[str, Any]) -> None:
@@ -96,7 +106,28 @@ class StrokeTraceRecorder:
             try:
                 if item is None:
                     return
-                path, payload = item
+                path, payload, deferred_events = item
+                if deferred_events is not None:
+                    try:
+                        extra_events = deferred_events()
+                    except Exception as exc:  # diagnostics must never stop cleanup
+                        self.log(f"TRACE deferred event collection failed: {exc}")
+                        extra_events = []
+                    events = payload["events"]
+                    next_sequence = max(
+                        (int(event.get("seq", 0)) for event in events),
+                        default=0,
+                    )
+                    fallback_t_ms = float(events[-1].get("t_ms", 0.0)) if events else 0.0
+                    for event in extra_events:
+                        next_sequence += 1
+                        events.append(
+                            {
+                                "seq": next_sequence,
+                                "t_ms": fallback_t_ms,
+                                **event,
+                            }
+                        )
                 self._write_payload(path, payload)
             finally:
                 self._write_queue.task_done()

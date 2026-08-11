@@ -191,7 +191,7 @@ class _DeferredArmEmitter(_FakeEmitter):
 
 
 class RuntimeServiceTests(unittest.IsolatedAsyncioTestCase):
-    def _service(self, session: _FakeSession, *, backend: str = "synthetic"):
+    def _service(self, session: _FakeSession, *, backend: str = "native_synthetic"):
         config = RuntimeConfig(
             linked=False,
             left=ChannelConfig(curve="linear", contact_preset="medium"),
@@ -263,7 +263,10 @@ class RuntimeServiceTests(unittest.IsolatedAsyncioTestCase):
         session = _FakeSession([])
         service, _, holder = self._service(session, backend="unknown")
 
-        with self.assertRaisesRegex(RuntimeError, "expected 'synthetic', 'vmulti', or 'telemetry'"):
+        with self.assertRaisesRegex(
+            RuntimeError,
+            "expected 'native_synthetic' or internal 'telemetry'",
+        ):
             await service.start_stream()
 
         self.assertEqual(session.open_calls, 0)
@@ -312,18 +315,12 @@ class RuntimeServiceTests(unittest.IsolatedAsyncioTestCase):
         await service.stop_stream()
         self.assertEqual(session.close_calls, 3)
 
-    def test_coordinate_policy_is_backend_specific(self) -> None:
+    def test_native_output_preserves_windows_transformed_coordinates(self) -> None:
         service, _, _ = self._service(_FakeSession([]))
 
-        service.launch_config.backend = "synthetic"
-        self.assertFalse(
-            service._emitter_config_from_runtime().allow_raw_direct_motion  # noqa: SLF001
-        )
-
-        service.launch_config.backend = "vmulti"
-        self.assertTrue(
-            service._emitter_config_from_runtime().allow_raw_direct_motion  # noqa: SLF001
-        )
+        native_config = service._emitter_config_from_runtime()  # noqa: SLF001
+        self.assertFalse(native_config.allow_raw_direct_motion)
+        self.assertEqual(native_config.output_backend, "native_synthetic")
 
     def test_restore_defaults_replaces_saved_configuration(self) -> None:
         service, store, _ = self._service(_FakeSession([]))
@@ -477,14 +474,14 @@ class RuntimeServiceTests(unittest.IsolatedAsyncioTestCase):
             {
                 "left_enabled": True,
                 "right_enabled": True,
-                "rmb_aux_xtilt": True,
+                "right": {"output_target": "x_tilt"},
             }
         )
         await service.start_stream()
 
-        self.assertTrue(updated.rmb_aux_xtilt)
-        self.assertTrue(store.current.rmb_aux_xtilt)
-        self.assertTrue(holder["emitter"].config.rmb_aux_xtilt)
+        self.assertEqual(updated.right.output_target, "x_tilt")
+        self.assertEqual(store.current.right.output_target, "x_tilt")
+        self.assertEqual(holder["emitter"].config.right_output_target, "x_tilt")
         self.assertTrue(holder["emitter"].config.suppress_rmb)
 
         await service.stop_stream()

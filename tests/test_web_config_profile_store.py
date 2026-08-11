@@ -22,7 +22,6 @@ def _sample_runtime_config() -> RuntimeConfig:
         right_enabled=True,
         suppress_lmb=True,
         suppress_rmb=True,
-        rmb_aux_xtilt=True,
         debug_mode=False,
         minimize_to_tray=False,
         release_teardown=True,
@@ -39,6 +38,7 @@ def _sample_runtime_config() -> RuntimeConfig:
             clean_stroke_endings=True,
         ),
         right=ChannelConfig(
+            output_target="x_tilt",
             raw_min=84,
             raw_max=190,
             curve="hard",
@@ -54,7 +54,8 @@ class ConfigStoreTests(unittest.TestCase):
 
         self.assertTrue(defaults.left_enabled)
         self.assertTrue(defaults.right_enabled)
-        self.assertTrue(defaults.rmb_aux_xtilt)
+        self.assertEqual(defaults.left.output_target, "pressure")
+        self.assertEqual(defaults.right.output_target, "pressure")
         self.assertFalse(defaults.debug_mode)
 
     def test_load_returns_defaults_when_file_missing(self) -> None:
@@ -112,7 +113,7 @@ class ConfigStoreTests(unittest.TestCase):
             self.assertTrue(loaded.right_enabled)
             self.assertTrue(loaded.suppress_lmb)
             self.assertTrue(loaded.suppress_rmb)
-            self.assertTrue(loaded.rmb_aux_xtilt)
+            self.assertEqual(loaded.right.output_target, "x_tilt")
             self.assertFalse(loaded.debug_mode)
             self.assertFalse(loaded.minimize_to_tray)
             self.assertTrue(loaded.release_teardown)
@@ -152,7 +153,8 @@ class ConfigStoreTests(unittest.TestCase):
             self.assertTrue(loaded.suppress_lmb)
             self.assertTrue(loaded.left_enabled)
             self.assertTrue(loaded.right_enabled)
-            self.assertTrue(loaded.rmb_aux_xtilt)
+            self.assertEqual(loaded.left.output_target, "pressure")
+            self.assertEqual(loaded.right.output_target, "pressure")
             self.assertFalse(loaded.debug_mode)
             self.assertTrue(loaded.minimize_to_tray)
             self.assertFalse(loaded.release_teardown)
@@ -164,6 +166,27 @@ class ConfigStoreTests(unittest.TestCase):
             self.assertFalse(loaded.right.stationary_pressure_updates)
             self.assertTrue(loaded.left.immediate_button_wake)
             self.assertFalse(loaded.left.clean_stroke_endings)
+
+    def test_load_ignores_removed_legacy_right_xtilt_toggle(self) -> None:
+        with tempfile.TemporaryDirectory() as td:
+            store = ConfigStore(td)
+            store.path.parent.mkdir(parents=True, exist_ok=True)
+            store.path.write_text(
+                json.dumps(
+                    {
+                        "schema_version": 1,
+                        "rmb_aux_xtilt": True,
+                        "left": {},
+                        "right": {},
+                    }
+                ),
+                encoding="utf-8",
+            )
+
+            loaded = store.load()
+
+            self.assertEqual(loaded.left.output_target, "pressure")
+            self.assertEqual(loaded.right.output_target, "pressure")
 
     def test_resolve_config_dir_prefers_env(self) -> None:
         with tempfile.TemporaryDirectory() as td:

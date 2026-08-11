@@ -354,6 +354,8 @@ class StrokeGraph(QWidget):
         self.setMinimumHeight(300)
         self._theme: Theme | None = None
         self._analysis: dict[str, Any] | None = None
+        self._comparison: list[tuple[str, dict[str, Any]]] = []
+        self._mode = "pressure"
 
     def set_theme(self, theme: Theme) -> None:
         self._theme = theme
@@ -361,6 +363,19 @@ class StrokeGraph(QWidget):
 
     def set_analysis(self, analysis: dict[str, Any] | None) -> None:
         self._analysis = analysis
+        self._comparison = []
+        self.update()
+
+    def set_comparison(
+        self,
+        analyses: list[tuple[str, dict[str, Any]]],
+    ) -> None:
+        self._comparison = list(analyses)
+        self._analysis = analyses[0][1] if analyses else None
+        self.update()
+
+    def set_mode(self, mode: str) -> None:
+        self._mode = str(mode)
         self.update()
 
     def paintEvent(self, _event: Any) -> None:  # noqa: N802
@@ -379,37 +394,95 @@ class StrokeGraph(QWidget):
             painter.setPen(QColor(theme.muted))
             painter.drawText(plot, Qt.AlignmentFlag.AlignCenter, "Select a recorded stroke")
             return
-        series = [
-            ("mapped", "#378ADD", "Mapped"),
-            ("interpolated", "#8B83FF", "Smoothed"),
-            ("injected_time", "#EF9F27", "Injected"),
-        ]
-        all_points = [point for key, _, _ in series for point in self._analysis.get(key, [])]
+        dynamic_timing = self._mode in {"latency", "cadence"}
+        if dynamic_timing:
+            colors = ("#378ADD", "#EF9F27", "#8B83FF", "#1D9E75")
+            source = self._comparison or [("Stroke", self._analysis)]
+            key = (
+                "motion_to_output_series"
+                if self._mode == "latency"
+                else "delivery_interval_series"
+            )
+            series = []
+            for index, (label, analysis) in enumerate(source):
+                points = list(analysis.get(key, []))
+                if points:
+                    origin = float(points[0][0])
+                    points = [(float(x) - origin, float(y)) for x, y in points]
+                series.append((points, colors[index % len(colors)], label))
+            all_points = [point for points, _, _ in series for point in points]
+        elif len(self._comparison) > 1:
+            colors = ("#378ADD", "#EF9F27", "#8B83FF", "#1D9E75")
+            comparison_series: list[tuple[list[tuple[float, float]], str, str]] = []
+            for index, (label, analysis) in enumerate(self._comparison):
+                points = list(analysis.get("injected_time", []))
+                if points:
+                    origin = float(points[0][0])
+                    points = [(float(x) - origin, float(y)) for x, y in points]
+                comparison_series.append((points, colors[index % len(colors)], label))
+            all_points = [point for points, _, _ in comparison_series for point in points]
+            series = comparison_series
+        else:
+            stage_series = [
+                ("mapped", "#378ADD", "Mapped"),
+                ("interpolated", "#8B83FF", "Smoothed"),
+                ("injected_time", "#EF9F27", "Injected"),
+            ]
+            series = [
+                (list(self._analysis.get(key, [])), color, label)
+                for key, color, label in stage_series
+            ]
+            all_points = [point for points, _, _ in series for point in points]
         if not all_points:
+            painter.setPen(QColor(theme.muted))
+            painter.drawText(
+                plot,
+                Qt.AlignmentFlag.AlignCenter,
+                "No timing samples in this trace",
+            )
             return
         max_x = max(float(x) for x, _ in all_points) or 1.0
-        for key, color, _label in series:
-            points = self._analysis.get(key, [])
-            if len(points) < 2:
+        max_y = (
+            max(float(y) for _, y in all_points) * 1.1 or 1.0
+            if dynamic_timing
+            else 1024.0
+        )
+        for points, color, _label in series:
+            if not points:
                 continue
             path = QPainterPath()
             for index, (x, y) in enumerate(points):
                 px = plot.left() + float(x) / max_x * plot.width()
-                py = plot.bottom() - min(1024.0, max(0.0, float(y))) / 1024 * plot.height()
+                py = plot.bottom() - min(max_y, max(0.0, float(y))) / max_y * plot.height()
                 if index == 0:
                     path.moveTo(px, py)
                 else:
                     path.lineTo(px, py)
             painter.setPen(QPen(QColor(color), 2))
             painter.drawPath(path)
+            if len(points) == 1:
+                painter.setBrush(QColor(color))
+                painter.setPen(Qt.PenStyle.NoPen)
+                painter.drawEllipse(QPointF(px, py), 4, 4)
         painter.setPen(QColor(theme.muted))
+        if dynamic_timing:
+            painter.drawText(
+                QRectF(0, plot.top() - 7, 42, 18),
+                Qt.AlignmentFlag.AlignRight,
+                f"{max_y:.1f}",
+            )
+            painter.drawText(
+                QRectF(0, plot.bottom() - 9, 42, 18),
+                Qt.AlignmentFlag.AlignRight,
+                "0 ms",
+            )
         painter.drawText(
             QRectF(plot.left(), plot.bottom() + 9, plot.width(), 20),
             Qt.AlignmentFlag.AlignCenter,
             f"{max_x:.0f} ms",
         )
         x = plot.left()
-        for _key, color, label in series:
+        for _points, color, label in series:
             painter.setBrush(QColor(color))
             painter.setPen(Qt.PenStyle.NoPen)
             painter.drawEllipse(QPointF(x + 4, 10), 4, 4)

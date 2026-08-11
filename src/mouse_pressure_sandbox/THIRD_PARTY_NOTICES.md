@@ -10,6 +10,6 @@ or later.
 - License: https://github.com/pygame-community/pygame-ce/blob/2.5.8/docs/LGPL.txt
 - Source release: https://github.com/pygame-community/pygame-ce/releases/tag/2.5.8
 
-Mouse Pressure does not modify pygame-ce. A public release should retain this
-notice and include the full corresponding LGPL text and third-party notices
-from the pinned pygame-ce source release in the release-notices bundle.
+Mouse Pressure does not modify pygame-ce. Official releases retain this notice,
+the full corresponding LGPL text, and the component notices from the pinned
+pygame-ce source release under `legal/licenses/pygame-ce`.

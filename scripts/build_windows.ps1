@@ -1,10 +1,8 @@
 [CmdletBinding()]
 param(
     [string]$Python = '',
-    [string]$VMultiPayload = '',
     [switch]$SkipTests,
-    [switch]$SkipInstaller,
-    [switch]$SkipKritaPlugin
+    [switch]$SkipInstaller
 )
 
 $ErrorActionPreference = 'Stop'
@@ -14,7 +12,24 @@ $appDist = Join-Path $distRoot 'windows'
 $pyinstallerWork = Join-Path $repoRoot 'build\pyinstaller'
 $spec = Join-Path $repoRoot 'packaging\windows\mouse_pressure.spec'
 $sandboxSpec = Join-Path $repoRoot 'packaging\windows\mouse_pressure_sandbox.spec'
-$kritaPayload = Join-Path $distRoot 'krita\5.3.3\kritatoolsmousepressure.dll'
+
+function Copy-ReleaseNotices([string]$Target) {
+    $legalTarget = Join-Path $Target 'legal'
+    $docsTarget = Join-Path $Target 'docs'
+    New-Item -ItemType Directory -Force -Path $legalTarget, $docsTarget | Out-Null
+    @('LICENSE', 'LICENSING.md', 'THIRD_PARTY_NOTICES.md', 'PRIVACY.md', 'SECURITY.md') |
+        ForEach-Object {
+            Copy-Item -LiteralPath (Join-Path $repoRoot $_) -Destination $Target -Force
+        }
+    Copy-Item -Path (Join-Path $repoRoot 'packaging\legal\*') `
+        -Destination $legalTarget -Recurse -Force
+    Copy-Item -Path (Join-Path $repoRoot 'dist\release-metadata\*') `
+        -Destination $legalTarget -Recurse -Force
+    @('compatibility.md', 'recovery.md') | ForEach-Object {
+        Copy-Item -LiteralPath (Join-Path $repoRoot "docs\$_") `
+            -Destination $docsTarget -Force
+    }
+}
 
 if (-not $Python) {
     $venvPython = Join-Path $repoRoot '.venv\Scripts\python.exe'
@@ -37,10 +52,15 @@ try {
         throw 'pygame-ce is not installed. Run: python -m pip install -e ".[release,sandbox]"'
     }
 
-    if (-not $SkipKritaPlugin -and
-        -not (Test-Path -LiteralPath $kritaPayload -PathType Leaf)) {
-        throw "Krita 5.3.3 plugin payload is missing: $kritaPayload"
-    }
+    & (Join-Path $repoRoot 'scripts\build_native_relay.ps1') -BootstrapZig
+    if ($LASTEXITCODE -ne 0) { throw 'Native synthetic relay build failed.' }
+
+    & $Python scripts\vendor_release_licenses.py
+    if ($LASTEXITCODE -ne 0) { throw 'Release license bundle validation failed.' }
+    & $Python scripts\check_public_artifacts.py
+    if ($LASTEXITCODE -ne 0) { throw 'Public-artifact privacy check failed.' }
+    & $Python scripts\generate_release_metadata.py
+    if ($LASTEXITCODE -ne 0) { throw 'Release metadata generation failed.' }
 
     & $Python -m PyInstaller `
         --noconfirm `
@@ -54,6 +74,7 @@ try {
     if (-not (Test-Path -LiteralPath $appExe -PathType Leaf)) {
         throw "Expected application executable was not produced: $appExe"
     }
+    Copy-ReleaseNotices -Target (Split-Path -Parent $appExe)
     Write-Host "Built application: $appExe"
 
     & $Python -m PyInstaller `
@@ -68,24 +89,10 @@ try {
     if (-not (Test-Path -LiteralPath $sandboxExe -PathType Leaf)) {
         throw "Expected sandbox executable was not produced: $sandboxExe"
     }
+    Copy-ReleaseNotices -Target (Split-Path -Parent $sandboxExe)
     Write-Host "Built sandbox: $sandboxExe"
 
     if ($SkipInstaller) { return }
-
-    $vmultiDefines = @()
-    if ($VMultiPayload) {
-        $VMultiPayload = (Resolve-Path -LiteralPath $VMultiPayload).Path
-        & (Join-Path $repoRoot 'scripts\validate_vmulti_payload.ps1') `
-            -PayloadRoot $VMultiPayload `
-            -Python $Python
-        if ($LASTEXITCODE -ne 0) {
-            throw 'VMulti payload validation failed.'
-        }
-        $vmultiDefines = @(
-            '/DIncludeVMultiDriver=1',
-            "/DVMultiPayloadDir=$VMultiPayload"
-        )
-    }
 
     $iscc = Get-Command ISCC.exe -ErrorAction SilentlyContinue
     if (-not $iscc) {
@@ -108,7 +115,6 @@ try {
         throw 'Could not read the application version.'
     }
     & $isccPath "/DMyAppVersion=$version" `
-        @vmultiDefines `
         (Join-Path $repoRoot 'packaging\windows\mouse_pressure.iss')
     if ($LASTEXITCODE -ne 0) { throw 'Installer build failed.' }
     $installer = Join-Path $distRoot "installer\MousePressure-$version-Setup.exe"

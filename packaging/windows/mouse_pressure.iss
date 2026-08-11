@@ -25,7 +25,7 @@ UninstallDisplayIcon={app}\{#MyAppExeName}
 Compression=lzma2
 SolidCompression=yes
 WizardStyle=modern
-PrivilegesRequired=admin
+PrivilegesRequired=lowest
 PrivilegesRequiredOverridesAllowed=commandline
 ArchitecturesAllowed=x64compatible
 ArchitecturesInstallIn64BitMode=x64compatible
@@ -35,28 +35,18 @@ RestartApplications=no
 [Languages]
 Name: "english"; MessagesFile: "compiler:Default.isl"
 
-[Types]
-Name: "full"; Description: "Application and Krita 5.3.3 integration"
-Name: "compact"; Description: "Application only"
-Name: "custom"; Description: "Custom installation"; Flags: iscustom
-
-[Components]
-Name: "application"; Description: "Mouse Pressure application"; Types: full compact custom; Flags: fixed
-Name: "krita"; Description: "Mouse Pressure Brush for Krita 5.3.3"; Types: full
-#ifdef IncludeVMultiDriver
-Name: "vmulti"; Description: "Mouse Pressure low-latency virtual tablet driver"; Types: full; MinVersion: 10.0.22000
-#endif
-
 [Files]
-Source: "{#RepositoryRoot}\dist\windows\MousePressure\*"; DestDir: "{app}"; Flags: ignoreversion recursesubdirs createallsubdirs; Components: application
-Source: "{#RepositoryRoot}\dist\windows\MousePressureSandbox\*"; DestDir: "{app}\sandbox"; Flags: ignoreversion recursesubdirs createallsubdirs; Components: application
-Source: "{#RepositoryRoot}\dist\krita\5.3.3\*"; DestDir: "{app}\integrations\krita\5.3.3"; Flags: ignoreversion recursesubdirs createallsubdirs; Components: krita
-Source: "{#RepositoryRoot}\scripts\install_krita_mouse_pressure.ps1"; DestDir: "{app}\integrations\krita"; Flags: ignoreversion; Components: krita
-Source: "{#RepositoryRoot}\scripts\install_krita_release.ps1"; DestDir: "{app}\integrations\krita"; Flags: ignoreversion; Components: krita
+Source: "{#RepositoryRoot}\dist\windows\MousePressure\*"; DestDir: "{app}"; Flags: ignoreversion recursesubdirs createallsubdirs
+Source: "{#RepositoryRoot}\dist\windows\MousePressureSandbox\*"; DestDir: "{app}\sandbox"; Flags: ignoreversion recursesubdirs createallsubdirs
 Source: "{#RepositoryRoot}\LICENSE"; DestDir: "{app}"; Flags: ignoreversion
-#ifdef IncludeVMultiDriver
-Source: "{#VMultiPayloadDir}\*"; DestDir: "{app}\drivers\vmulti"; Flags: ignoreversion; Components: vmulti; MinVersion: 10.0.22000
-#endif
+Source: "{#RepositoryRoot}\LICENSING.md"; DestDir: "{app}"; Flags: ignoreversion
+Source: "{#RepositoryRoot}\THIRD_PARTY_NOTICES.md"; DestDir: "{app}"; Flags: ignoreversion
+Source: "{#RepositoryRoot}\PRIVACY.md"; DestDir: "{app}"; Flags: ignoreversion
+Source: "{#RepositoryRoot}\SECURITY.md"; DestDir: "{app}"; Flags: ignoreversion
+Source: "{#RepositoryRoot}\packaging\legal\*"; DestDir: "{app}\legal"; Flags: ignoreversion recursesubdirs createallsubdirs
+Source: "{#RepositoryRoot}\dist\release-metadata\*"; DestDir: "{app}\legal"; Flags: ignoreversion recursesubdirs createallsubdirs
+Source: "{#RepositoryRoot}\docs\compatibility.md"; DestDir: "{app}\docs"; Flags: ignoreversion
+Source: "{#RepositoryRoot}\docs\recovery.md"; DestDir: "{app}\docs"; Flags: ignoreversion
 
 [Icons]
 Name: "{group}\Mouse Pressure"; Filename: "{app}\{#MyAppExeName}"
@@ -67,40 +57,4 @@ Name: "{autodesktop}\Mouse Pressure"; Filename: "{app}\{#MyAppExeName}"; Tasks: 
 Name: "desktopicon"; Description: "Create a desktop shortcut"; GroupDescription: "Additional shortcuts:"; Flags: unchecked
 
 [Run]
-#ifdef IncludeVMultiDriver
-Filename: "{app}\drivers\vmulti\MousePressureDriverCtl.exe"; Parameters: "install --manifest ""{app}\drivers\vmulti\driver-manifest.json"""; StatusMsg: "Installing the Mouse Pressure virtual tablet driver..."; Flags: runhidden waituntilterminated; Components: vmulti; MinVersion: 10.0.22000
-#endif
-Filename: "{sys}\WindowsPowerShell\v1.0\powershell.exe"; Parameters: "-NoProfile -ExecutionPolicy Bypass -File ""{app}\integrations\krita\install_krita_release.ps1"" -PayloadRoot ""{app}\integrations\krita"""; StatusMsg: "Installing the Krita integration..."; Flags: runhidden waituntilterminated; Components: krita
 Filename: "{app}\{#MyAppExeName}"; Description: "Launch Mouse Pressure"; Flags: nowait postinstall skipifsilent
-
-[UninstallRun]
-#ifdef IncludeVMultiDriver
-Filename: "{app}\drivers\vmulti\MousePressureDriverCtl.exe"; Parameters: "remove --manifest ""{app}\drivers\vmulti\driver-manifest.json"""; Flags: runhidden waituntilterminated; RunOnceId: "RemoveMousePressureVMulti"; Components: vmulti; MinVersion: 10.0.22000
-#endif
-Filename: "{sys}\WindowsPowerShell\v1.0\powershell.exe"; Parameters: "-NoProfile -ExecutionPolicy Bypass -File ""{app}\integrations\krita\install_krita_release.ps1"" -PayloadRoot ""{app}\integrations\krita"" -Uninstall"; Flags: runhidden waituntilterminated; RunOnceId: "RemoveMousePressureKrita"; Components: krita
-
-[Code]
-function VMultiDetected(): Boolean;
-begin
-  Result :=
-    RegKeyExists(HKLM64, 'SYSTEM\CurrentControlSet\Enum\ROOT\MOUSEPRESSUREVMULTI') or
-    RegKeyExists(HKLM64, 'SYSTEM\CurrentControlSet\Enum\HID\VID_F055&PID_0001') or
-    RegKeyExists(HKLM64, 'SYSTEM\CurrentControlSet\Enum\HID\VID_00FF&PID_BACC') or
-    RegKeyExists(HKLM64, 'SYSTEM\CurrentControlSet\Enum\HID\VID_00FF&PID_CAFE');
-end;
-
-procedure CurStepChanged(CurStep: TSetupStep);
-begin
-  if (CurStep = ssPostInstall) and not WizardSilent() and not VMultiDetected()
-#ifdef IncludeVMultiDriver
-     and not WizardIsComponentSelected('vmulti')
-#endif
-  then
-    MsgBox(
-      'A compatible VMulti virtual tablet was not detected.' + #13#10 + #13#10 +
-      'Mouse Pressure will use its synthetic Windows Ink fallback. ' +
-      'This installer does not install a third-party tablet driver.',
-      mbInformation,
-      MB_OK
-    );
-end;

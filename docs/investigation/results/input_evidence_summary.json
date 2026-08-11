@@ -2,7 +2,7 @@
   "schema_version": 1,
   "mode_logs": [
     {
-      "file": "docs\\pressure_mode2_log.txt",
+      "file": "private mode 0x02 diagnostic (raw omitted)",
       "frame_count": 1564,
       "addresses": {
         "0x10": {
@@ -64,7 +64,7 @@
       }
     },
     {
-      "file": "docs\\pressure_mode3_log.txt",
+      "file": "private mode 0x03 diagnostic (raw omitted)",
       "frame_count": 754,
       "addresses": {
         "0x10": {
@@ -139,7 +139,7 @@
     }
   ],
   "ghub_capture": {
-    "file": "docs\\ghub_payloads_ext.csv",
+    "file": "private G Hub diagnostic (raw omitted)",
     "mouse_down_count": 15,
     "mouse_button_spy_down_count": 14,
     "legacy_pressure_frame_count": 150,

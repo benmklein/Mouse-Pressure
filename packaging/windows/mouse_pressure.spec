@@ -16,9 +16,23 @@ hidden_imports = [
 a = Analysis(
     [str(PACKAGE / "app.py")],
     pathex=[str(SOURCE)],
-    binaries=[],
+    binaries=[
+        (
+            str(ROOT / "build" / "native" / "mouse_pressure_synthetic_relay.dll"),
+            "mouse_pressure/native",
+        ),
+    ],
     datas=[
         (str(PACKAGE / "assets"), "mouse_pressure/assets"),
+        (str(ROOT / "LICENSE"), "."),
+        (str(ROOT / "LICENSING.md"), "."),
+        (str(ROOT / "THIRD_PARTY_NOTICES.md"), "."),
+        (str(ROOT / "PRIVACY.md"), "."),
+        (str(ROOT / "SECURITY.md"), "."),
+        (str(ROOT / "packaging" / "legal"), "legal"),
+        (str(ROOT / "dist" / "release-metadata"), "legal"),
+        (str(ROOT / "docs" / "compatibility.md"), "docs"),
+        (str(ROOT / "docs" / "recovery.md"), "docs"),
     ],
     hiddenimports=hidden_imports,
     hookspath=[],

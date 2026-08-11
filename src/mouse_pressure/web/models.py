@@ -27,6 +27,7 @@ class StreamNotActiveError(RuntimeError):
 
 _PROTOCOL_CURVES = {"linear", "soft", "hard", "scurve"}
 _CONTACT_PRESETS = {"light", "medium", "firm"}
+_OUTPUT_TARGETS = {"pressure", "x_tilt"}
 _PROFILE_NAME_RE = re.compile(r"^[A-Za-z0-9 _-]{1,64}$")
 CURVE_STRENGTH_MIN = 0.5
 CURVE_STRENGTH_MAX = 4.0
@@ -40,6 +41,7 @@ def validate_channel_config(ch: dict) -> list[str]:
     """Return validation errors for a channel config. Empty list means valid."""
     errors: list[str] = []
 
+    output_target = ch.get("output_target", "pressure")
     raw_min = ch.get("raw_min")
     raw_max = ch.get("raw_max")
     deadzone_low = ch.get("deadzone_low")
@@ -56,6 +58,11 @@ def validate_channel_config(ch: dict) -> list[str]:
     stationary_pressure_updates = ch.get("stationary_pressure_updates", False)
     immediate_button_wake = ch.get("immediate_button_wake", False)
     clean_stroke_endings = ch.get("clean_stroke_endings", False)
+
+    if not isinstance(output_target, str):
+        errors.append("output_target must be a string")
+    elif output_target not in _OUTPUT_TARGETS:
+        errors.append("output_target must be one of: pressure, x_tilt")
 
     if not isinstance(raw_min, int):
         errors.append("raw_min must be an integer")

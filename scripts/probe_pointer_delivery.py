@@ -11,6 +11,7 @@ from __future__ import annotations
 import argparse
 import ctypes
 import json
+import statistics
 import threading
 import time
 from ctypes import wintypes
@@ -31,6 +32,7 @@ from mouse_pressure.bridge.synthetic_pen import (
     WNDPROC,
     _SyntheticPenInjector,
 )
+from mouse_pressure.bridge.native_synthetic import NativeSyntheticPenInjector
 
 WM_DESTROY = 0x0002
 WM_CLOSE = 0x0010
@@ -43,7 +45,9 @@ SW_SHOW = 5
 def parse_args() -> argparse.Namespace:
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--duration", type=float, default=8.0)
-    parser.add_argument("--synthetic", action="store_true")
+    backend = parser.add_mutually_exclusive_group()
+    backend.add_argument("--synthetic", action="store_true")
+    backend.add_argument("--native-synthetic", action="store_true")
     parser.add_argument("--interval-ms", type=float, default=0.25)
     parser.add_argument("--points", type=int, default=24)
     parser.add_argument(
@@ -191,7 +195,11 @@ def main() -> int:
 
     def inject_sequence() -> None:
         time.sleep(0.75)
-        injector = _SyntheticPenInjector(log=lambda _line: None)
+        injector = (
+            NativeSyntheticPenInjector(log=lambda _line: None)
+            if args.native_synthetic
+            else _SyntheticPenInjector(log=lambda _line: None)
+        )
         injector.open()
         try:
             count = max(2, int(args.points))
@@ -235,9 +243,13 @@ def main() -> int:
                         "error": int(error),
                     }
                 )
-                deadline = sent_at + max(0.0, float(args.interval_ms)) / 1000.0
-                while time.perf_counter() < deadline:
-                    pass
+                # Release the GIL while pacing. A Python busy-wait prevents this
+                # process's WM_POINTER receiver from recording asynchronous
+                # native-relay delivery and makes the worker look artificially
+                # slower than the synchronous baseline.
+                interval_s = max(0.0, float(args.interval_ms)) / 1000.0
+                if interval_s > 0.0:
+                    time.sleep(interval_s)
             injector.inject(
                 flags=POINTER_FLAG_UP | POINTER_FLAG_PRIMARY,
                 x=injected[-1]["x"],
@@ -248,7 +260,7 @@ def main() -> int:
         finally:
             injector.close()
 
-    if args.synthetic:
+    if args.synthetic or args.native_synthetic:
         threading.Thread(target=inject_sequence, daemon=True).start()
 
     timer = threading.Timer(
@@ -267,10 +279,40 @@ def main() -> int:
         user32.UnregisterClassW(class_name, module)
 
     history_points = sum(len(event["history"]) for event in events)
+    first_delivery: dict[tuple[int, int, int], float] = {}
+    for event in events:
+        for point in event["history"]:
+            key = (int(point["x"]), int(point["y"]), int(point["pressure"]))
+            first_delivery.setdefault(key, float(event["received_ms"]))
+    delivery_ms = [
+        first_delivery[(int(item["x"]), int(item["y"]), int(item["pressure"]))]
+        - float(item["sent_ms"])
+        for item in injected
+        if (int(item["x"]), int(item["y"]), int(item["pressure"])) in first_delivery
+    ]
+    sorted_delivery = sorted(delivery_ms)
+    p95_index = max(
+        0,
+        min(
+            len(sorted_delivery) - 1,
+            round(len(sorted_delivery) * 0.95) - 1,
+        ),
+    )
+    backend_name = (
+        "native_synthetic"
+        if args.native_synthetic
+        else "synthetic"
+        if args.synthetic
+        else "external"
+    )
     payload = {
         "schema_version": 1,
-        "backend": "synthetic" if args.synthetic else "external",
-        "interval_ms": float(args.interval_ms) if args.synthetic else None,
+        "backend": backend_name,
+        "interval_ms": (
+            float(args.interval_ms)
+            if args.synthetic or args.native_synthetic
+            else None
+        ),
         "sent": injected,
         "received_messages": events,
         "summary": {
@@ -279,6 +321,16 @@ def main() -> int:
             "history_points": history_points,
             "messages_with_coalesced_history": sum(
                 len(event["history"]) > 1 for event in events
+            ),
+            "matched_delivery_points": len(delivery_ms),
+            "delivery_median_ms": (
+                round(statistics.median(delivery_ms), 3) if delivery_ms else None
+            ),
+            "delivery_p95_ms": (
+                round(sorted_delivery[p95_index], 3) if sorted_delivery else None
+            ),
+            "delivery_max_ms": (
+                round(max(delivery_ms), 3) if delivery_ms else None
             ),
         },
     }

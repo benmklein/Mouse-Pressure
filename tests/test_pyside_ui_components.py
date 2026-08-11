@@ -32,6 +32,11 @@ def test_channel_editor_uses_outcome_labels_and_exposes_raw_values() -> None:
     ]
 
     assert editor.enabled.isChecked() is False
+    assert [
+        editor.output_target.itemText(index)
+        for index in range(editor.output_target.count())
+    ] == ["Pressure", "X-tilt"]
+    assert editor.output_target.currentData() == "pressure"
     assert editor.calibrate_button.text() == "Calibrate pressure range…"
     assert curve_options == [
         "Linear",

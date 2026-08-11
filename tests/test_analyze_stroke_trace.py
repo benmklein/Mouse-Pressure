@@ -5,6 +5,8 @@ import json
 import os
 from pathlib import Path
 
+import pytest
+
 
 def _load_analyzer():
     script = Path(__file__).parents[1] / "scripts" / "analyze_stroke_trace.py"
@@ -193,3 +195,42 @@ def test_analyzer_excludes_closed_stationary_dabs_from_path_geometry() -> None:
     assert result["stationary_pressure_updates"] == 1
     assert result["path_px"] == 10.0
     assert result["direction_reversals"] == 0
+
+
+def test_ui_analysis_reports_native_backend_delivery_and_onset() -> None:
+    from mouse_pressure.ui.stroke_analysis import stroke_analysis_data
+
+    payload = {
+        "metadata": {"button": "left", "output_backend": "native_synthetic"},
+        "events": [
+            {"kind": "hook_left_down", "t_ms": -0.5},
+            {"kind": "motion", "t_ms": 0.0, "x": 10, "y": 20},
+            {
+                "kind": "inject",
+                "t_ms": 0.2,
+                "x": 10,
+                "y": 20,
+                "pressure": 300,
+                "flags": 0x00000004,
+                "ok": True,
+                "submission_token": 4,
+            },
+            {
+                "kind": "native_delivery",
+                "t_ms": 1.0,
+                "token": 4,
+                "queue_delay_us": 200,
+                "inject_call_us": 100,
+                "completed_qpc": 1000,
+                "qpc_frequency": 10_000_000,
+                "success": True,
+            },
+        ],
+    }
+
+    result = stroke_analysis_data(payload)
+
+    assert result["backend_label"] == "Native synthetic"
+    assert result["onset_ms"] == pytest.approx(1.0)
+    assert result["delivery_latency_median_ms"] == pytest.approx(0.3)
+    assert result["motion_to_output_median_ms"] == pytest.approx(0.5)

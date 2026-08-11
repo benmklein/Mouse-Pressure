@@ -531,7 +531,7 @@ class SyntheticPenReleaseTests(unittest.TestCase):
             contact_threshold=12,
             release_threshold=4,
             onset_buffer=False,
-            rmb_aux_xtilt=True,
+            right_output_target="x_tilt",
         )
         emitter = SyntheticPenEmitter(config, log=lambda _line: None)
         self.assertIsNotNone(emitter._suppressor)  # noqa: SLF001
@@ -560,6 +560,46 @@ class SyntheticPenReleaseTests(unittest.TestCase):
         )
         self.assertEqual(stroke.state, "contact")
         self.assertEqual(emitter.active_button, "left")
+        self.assertEqual(fake.calls[-1]["tilt_x"], 30)
+        self.assertGreater(fake.calls[-1]["pressure"], 0)
+
+    def test_auxiliary_left_pressure_modifies_xtilt_during_right_stroke(self) -> None:
+        config = SyntheticPenConfig(
+            contact_threshold=12,
+            release_threshold=4,
+            onset_buffer=False,
+            left_output_target="x_tilt",
+            right_output_target="pressure",
+        )
+        emitter = SyntheticPenEmitter(config, log=lambda _line: None)
+        self.assertIsNotNone(emitter._suppressor)  # noqa: SLF001
+        self.assertFalse(  # noqa: SLF001
+            emitter._suppressor._left_button_owns_contact  # type: ignore[union-attr]
+        )
+        self.assertTrue(  # noqa: SLF001
+            emitter._suppressor._right_button_owns_contact  # type: ignore[union-attr]
+        )
+        emitter._suppressor = None  # type: ignore[assignment]  # noqa: SLF001
+        fake = _FakePen()
+        emitter.pen = fake  # type: ignore[assignment]
+
+        fake._lmb = True
+        no_stroke = emitter.update(
+            left_mapped=1023,
+            right_mapped=0,
+            pressure_fresh=True,
+        )
+        self.assertEqual(no_stroke.state, "idle")
+        self.assertIsNone(emitter.active_button)
+
+        fake._rmb = True
+        stroke = emitter.update(
+            left_mapped=512,
+            right_mapped=400,
+            pressure_fresh=True,
+        )
+        self.assertEqual(stroke.state, "contact")
+        self.assertEqual(emitter.active_button, "right")
         self.assertEqual(fake.calls[-1]["tilt_x"], 30)
         self.assertGreater(fake.calls[-1]["pressure"], 0)
 
@@ -1781,7 +1821,7 @@ class SyntheticPenReleaseTests(unittest.TestCase):
 
     def test_right_stationary_option_repaints_auxiliary_xtilt_change(self) -> None:
         emitter, fake = self._mk_emitter(release_teardown=False)
-        emitter.config.rmb_aux_xtilt = True
+        emitter.config.right_output_target = "x_tilt"
         emitter.config.right_stationary_pressure_updates = True
         emitter.config.true_low_latency = True
         emitter._event_driven_movement = True  # noqa: SLF001

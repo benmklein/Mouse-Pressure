@@ -7,6 +7,8 @@ from dataclasses import dataclass, field
 
 @dataclass
 class ChannelConfig:
+    # Pen property controlled by this physical button's analog sensor.
+    output_target: str = "pressure"
     raw_min: int = 380
     raw_max: int = 700
     deadzone_low: int = 0
@@ -47,8 +49,6 @@ class RuntimeConfig:
     right_enabled: bool = True
     suppress_lmb: bool = True
     suppress_rmb: bool = True
-    # Experimental: keep LMB as pen pressure and publish RMB pressure as X-Tilt.
-    rmb_aux_xtilt: bool = True
     # Capture detailed per-stroke traces and verbose input diagnostics.
     debug_mode: bool = False
     # Hide the desktop control panel in the notification area when minimized.
@@ -69,7 +69,7 @@ class RuntimeConfig:
 class LaunchConfig:
     mode: int = 3
     mode_arg: int = 0
-    backend: str = "synthetic"
+    backend: str = "native_synthetic"
     # Pressure arrives at roughly 60 Hz, but cursor position can be sampled and
     # injected more frequently while holding the latest pressure value.
     hz: float = 240.0

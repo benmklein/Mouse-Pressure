@@ -62,6 +62,7 @@ def _channel_from_dict(raw: Any, defaults: ChannelConfig) -> ChannelConfig:
         raw_max *= 4
 
     channel = ChannelConfig(
+        output_target=str(raw.get("output_target", defaults.output_target)),
         raw_min=raw_min,
         raw_max=raw_max,
         deadzone_low=int(raw.get("deadzone_low", defaults.deadzone_low)),
@@ -129,10 +130,6 @@ def runtime_config_from_dict(raw: Any) -> RuntimeConfig:
     if not isinstance(suppress_rmb, bool):
         raise ValidationError("suppress_rmb must be a boolean")
 
-    rmb_aux_xtilt = raw.get("rmb_aux_xtilt", RuntimeConfig.rmb_aux_xtilt)
-    if not isinstance(rmb_aux_xtilt, bool):
-        raise ValidationError("rmb_aux_xtilt must be a boolean")
-
     debug_mode = raw.get("debug_mode", RuntimeConfig.debug_mode)
     if not isinstance(debug_mode, bool):
         raise ValidationError("debug_mode must be a boolean")
@@ -175,7 +172,6 @@ def runtime_config_from_dict(raw: Any) -> RuntimeConfig:
         right_enabled=right_enabled,
         suppress_lmb=suppress_lmb,
         suppress_rmb=suppress_rmb,
-        rmb_aux_xtilt=rmb_aux_xtilt,
         debug_mode=debug_mode,
         minimize_to_tray=minimize_to_tray,
         release_teardown=release_teardown,
@@ -198,7 +194,6 @@ def runtime_config_to_dict(config: RuntimeConfig) -> dict[str, Any]:
         "right_enabled": config.right_enabled,
         "suppress_lmb": config.suppress_lmb,
         "suppress_rmb": config.suppress_rmb,
-        "rmb_aux_xtilt": config.rmb_aux_xtilt,
         "debug_mode": config.debug_mode,
         "minimize_to_tray": config.minimize_to_tray,
         "release_teardown": config.release_teardown,

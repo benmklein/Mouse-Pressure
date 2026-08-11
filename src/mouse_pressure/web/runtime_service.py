@@ -13,8 +13,11 @@ from typing import Callable, TypeAlias
 
 from mouse_pressure.bridge.config import CONTACT_PRESETS, ChannelConfig, LaunchConfig, RuntimeConfig
 from mouse_pressure.bridge.curves import PressureConfig, map_normalized_pressure, normalize_curve_name
+from mouse_pressure.bridge.native_synthetic import (
+    NativeSyntheticPenInjector,
+    NativeTransformedMouseCapture,
+)
 from mouse_pressure.bridge.synthetic_pen import SyntheticPenConfig, SyntheticPenEmitter
-from mouse_pressure.bridge.tablet_emitter import VMultiPenInjectorAdapter
 from mouse_pressure.sandbox_telemetry import SandboxTelemetryWriter
 from mouse_pressure.sniff.hidpp_pressure import (
     PressureHidppSession,
@@ -116,10 +119,10 @@ class RuntimeService:
         if self._stream_active:
             raise StreamAlreadyActiveError("Stream is already active")
         backend = str(self.launch_config.backend).strip().lower()
-        if backend not in {"synthetic", "vmulti", "telemetry"}:
+        if backend not in {"native_synthetic", "telemetry"}:
             raise RuntimeError(
                 f"Unknown pen output backend {self.launch_config.backend!r}; "
-                "expected 'synthetic', 'vmulti', or 'telemetry'"
+                "expected 'native_synthetic' or internal 'telemetry'"
             )
         requested_device_settings = (
             self._validate_device_settings(device_settings)
@@ -234,10 +237,12 @@ class RuntimeService:
         try:
             if backend != "telemetry":
                 emitter = self._emitter_factory(self._emitter_config_from_runtime(), self._log)
-                if backend == "vmulti" and isinstance(emitter, SyntheticPenEmitter):
-                    emitter.pen = VMultiPenInjectorAdapter(
-                        desktop_input=emitter.pen,
-                        log=self._log,
+                if backend == "native_synthetic" and isinstance(
+                    emitter, SyntheticPenEmitter
+                ):
+                    emitter.pen = NativeSyntheticPenInjector(log=self._log)
+                    emitter.set_native_input_capture(
+                        NativeTransformedMouseCapture(log=self._log)
                     )
                 movement_callback = getattr(emitter, "set_movement_callback", None)
                 if callable(movement_callback):
@@ -414,6 +419,16 @@ class RuntimeService:
             if self._emitter is not None:
                 left_presets = CONTACT_PRESETS[validated.left.contact_preset]
                 right_presets = CONTACT_PRESETS[effective_right.contact_preset]
+                left_target = (
+                    validated.left.output_target
+                    if validated.left_enabled
+                    else "disabled"
+                )
+                right_target = (
+                    effective_right.output_target
+                    if validated.right_enabled
+                    else "disabled"
+                )
                 self._emitter.config = replace(
                     self._emitter.config,
                     contact_threshold=left_presets["contact_threshold"],
@@ -449,7 +464,8 @@ class RuntimeService:
                         effective_right.clean_stroke_endings
                     ),
                     suppress_lmb=(
-                        validated.left_enabled and validated.suppress_lmb
+                        validated.left_enabled
+                        and (validated.suppress_lmb or left_target == "x_tilt")
                     ),
                     suppress_rmb=(
                         validated.right_enabled
@@ -459,18 +475,11 @@ class RuntimeService:
                                 if validated.linked
                                 else validated.suppress_rmb
                             )
-                            or (
-                                not validated.linked
-                                and validated.rmb_aux_xtilt
-                            )
+                            or right_target == "x_tilt"
                         )
                     ),
-                    rmb_aux_xtilt=(
-                        not validated.linked
-                        and validated.left_enabled
-                        and validated.right_enabled
-                        and validated.rmb_aux_xtilt
-                    ),
+                    left_output_target=left_target,
+                    right_output_target=right_target,
                     release_teardown=validated.release_teardown,
                     trace_raw_min=validated.left.raw_min,
                     trace_raw_max=validated.left.raw_max,
@@ -798,7 +807,6 @@ class RuntimeService:
             "right_enabled",
             "suppress_lmb",
             "suppress_rmb",
-            "rmb_aux_xtilt",
             "debug_mode",
             "minimize_to_tray",
             "release_teardown",
@@ -869,6 +877,16 @@ class RuntimeService:
         effective_right = self._effective_right_channel(self._config)
         left_thresholds = CONTACT_PRESETS[self._config.left.contact_preset]
         right_thresholds = CONTACT_PRESETS[effective_right.contact_preset]
+        left_target = (
+            self._config.left.output_target
+            if self._config.left_enabled
+            else "disabled"
+        )
+        right_target = (
+            effective_right.output_target
+            if self._config.right_enabled
+            else "disabled"
+        )
         return SyntheticPenConfig(
             contact_threshold=left_thresholds["contact_threshold"],
             release_threshold=left_thresholds["release_threshold"],
@@ -879,13 +897,9 @@ class RuntimeService:
             pressure_influence=self._config.left.pressure_influence,
             onset_buffer=self._config.left.onset_buffer,
             true_low_latency=self._config.left.true_low_latency,
-            # Synthetic pointer injection is marked and can be filtered from
-            # the hook path, so retain Windows' normal transformed mouse
-            # coordinates there. VMulti promotion is not reliably marked;
-            # its feedback-safe path therefore remains device-scoped Raw Input.
-            allow_raw_direct_motion=(
-                str(self.launch_config.backend).strip().lower() == "vmulti"
-            ),
+            # Preserve the user's Windows pointer transform. The native relay
+            # correlates device-scoped Raw Input with transformed coordinates.
+            allow_raw_direct_motion=False,
             stationary_pressure_updates=(
                 self._config.left.stationary_pressure_updates
             ),
@@ -908,7 +922,10 @@ class RuntimeService:
             clean_stroke_endings=self._config.left.clean_stroke_endings,
             right_clean_stroke_endings=effective_right.clean_stroke_endings,
             pressure_interp_steps=max(1, int(round(self.launch_config.hz / 60.0))),
-            suppress_lmb=(self._config.left_enabled and self._config.suppress_lmb),
+            suppress_lmb=(
+                self._config.left_enabled
+                and (self._config.suppress_lmb or left_target == "x_tilt")
+            ),
             suppress_rmb=(
                 self._config.right_enabled
                 and (
@@ -917,19 +934,13 @@ class RuntimeService:
                         if self._config.linked
                         else self._config.suppress_rmb
                     )
-                    or (
-                        not self._config.linked
-                        and self._config.rmb_aux_xtilt
-                    )
+                    or right_target == "x_tilt"
                 )
             ),
-            rmb_aux_xtilt=(
-                not self._config.linked
-                and self._config.left_enabled
-                and self._config.right_enabled
-                and self._config.rmb_aux_xtilt
-            ),
+            left_output_target=left_target,
+            right_output_target=right_target,
             debug_mode=self._config.debug_mode,
+            output_backend=str(self.launch_config.backend).strip().lower(),
             release_teardown=self._config.release_teardown,
             trace_dir=self.launch_config.trace_dir,
             trace_raw_min=self._config.left.raw_min,

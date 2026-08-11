@@ -22,4 +22,16 @@ htmlcov/
 docs/pressure_pen_*.txt
 docs/tablet_synth_*.txt
 docs/latency_profile_*.txt
+docs/archive/
+docs/*.pcap
+docs/*.pcapng
+docs/*_capture.csv
+docs/*_capture.json
+docs/*_log.txt
+docs/*_stdout.txt
+docs/*_probe.txt
+docs/*_enum.txt
+docs/*_test.txt
+docs/ghub_payloads*.csv
+docs/tshark_*.txt
 /work/

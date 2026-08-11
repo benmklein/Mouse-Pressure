@@ -23,7 +23,12 @@ def _parse_args(argv: Sequence[str] | None = None) -> argparse.Namespace:
     parser = argparse.ArgumentParser(description="Run the Mouse Pressure WebSocket server")
     parser.add_argument("--mode", type=int, default=LaunchConfig.mode)
     parser.add_argument("--mode-arg", type=int, default=LaunchConfig.mode_arg)
-    parser.add_argument("--backend", default=LaunchConfig.backend)
+    parser.add_argument(
+        "--backend",
+        choices=("native_synthetic", "telemetry"),
+        default=LaunchConfig.backend,
+        help="Native Windows Ink output; telemetry is reserved for internal tools.",
+    )
     parser.add_argument("--hz", type=float, default=LaunchConfig.hz)
     parser.add_argument("--log-file", default=None)
     parser.add_argument("--config-dir", default=None)

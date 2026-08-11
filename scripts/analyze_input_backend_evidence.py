@@ -1,4 +1,4 @@
-"""Summarize the existing HID captures and recent structured stroke traces."""
+"""Summarize private HID captures and recent structured stroke traces."""
 
 from __future__ import annotations
 
@@ -14,7 +14,11 @@ from typing import Any
 
 def parse_args() -> argparse.Namespace:
     parser = argparse.ArgumentParser(description=__doc__)
-    parser.add_argument("--docs", type=Path, default=Path("docs"))
+    parser.add_argument(
+        "--capture-root",
+        type=Path,
+        help="Private directory containing the three named raw capture files",
+    )
     parser.add_argument(
         "--traces", type=Path, default=Path("work/stroke_traces")
     )
@@ -22,7 +26,7 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument(
         "--output",
         type=Path,
-        default=Path("docs/investigation/results/input_evidence_summary.json"),
+        default=Path("work/input_evidence_summary.json"),
     )
     return parser.parse_args()
 
@@ -230,13 +234,18 @@ def trace_summary(path: Path, limit: int) -> dict[str, Any]:
 
 def main() -> int:
     args = parse_args()
+    mode_logs = []
+    ghub_capture = None
+    if args.capture_root is not None:
+        mode_logs = [
+            mode_log_summary(args.capture_root / "pressure_mode2_log.txt"),
+            mode_log_summary(args.capture_root / "pressure_mode3_log.txt"),
+        ]
+        ghub_capture = ghub_summary(args.capture_root / "ghub_payloads_ext.csv")
     payload = {
         "schema_version": 1,
-        "mode_logs": [
-            mode_log_summary(args.docs / "pressure_mode2_log.txt"),
-            mode_log_summary(args.docs / "pressure_mode3_log.txt"),
-        ],
-        "ghub_capture": ghub_summary(args.docs / "ghub_payloads_ext.csv"),
+        "mode_logs": mode_logs,
+        "ghub_capture": ghub_capture,
         "stroke_traces": trace_summary(args.traces, args.trace_limit),
     }
     args.output.parent.mkdir(parents=True, exist_ok=True)

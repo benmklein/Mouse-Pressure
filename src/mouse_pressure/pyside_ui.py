@@ -11,7 +11,7 @@ import threading
 import time
 from concurrent.futures import Future
 from pathlib import Path
-from typing import Any
+from typing import Any, Callable
 
 from PySide6.QtCore import QEvent, QObject, QSize, Qt, QSettings, QTimer
 from PySide6.QtGui import QAction, QCloseEvent, QIcon
@@ -42,7 +42,6 @@ from PySide6.QtWidgets import (
 )
 
 from mouse_pressure.bridge.config import LaunchConfig, RuntimeConfig
-from mouse_pressure.bridge.tablet_emitter import enumerate_vmulti_candidates
 from mouse_pressure.dev_ui import (
     BridgeController,
     DevSettings,
@@ -243,6 +242,15 @@ class ChannelEditor(QWidget):
         settings.setContentsMargins(0, 0, 0, 0)
         settings.setSpacing(14)
 
+        settings.addWidget(_label("Map to", muted=True))
+        self.output_target = QComboBox()
+        self.output_target.addItem("Pressure", "pressure")
+        self.output_target.addItem("X-tilt", "x_tilt")
+        self.output_target.setCurrentIndex(
+            max(0, self.output_target.findData(config.output_target))
+        )
+        settings.addWidget(self.output_target)
+
         raw_values = QGridLayout()
         raw_values.setHorizontalSpacing(12)
         raw_values.setVerticalSpacing(8)
@@ -353,13 +361,6 @@ class ChannelEditor(QWidget):
             self.clean_stroke_endings,
         ):
             advanced.addWidget(widget)
-        self.xtilt: LabeledSwitch | None = None
-        if channel == "right":
-            self.xtilt = LabeledSwitch(
-                "Use right pressure as X-Tilt",
-                "While drawing with left pressure, map right pressure to 0–60° X-Tilt.",
-            )
-            advanced.addWidget(self.xtilt)
         self.advanced.setVisible(False)
         settings.addWidget(self.advanced)
         self.reset_button = QPushButton(f"Reset {channel.lower()}-click settings")
@@ -388,6 +389,7 @@ class ChannelEditor(QWidget):
     def control_widgets(self) -> list[QWidget]:
         widgets: list[QWidget] = [
             self.enabled,
+            self.output_target,
             self.raw_min,
             self.raw_max,
             self.curve,
@@ -401,8 +403,6 @@ class ChannelEditor(QWidget):
             self.immediate_button_wake,
             self.clean_stroke_endings,
         ]
-        if self.xtilt is not None:
-            widgets.append(self.xtilt)
         return widgets
 
 
@@ -511,7 +511,7 @@ class MainWindow(QMainWindow):
         side.addStretch(1)
         side.addWidget(_label("Output device", muted=True))
         self.sidebar_backend = QLabel("Connected")
-        self.sidebar_backend.setToolTip("VMulti virtual pen output")
+        self.sidebar_backend.setToolTip("Native Windows Ink output")
         side.addWidget(self.sidebar_backend)
         footer_rule = QFrame()
         footer_rule.setFrameShape(QFrame.Shape.HLine)
@@ -630,8 +630,6 @@ class MainWindow(QMainWindow):
         self.right_enabled = self.editors["right"].enabled
         self.editors["left"].suppress.setChecked(config.suppress_lmb)
         self.editors["right"].suppress.setChecked(config.suppress_rmb)
-        if self.editors["right"].xtilt is not None:
-            self.editors["right"].xtilt.setChecked(config.rmb_aux_xtilt)
         for channel in ("left", "right"):
             self.channel_tabs.addWidget(self.editors[channel])
             self.editors[channel].calibrate_button.clicked.connect(
@@ -653,9 +651,9 @@ class MainWindow(QMainWindow):
 
         graph_column = QVBoxLayout()
         graph_card = Card()
-        graph_title = QLabel("Output Pressure")
-        graph_title.setObjectName("sectionTitle")
-        graph_card.content.addWidget(graph_title)
+        self.graph_title = QLabel("Output Pressure")
+        self.graph_title.setObjectName("sectionTitle")
+        graph_card.content.addWidget(self.graph_title)
         self.mapping_graph = MappingGraph()
         self.mapping_graph.setFixedHeight(310)
         graph_card.content.addWidget(self.mapping_graph)
@@ -663,6 +661,7 @@ class MainWindow(QMainWindow):
         raw_card, self.raw_metric = metric_card("Raw Pressure", "—")
         input_card, self.input_metric = metric_card("Input Pressure", "—")
         output_card, self.output_metric = metric_card("Output Pressure", "—")
+        self.output_metric_caption = output_card.layout().itemAt(0).widget()
         for card in (raw_card, input_card, output_card):
             stats.addWidget(card, 1)
         graph_card.content.addLayout(stats)
@@ -730,20 +729,6 @@ class MainWindow(QMainWindow):
         )
         layout.addWidget(hardware)
 
-        output = Card()
-        output_title = QLabel("Pen output")
-        output_title.setObjectName("sectionTitle")
-        output.content.addWidget(output_title)
-        self.backend = QComboBox()
-        self.backend.addItem("VMulti · lowest latency", "vmulti")
-        self.backend.addItem("Synthetic · compatibility fallback", "synthetic")
-        self.backend.setCurrentIndex(max(0, self.backend.findData(self.service.launch_config.backend)))
-        output.content.addWidget(self.backend)
-        output.content.addWidget(
-            _label("Prefer VMulti for lowest latency. Use synthetic as a fallback.", muted=True)
-        )
-        layout.addWidget(output)
-
         app = Card()
         app_title = QLabel("Application")
         app_title.setObjectName("sectionTitle")
@@ -779,7 +764,7 @@ class MainWindow(QMainWindow):
         layout.addWidget(app)
 
         advanced = Card()
-        advanced_title = QLabel("Advanced backend")
+        advanced_title = QLabel("Advanced output")
         advanced_title.setObjectName("sectionTitle")
         advanced.content.addWidget(advanced_title)
         hz_row = QHBoxLayout()
@@ -794,14 +779,13 @@ class MainWindow(QMainWindow):
         advanced.content.addLayout(hz_row)
         self.release_teardown = LabeledSwitch(
             "Experimental release teardown",
-            "Synthetic only. Compatibility sequence for apps that retain a hover pointer.",
+            "Compatibility sequence for apps that retain a hover pointer.",
             checked=config.release_teardown,
         )
         advanced.content.addWidget(self.release_teardown)
         layout.addWidget(advanced)
         layout.addStretch(1)
-        self.backend.currentIndexChanged.connect(self._backend_changed)
-        self._backend_changed()
+        self.release_teardown.setVisible(True)
         return self._scroll_page(content)
 
     def _build_analysis_page(self) -> QWidget:
@@ -809,11 +793,22 @@ class MainWindow(QMainWindow):
         layout.setSpacing(16)
         card = Card()
         toolbar = QHBoxLayout()
-        toolbar.addWidget(_label("Recent stroke", muted=True))
+        toolbar.addWidget(_label("Stroke A", muted=True))
         self.stroke_selector = QComboBox()
-        self.stroke_selector.setMinimumWidth(280)
+        self.stroke_selector.setMinimumWidth(240)
         self.stroke_selector.currentIndexChanged.connect(self._load_selected_stroke)
         toolbar.addWidget(self.stroke_selector, 1)
+        toolbar.addWidget(_label("Compare with", muted=True))
+        self.compare_selector = QComboBox()
+        self.compare_selector.setMinimumWidth(240)
+        self.compare_selector.currentIndexChanged.connect(self._load_selected_stroke)
+        toolbar.addWidget(self.compare_selector, 1)
+        toolbar.addWidget(_label("Graph", muted=True))
+        self.analysis_graph_mode = QComboBox()
+        self.analysis_graph_mode.addItem("Pressure", "pressure")
+        self.analysis_graph_mode.addItem("Motion latency", "latency")
+        self.analysis_graph_mode.addItem("Output cadence", "cadence")
+        toolbar.addWidget(self.analysis_graph_mode)
         refresh = QPushButton("Refresh")
         refresh.clicked.connect(lambda: self._refresh_strokes(select_latest=False))
         toolbar.addWidget(refresh)
@@ -821,13 +816,25 @@ class MainWindow(QMainWindow):
         self.stroke_summary = _label("Draw with Debug mode enabled, then select a stroke.", muted=True, wrap=True)
         card.content.addWidget(self.stroke_summary)
         self.stroke_graph = StrokeGraph()
+        self.analysis_graph_mode.currentIndexChanged.connect(
+            lambda _index: self.stroke_graph.set_mode(
+                str(self.analysis_graph_mode.currentData())
+            )
+        )
         card.content.addWidget(self.stroke_graph, 1)
-        metrics = QHBoxLayout()
-        _path_card, self.path_metric = metric_card("Path", "—")
-        _rate_card, self.motion_metric = metric_card("Motion rate", "—")
-        _step_card, self.step_metric = metric_card("Pressure step", "—")
-        for metric in (_path_card, _rate_card, _step_card):
-            metrics.addWidget(metric, 1)
+        metrics = QGridLayout()
+        metric_specs = (
+            ("Backend", "backend_metric"),
+            ("Stroke onset", "onset_metric"),
+            ("Motion → output", "motion_output_metric"),
+            ("Relay delivery", "delivery_metric"),
+            ("Output jitter", "jitter_metric"),
+            ("Release", "release_metric"),
+        )
+        for index, (label, attribute) in enumerate(metric_specs):
+            metric, value = metric_card(label, "—")
+            setattr(self, attribute, value)
+            metrics.addWidget(metric, index // 3, index % 3)
         card.content.addLayout(metrics)
         layout.addWidget(card, 1)
         return content
@@ -893,8 +900,6 @@ class MainWindow(QMainWindow):
                     editor.clean_stroke_endings,
                 )
             )
-            if editor.xtilt is not None:
-                switches.append(editor.xtilt)
         for widget in switches:
             widget.set_theme(self.theme)
         self.mapping_graph.set_theme(self.theme)
@@ -912,6 +917,7 @@ class MainWindow(QMainWindow):
             for signal in (
                 editor.raw_min.valueChanged,
                 editor.raw_max.valueChanged,
+                editor.output_target.currentIndexChanged,
                 editor.curve.currentIndexChanged,
                 editor.curve_strength.valueChanged,
                 editor.contact.currentIndexChanged,
@@ -930,15 +936,12 @@ class MainWindow(QMainWindow):
             editor.suppress.toggled.connect(
                 lambda *_args, channel=name: self._mapping_control_changed(channel)
             )
-            if editor.xtilt is not None:
-                editor.xtilt.toggled.connect(self._mark_dirty)
 
     def _connect_non_mapping_controls(self) -> None:
         for signal in (
             self.dpi.valueChanged,
             self.haptics["left"].valueChanged,
             self.haptics["right"].valueChanged,
-            self.backend.currentIndexChanged,
             self.debug_mode.toggled,
             self.minimize_to_tray.toggled,
             self.injection_hz.currentIndexChanged,
@@ -1034,7 +1037,26 @@ class MainWindow(QMainWindow):
             left = self._channel_settings("left")
             right = self._channel_settings("right")
             device = self._device_settings()
-            backend = str(self.backend.currentData())
+            backend = "native_synthetic"
+            left_target = str(self.editors["left"].output_target.currentData())
+            right_target = (
+                left_target
+                if self.linked.isChecked()
+                else str(self.editors["right"].output_target.currentData())
+            )
+            enabled_targets = [
+                target
+                for enabled, target in (
+                    (self.left_enabled.isChecked(), left_target),
+                    (self.right_enabled.isChecked(), right_target),
+                )
+                if enabled
+            ]
+            if enabled_targets and "pressure" not in enabled_targets:
+                raise ValueError(
+                    "At least one enabled button must map to Pressure; "
+                    "X-tilt modifies an active pressure stroke."
+                )
             normal = self._normal_device
             follows_normal = (
                 normal["dpi"] is not None
@@ -1049,21 +1071,29 @@ class MainWindow(QMainWindow):
                     "right_enabled": self.right_enabled.isChecked(),
                     "suppress_lmb": left.suppress_lmb,
                     "suppress_rmb": right.suppress_lmb,
-                    "rmb_aux_xtilt": bool(
-                        self.editors["right"].xtilt
-                        and self.editors["right"].xtilt.isChecked()
-                    ),
                     "debug_mode": self.debug_mode.isChecked(),
                     "minimize_to_tray": self.minimize_to_tray.isChecked(),
                     "release_teardown": (
-                        self.release_teardown.isChecked() if backend == "synthetic" else False
+                        self.release_teardown.isChecked()
+                        if backend in {"synthetic", "native_synthetic"}
+                        else False
                     ),
                     "session_dpi": device["dpi"],
                     "session_haptic_left": device["haptic_left"],
                     "session_haptic_right": device["haptic_right"],
                     "session_device_settings_follow_normal": follows_normal,
-                    "left": left.as_runtime_patch()["left"],
-                    "right": right.as_runtime_patch()["left"],
+                    "left": {
+                        **left.as_runtime_patch()["left"],
+                        "output_target": str(
+                            left_target
+                        ),
+                    },
+                    "right": {
+                        **right.as_runtime_patch()["left"],
+                        "output_target": str(
+                            right_target
+                        ),
+                    },
                 }
             )
             self.service.launch_config.hz = float(self.injection_hz.currentData())
@@ -1076,9 +1106,7 @@ class MainWindow(QMainWindow):
         self.sidebar_backend.setText(
             "Connected"
         )
-        self.sidebar_backend.setToolTip(
-            "VMulti virtual pen output" if backend == "vmulti" else "Synthetic pen output"
-        )
+        self.sidebar_backend.setToolTip("Native Windows Ink output")
         self.settings_dirty = False
         self.save_button.setText("Applied")
         self.save_button.setEnabled(False)
@@ -1122,6 +1150,9 @@ class MainWindow(QMainWindow):
         try:
             editor.raw_min.setValue(source.raw_min)
             editor.raw_max.setValue(source.raw_max)
+            editor.output_target.setCurrentIndex(
+                max(0, editor.output_target.findData(source.output_target))
+            )
             editor.curve.setCurrentIndex(editor.curve.findData(source.curve))
             editor.curve_strength.setValue(round(source.curve_strength * 10))
             editor.contact.setCurrentIndex(editor.contact.findData(source.contact_preset))
@@ -1150,6 +1181,9 @@ class MainWindow(QMainWindow):
                 editor = self.editors[channel]
                 editor.raw_min.setValue(ch.raw_min)
                 editor.raw_max.setValue(ch.raw_max)
+                editor.output_target.setCurrentIndex(
+                    max(0, editor.output_target.findData(ch.output_target))
+                )
                 editor.curve.setCurrentIndex(max(0, editor.curve.findData(ch.curve)))
                 editor.curve_strength.setValue(round(ch.curve_strength * 10))
                 editor.contact.setCurrentIndex(max(0, editor.contact.findData(ch.contact_preset)))
@@ -1161,8 +1195,6 @@ class MainWindow(QMainWindow):
                 editor.clean_stroke_endings.setChecked(ch.clean_stroke_endings)
             self.editors["left"].suppress.setChecked(config.suppress_lmb)
             self.editors["right"].suppress.setChecked(config.suppress_rmb)
-            if self.editors["right"].xtilt:
-                self.editors["right"].xtilt.setChecked(config.rmb_aux_xtilt)
             self.debug_mode.setChecked(config.debug_mode)
             self.minimize_to_tray.setChecked(config.minimize_to_tray)
             self.release_teardown.setChecked(config.release_teardown)
@@ -1278,14 +1310,6 @@ class MainWindow(QMainWindow):
             "running" if self.running else "stopped",
         )
 
-    def _backend_changed(self, *_args: Any) -> None:
-        synthetic = self.backend.currentData() == "synthetic"
-        self.release_teardown.setVisible(synthetic)
-        self.sidebar_backend.setText("Connected")
-        self.sidebar_backend.setToolTip(
-            "Synthetic pen output" if synthetic else "VMulti virtual pen output"
-        )
-
     def _launch_sandbox(self) -> None:
         executable = Path(sys.executable).resolve()
         candidates = (
@@ -1322,6 +1346,13 @@ class MainWindow(QMainWindow):
         return (selected,)
 
     def _redraw_mapping(self) -> None:
+        selected = "left" if self.channel_tabs.currentIndex() == 0 else "right"
+        editor = self.editors[selected]
+        output_target = str(editor.output_target.currentData())
+        output_label = "Output X-tilt" if output_target == "x_tilt" else "Output Pressure"
+        self.graph_title.setText(output_label)
+        if isinstance(self.output_metric_caption, QLabel):
+            self.output_metric_caption.setText(output_label)
         series: dict[str, list[tuple[int, int]]] = {}
         raw_ranges: dict[str, tuple[int, int]] = {}
         for channel in ("left", "right"):
@@ -1348,14 +1379,22 @@ class MainWindow(QMainWindow):
         directory = self._trace_directory()
         paths = sorted(directory.glob("stroke-*.json"), key=lambda path: path.stat().st_mtime, reverse=True)[:100]
         current = self.stroke_selector.currentText()
+        comparison = self.compare_selector.currentText()
         self._trace_paths = {path.name: path for path in paths}
         self.stroke_selector.blockSignals(True)
+        self.compare_selector.blockSignals(True)
         self.stroke_selector.clear()
         self.stroke_selector.addItems(self._trace_paths)
+        self.compare_selector.clear()
+        self.compare_selector.addItem("No comparison")
+        self.compare_selector.addItems(self._trace_paths)
         if paths:
             target = paths[0].name if select_latest or current not in self._trace_paths else current
             self.stroke_selector.setCurrentText(target)
+            if comparison in self._trace_paths:
+                self.compare_selector.setCurrentText(comparison)
         self.stroke_selector.blockSignals(False)
+        self.compare_selector.blockSignals(False)
         self._load_selected_stroke()
 
     def _load_selected_stroke(self, *_args: Any) -> None:
@@ -1365,17 +1404,53 @@ class MainWindow(QMainWindow):
             return
         try:
             analysis = stroke_analysis_data(json.loads(path.read_text(encoding="utf-8")))
+            comparison_path = self._trace_paths.get(self.compare_selector.currentText())
+            comparison = (
+                stroke_analysis_data(
+                    json.loads(comparison_path.read_text(encoding="utf-8"))
+                )
+                if comparison_path is not None and comparison_path != path
+                else None
+            )
         except Exception as exc:
             self.stroke_summary.setText(f"Could not read trace: {exc}")
             self.stroke_graph.set_analysis(None)
             return
-        self.stroke_graph.set_analysis(analysis)
-        self.stroke_summary.setText(
-            f"{analysis['diagnosis']}  ·  {analysis['stationary_dab_points']} stationary points removed"
+        analyses = [(f"A · {analysis['backend_label']}", analysis)]
+        if comparison is not None:
+            analyses.append((f"B · {comparison['backend_label']}", comparison))
+        self.stroke_graph.set_comparison(analyses)
+        if comparison is None:
+            self.stroke_summary.setText(
+                f"{analysis['backend_label']} · "
+                f"{analysis['stationary_dab_points']} stationary points removed"
+            )
+        else:
+            self.stroke_summary.setText(
+                f"A: {analysis['backend_label']}  ·  "
+                f"B: {comparison['backend_label']}  ·  "
+                "lower timing values are better"
+            )
+
+        def timing(value: float | None) -> str:
+            return "—" if value is None else f"{value:.2f} ms"
+
+        def compared(key: str, formatter: Callable[[Any], str] = timing) -> str:
+            first = formatter(analysis.get(key))
+            if comparison is None:
+                return first
+            return f"{first} / {formatter(comparison.get(key))}"
+
+        self.backend_metric.setText(
+            analysis["backend_label"]
+            if comparison is None
+            else f"{analysis['backend_label']} / {comparison['backend_label']}"
         )
-        self.path_metric.setText(f"{analysis['path_px']:.0f} px")
-        self.motion_metric.setText(f"{analysis['motion_hz']:.0f} Hz")
-        self.step_metric.setText(f"{analysis['p95_pressure_step']:.0f} / 1024")
+        self.onset_metric.setText(compared("onset_ms"))
+        self.motion_output_metric.setText(compared("motion_to_output_median_ms"))
+        self.delivery_metric.setText(compared("delivery_latency_median_ms"))
+        self.jitter_metric.setText(compared("delivery_jitter_ms"))
+        self.release_metric.setText(compared("release_ms"))
 
     # ---------- runtime lifecycle ----------
     def _toggle_bridge(self) -> None:
@@ -1427,7 +1502,6 @@ class MainWindow(QMainWindow):
         self.save_button.setEnabled(self.settings_dirty)
         for editor in self.editors.values():
             editor.calibrate_button.setEnabled(not self.calibrating)
-        self.backend.setEnabled(not running)
         self.injection_hz.setEnabled(not running)
         self.mapping_graph.set_live_preview(running)
         self._set_status(
@@ -1537,7 +1611,18 @@ class MainWindow(QMainWindow):
         mapped = self._latest_mapped[selected]
         effective = effective_by_channel[selected]
         self.input_metric.setText(f"{mapped / 1024:.0%}")
-        self.output_metric.setText(f"{effective / 1024:.0%}")
+        editors = getattr(self, "editors", {})
+        selected_editor = editors.get(selected) if isinstance(editors, dict) else None
+        output_target = (
+            str(selected_editor.output_target.currentData())
+            if selected_editor is not None
+            else "pressure"
+        )
+        self.output_metric.setText(
+            f"{round(effective * 60 / 1023)}°"
+            if output_target == "x_tilt"
+            else f"{effective / 1024:.0%}"
+        )
         self.raw_metric.setText(str(raw))
         if self.running:
             self._set_status("Running", "running")
@@ -1631,11 +1716,10 @@ def main() -> int:
         return 0
     log_bus = LogBus(maxlen=1000)
     try:
-        backend = "vmulti" if enumerate_vmulti_candidates() else "synthetic"
         config_store = ConfigStore()
         service = RuntimeService(
             launch_config=LaunchConfig(
-                backend=backend,
+                backend="native_synthetic",
                 trace_dir=str(config_store.config_dir / "stroke_traces"),
             ),
             config_store=config_store,

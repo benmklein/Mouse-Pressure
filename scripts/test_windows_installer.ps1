@@ -57,14 +57,37 @@ function Invoke-CheckedProcess {
     return $process.ExitCode
 }
 
+function Wait-FileUnlocked {
+    param(
+        [Parameter(Mandatory = $true)]
+        [string]$Path,
+        [int]$TimeoutSeconds = 10
+    )
+
+    $deadline = [DateTime]::UtcNow.AddSeconds($TimeoutSeconds)
+    do {
+        try {
+            $stream = [System.IO.File]::Open(
+                $Path,
+                [System.IO.FileMode]::Open,
+                [System.IO.FileAccess]::Read,
+                [System.IO.FileShare]::None
+            )
+            $stream.Dispose()
+            return
+        } catch [System.IO.IOException] {
+            Start-Sleep -Milliseconds 100
+        }
+    } while ([DateTime]::UtcNow -lt $deadline)
+    throw "File remained locked after ${TimeoutSeconds}s: $Path"
+}
+
 [void](Invoke-CheckedProcess -FilePath $InstallerPath -Arguments @(
     '/CURRENTUSER',
     '/VERYSILENT',
     '/SUPPRESSMSGBOXES',
     '/NORESTART',
     '/SP-',
-    '/TYPE=compact',
-    '/COMPONENTS=application',
     '/TASKS=',
     "/LOG=$installLog",
     "/DIR=$installRoot"
@@ -92,6 +115,7 @@ if (-not (Test-Path -LiteralPath $uninstaller -PathType Leaf)) {
     '--state-file',
     (Join-Path $smokeRoot 'missing-state.json')
 ) -AllowedExitCodes @(1) -TimeoutSeconds 30 -Phase 'Packaged watchdog dispatch')
+Wait-FileUnlocked -Path $application
 
 [void](Invoke-CheckedProcess -FilePath $uninstaller -Arguments @(
     '/VERYSILENT',
