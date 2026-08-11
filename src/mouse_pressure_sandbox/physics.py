@@ -1,5 +1,4 @@
 """Fixed-step Verlet physics for a retractable chain and throwable ball."""
-
 from __future__ import annotations
 
 from dataclasses import dataclass, field
@@ -152,4 +151,3 @@ class RockSimulation:
             self.previous_position.y = self.position.y + velocity.y * self.restitution
             horizontal = self.position.x - self.previous_position.x
             self.previous_position.x = self.position.x - horizontal * 0.985
-

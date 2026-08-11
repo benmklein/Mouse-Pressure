@@ -1,5 +1,4 @@
 from __future__ import annotations
-
 import mmap
 import time
 
@@ -61,4 +60,3 @@ def test_inactive_and_stale_frames_are_not_usable_output() -> None:
         timestamp_ns=time.perf_counter_ns() - 2_000_000_000,
     )
     assert reader.read(max_age_s=0.5) is None
-

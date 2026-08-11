@@ -3,10 +3,10 @@
 
 def sniff():
     """Discover a compatible analog-button mouse and dump raw reports.
-    
+
     This is your Phase 1 starting point. Run this to:
     1. Find the mouse's vendor/product IDs
-    2. Enumerate its HID interfaces  
+    2. Enumerate its HID interfaces
     3. Capture raw HID reports while you press buttons at varying pressure
     4. Identify which bytes contain analog pressure data
     """
@@ -16,7 +16,7 @@ def sniff():
 
 def bridge():
     """Run the pressure output service.
-    
+
     Reads analog-button data and emits virtual tablet pressure events.
     """
     from mouse_pressure.bridge.pressure_bridge import run_bridge
@@ -25,7 +25,7 @@ def bridge():
 
 def visualize():
     """Launch pressure visualization for debugging/calibration.
-    
+
     Shows a real-time plot of pressure values from the supported mouse.
     Useful for verifying you're reading the right bytes and for
     tuning pressure curves.

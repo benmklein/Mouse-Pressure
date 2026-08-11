@@ -1,5 +1,4 @@
 """Non-blocking access to processed Mouse Pressure telemetry."""
-
 from __future__ import annotations
 
 import threading
@@ -79,4 +78,3 @@ class PressureSensorReader:
                 self._stop.wait(self.poll_interval_s)
         finally:
             reader.close()
-
