@@ -52,8 +52,8 @@ class PressureSandbox:
         self.simulation.min_chain_length = 100.0
         self.simulation.max_chain_length = 800.0
         self.simulation.chain_length = 360.0
-        self.pressure_retracts = False
-        self.locked_mode = False
+        self.pressure_retracts = True
+        self.locked_mode = True
         self.locked_anchor = Vec2(self.simulation.position)
         self.locked_attachment_length = self.simulation.chain_length
         self.fallback_pressure = 0.0
