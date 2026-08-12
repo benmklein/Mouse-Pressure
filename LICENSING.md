@@ -13,9 +13,8 @@ bootloader, and Lucide artwork. Their licenses remain in force. See
 .\.venv\Scripts\python.exe scripts\generate_release_metadata.py
 ```
 
-The public installer does not distribute VMulti, a kernel driver, or the
-historical Krita plugin experiment. Source-tree experiments that are not part
-of the binary distribution retain the licenses stated in their own files.
+The public installer does not distribute a kernel driver or an
+application-specific brush plugin.
 
 Redistributing Mouse Pressure does not grant rights to Logitech, Microsoft,
 Krita, Qt, or other third-party names and marks beyond those supplied by

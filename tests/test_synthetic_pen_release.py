@@ -3,6 +3,7 @@ from __future__ import annotations
 import math
 import sys
 import tempfile
+import threading
 import time
 import unittest
 from pathlib import Path
@@ -118,6 +119,166 @@ class SyntheticPenReleaseTests(unittest.TestCase):
         self.assertTrue(
             _MouseLmbSuppressor._should_block_message(WM_LBUTTONDOWN, injected=False)
         )
+
+    def test_coordinate_feedback_never_bypasses_button_suppression(self) -> None:
+        """A rapid physical press must not be mistaken for pen promotion."""
+        for message in (WM_LBUTTONDOWN, WM_LBUTTONUP):
+            self.assertTrue(
+                _MouseLmbSuppressor._should_block_message(
+                    message,
+                    injected=False,
+                    bridge_feedback=True,
+                    suppress_left=True,
+                )
+            )
+        for message in (WM_RBUTTONDOWN, WM_RBUTTONUP):
+            self.assertTrue(
+                _MouseLmbSuppressor._should_block_message(
+                    message,
+                    injected=False,
+                    bridge_feedback=True,
+                    suppress_left=False,
+                    suppress_right=True,
+                )
+            )
+
+        self.assertFalse(
+            _MouseLmbSuppressor._should_block_message(
+                WM_RBUTTONDOWN,
+                injected=True,
+                bridge_feedback=True,
+                suppress_right=True,
+            )
+        )
+
+    def test_input_arm_waits_for_start_button_release(self) -> None:
+        emitter, fake = self._mk_emitter(release_teardown=False)
+        fake._lmb = True
+
+        released = threading.Event()
+
+        def release_start_click() -> None:
+            time.sleep(0.01)
+            fake._lmb = False
+            released.set()
+
+        thread = threading.Thread(target=release_start_click)
+        thread.start()
+        emitter._wait_for_clean_button_baseline(timeout_s=0.2)  # noqa: SLF001
+        thread.join(timeout=0.2)
+
+        self.assertTrue(released.is_set())
+
+    def test_input_arm_rejects_a_button_that_never_releases(self) -> None:
+        emitter, fake = self._mk_emitter(release_teardown=False)
+        fake._rmb = True
+
+        with self.assertRaisesRegex(RuntimeError, "Release the right mouse button"):
+            emitter._wait_for_clean_button_baseline(timeout_s=0.005)  # noqa: SLF001
+
+    def test_analog_precontact_reconstructs_only_motion_after_pressure_rises(self) -> None:
+        suppressor = _MouseLmbSuppressor(log=lambda _line: None)
+        suppressor._raw_direct_mode = True  # noqa: SLF001
+        suppressor.note_precontact_pressure(
+            "left",
+            raw=320,
+            activation_raw=380,
+            button_down=False,
+            observed_at=99.950,
+        )
+        suppressor.note_precontact_pressure(
+            "left",
+            raw=360,
+            activation_raw=380,
+            button_down=False,
+            observed_at=99.980,
+        )
+        suppressor._idle_raw_history.extend(  # noqa: SLF001
+            [
+                (99.970, 0xA1, "VID_046D&PID_C54D", 50, 0),
+                (99.985, 0xA1, "VID_046D&PID_C54D", 4, 1),
+                (99.995, 0xA1, "VID_046D&PID_C54D", 6, 2),
+            ]
+        )
+
+        path = suppressor._precontact_path_for_down(  # noqa: SLF001
+            "left",
+            observed_at=100.0,
+            device_handle=0xA1,
+            device_identity="VID_046D&PID_C54D",
+            anchor_x=500,
+            anchor_y=300,
+        )
+
+        # The older 50-count cursor approach predates the analog press and is
+        # excluded. Only the motion while pressure was already rising is ink.
+        self.assertEqual([(x, y) for _at, x, y in path], [(490, 297), (494, 298), (500, 300)])
+
+    def test_recovered_opening_path_is_replayed_after_immediate_pen_down(self) -> None:
+        emitter, fake = self._mk_emitter(release_teardown=False)
+        emitter.config.onset_buffer = False
+        emitter.config.immediate_button_wake = True
+        emitter.config.min_contact_pressure = 123
+        emitter._event_driven_movement = True  # noqa: SLF001
+        now = time.perf_counter()
+        emitter._suppressor._hardware_positions.extend(  # noqa: SLF001
+            [(now, 100, 100), (now + 0.001, 104, 101), (now + 0.002, 108, 102)]
+        )
+        fake._lmb = True
+
+        first = emitter.update(
+            left_mapped=40,
+            right_mapped=0,
+            pressure_fresh=True,
+            left_raw=390,
+            right_raw=320,
+        )
+        self.assertEqual(first.state, "contact")
+        self.assertEqual((fake.calls[0]["x"], fake.calls[0]["y"]), (100, 100))
+        self.assertTrue(emitter.onset_catchup_pending)
+
+        emitter.update(
+            left_mapped=300,
+            right_mapped=0,
+            pressure_fresh=True,
+            left_raw=470,
+            right_raw=320,
+        )
+        self.assertEqual((fake.calls[-1]["x"], fake.calls[-1]["y"]), (108, 102))
+
+    def test_pen_down_waits_for_authoritative_new_stroke_anchor(self) -> None:
+        emitter, fake = self._mk_emitter(release_teardown=False)
+        emitter.config.onset_buffer = False
+        suppressor = emitter._suppressor  # noqa: SLF001
+        suppressor.enabled = True
+        suppressor._lmb_down = True  # noqa: SLF001
+        suppressor._raw_contact_active = True  # noqa: SLF001
+        suppressor._contact_anchor_ready = False  # noqa: SLF001
+
+        waiting = emitter.update(
+            left_mapped=200,
+            right_mapped=0,
+            pressure_fresh=True,
+            left_raw=440,
+            right_raw=320,
+        )
+        self.assertEqual(waiting.state, "idle")
+        self.assertEqual(fake.calls, [])
+
+        suppressor._raw_x = 480  # noqa: SLF001
+        suppressor._raw_y = 260  # noqa: SLF001
+        suppressor._logical_position_initialized = True  # noqa: SLF001
+        suppressor._contact_anchor_ready = True  # noqa: SLF001
+        anchored = emitter.update(
+            left_mapped=220,
+            right_mapped=0,
+            pressure_fresh=True,
+            left_raw=450,
+            right_raw=320,
+        )
+
+        self.assertEqual(anchored.state, "contact")
+        self.assertEqual((fake.calls[0]["x"], fake.calls[0]["y"]), (480, 260))
 
     def test_debug_mode_controls_trace_recorder_and_verbose_state_logs(self) -> None:
         with tempfile.TemporaryDirectory() as trace_dir:

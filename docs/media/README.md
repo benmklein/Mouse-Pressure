@@ -3,6 +3,7 @@
 Keep optimized public README media here. Each demonstration has a compact GIF
 for inline playback and a full-resolution H.264 MP4 linked from that preview:
 
+- `interface.png` — the main Mouse Pressure configuration interface;
 - `pressure-writing.*` — pressure-sensitive writing in Krita;
 - `pressure-coloring.*` — analog X-tilt moving a Krita brush through a color
   gradient; and

@@ -38,9 +38,3 @@ def pressure():
     """Run real-time pressure reader with min/max and payload byte stats."""
     from mouse_pressure.sniff.pressure_reader import main as pressure_main
     return pressure_main()
-
-
-def tablet():
-    """Run analog mouse pressure through the VMulti tablet backend."""
-    from mouse_pressure.bridge.tablet_emitter import run_tablet_bridge
-    return run_tablet_bridge()

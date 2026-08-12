@@ -2,7 +2,7 @@
 
 ## Supported release target
 
-- Windows 11 x64 on versions explicitly listed in the release notes
+- Windows 10 x64, currently tested on build 19045
 - A compatible Logitech analog-button mouse connected by supported wired USB
   or Lightspeed transport
 - Windows Ink applications; Krita and Microsoft Paint are tested examples
@@ -25,6 +25,18 @@ does not guarantee compatibility with future firmware, G HUB, Windows, Krita,
 or other application updates. Pressure calibration can vary between physical
 devices. Release notes must identify the combinations actually tested.
 
-Windows 10, Windows on ARM, additional mice, remote desktop sessions, virtual
-machines, and drawing applications not named in a release's test matrix should
-be described as unverified unless separately tested.
+## Alpha limitations
+
+- Windows 11 x64 is expected to work but has not yet been tested on physical
+  hardware. Windows on ARM is also unverified.
+- The installer is not Authenticode-signed and may show a Microsoft Defender
+  SmartScreen warning. Mouse Pressure does not install a kernel driver or ask
+  users to disable Windows security features.
+- The first stroke after starting output can occasionally register as a dot.
+  Stop and Start are not required; the following strokes normally work.
+- Pressure behavior can differ between Windows Ink applications and brush
+  presets.
+
+Additional mice, remote desktop sessions, virtual machines, and drawing
+applications not named in a release's test matrix should be described as
+unverified unless separately tested.

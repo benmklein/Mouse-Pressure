@@ -539,6 +539,8 @@ class _MouseLmbSuppressor:
         self._selected_raw_identity = ""
         self._raw_device_identities: dict[int, str] = {}
         self._raw_contact_active = False
+        self._contact_anchor_ready = False
+        self._first_contact_pending = True
         self._accepted_motion_count = 0
         self._raw_x = 0
         self._raw_y = 0
@@ -558,6 +560,15 @@ class _MouseLmbSuppressor:
         self._native_input_capture: Any | None = None
         self._native_input_capture_active = False
         self._button_down_wake_callback: Callable[[str], bool] | None = None
+        self._precontact_lock = threading.Lock()
+        self._precontact_baseline: dict[str, float | None] = {
+            "left": None,
+            "right": None,
+        }
+        self._precontact_started_at = {"left": 0.0, "right": 0.0}
+        self._idle_raw_history: deque[
+            tuple[float, int, str, int, int]
+        ] = deque(maxlen=1024)
         self._timing_callback: (
             Callable[[str, float, dict[str, int | float | str]], None] | None
         ) = None
@@ -696,7 +707,12 @@ class _MouseLmbSuppressor:
         self._input_ready.clear()
         self._thread = threading.Thread(target=self._run, name="lmb-suppressor", daemon=True)
         self._thread.start()
-        self._ready.wait(timeout=2.0)
+        if not self._ready.wait(timeout=2.0):
+            self.fail_open("mouse input hook startup timed out")
+            raise RuntimeError("The mouse input hook did not become ready")
+        if not self.hook:
+            self.fail_open("mouse input hook could not be installed")
+            raise RuntimeError("The mouse input hook could not be installed")
 
     def stop(self) -> None:
         self.enabled = False
@@ -758,6 +774,14 @@ class _MouseLmbSuppressor:
         if self._button_anchor_blocked("right"):
             return False
         return self._rmb_down if self.enabled else False
+
+    def contact_anchor_ready(self, button: str) -> bool:
+        """Return whether the current contact has a physical desktop anchor."""
+        if button == "right" and not self._right_button_owns_contact:
+            return True
+        if button != "right" and not self._left_button_owns_contact:
+            return True
+        return bool(self._contact_anchor_ready)
 
     def _button_anchor_blocked(self, button: str) -> bool:
         with self._button_anchor_wait_lock:
@@ -906,6 +930,7 @@ class _MouseLmbSuppressor:
             self._button_anchor_wait_dx = 0
             self._button_anchor_wait_dy = 0
         self._add_motion_diagnostics(contact_anchor_corrected=1)
+        self._contact_anchor_ready = True
         if pending_anchor:
             self._add_motion_diagnostics(
                 anchor_wait_completed=1,
@@ -988,6 +1013,88 @@ class _MouseLmbSuppressor:
     ) -> None:
         """Choose whether an accepted zero-motion button-down wakes output."""
         self._button_down_wake_callback = callback
+
+    def note_precontact_pressure(
+        self,
+        button: str,
+        *,
+        raw: int,
+        activation_raw: int,
+        button_down: bool,
+        observed_at: float,
+    ) -> None:
+        """Track the analog press that can precede the digital click edge.
+
+        The supported mouse may report rising analog pressure one pressure
+        frame before its ordinary LMB/RMB down packet.  That interval is the
+        only safe pre-click motion to recover: older motion is merely cursor
+        approach and must never become ink.
+        """
+        key = "right" if button == "right" else "left"
+        value = float(raw)
+        activation = float(max(1, int(activation_raw)))
+        with self._precontact_lock:
+            baseline = self._precontact_baseline[key]
+            if baseline is None:
+                baseline = value
+            threshold = baseline + max(8.0, (activation - baseline) * 0.60)
+            if button_down:
+                self._precontact_baseline[key] = baseline
+                return
+            if value >= threshold and value < activation + 80.0:
+                if self._precontact_started_at[key] <= 0.0:
+                    self._precontact_started_at[key] = float(observed_at)
+            elif value <= threshold - 4.0:
+                self._precontact_started_at[key] = 0.0
+                # Follow idle drift slowly without letting the start of a
+                # press pull the learned rest value upward.
+                baseline += (value - baseline) * 0.05
+            self._precontact_baseline[key] = baseline
+
+    def _precontact_path_for_down(
+        self,
+        button: str,
+        *,
+        observed_at: float,
+        device_handle: int,
+        device_identity: str,
+        anchor_x: int,
+        anchor_y: int,
+    ) -> list[tuple[float, int, int]]:
+        """Reconstruct bounded analog-contact motion ending at button-down."""
+        if not self._raw_direct_mode:
+            return []
+        key = "right" if button == "right" else "left"
+        with self._precontact_lock:
+            started_at = float(self._precontact_started_at[key])
+            self._precontact_started_at[key] = 0.0
+            history = list(self._idle_raw_history)
+        if started_at <= 0.0 or observed_at - started_at > 0.045:
+            return []
+        deltas = [
+            (at, dx, dy)
+            for at, handle, identity, dx, dy in history
+            if started_at <= at <= observed_at
+            and (
+                int(handle) == int(device_handle)
+                or bool(device_identity and identity == device_identity)
+            )
+        ]
+        if not deltas:
+            return []
+        total_dx = sum(dx for _at, dx, _dy in deltas)
+        total_dy = sum(dy for _at, _dx, dy in deltas)
+        if abs(total_dx) + abs(total_dy) < 2:
+            return []
+        x = int(anchor_x) - total_dx
+        y = int(anchor_y) - total_dy
+        path = [(float(started_at), x, y)]
+        for at, dx, dy in deltas:
+            x += dx
+            y += dy
+            if path[-1][1:] != (x, y):
+                path.append((float(at), x, y))
+        return path if len(path) >= 2 else []
 
     def _contact_button_down(self) -> bool:
         return bool(
@@ -1290,6 +1397,18 @@ class _MouseLmbSuppressor:
             if dx != 0 or dy != 0 or flags != 0:
                 self._add_motion_diagnostics(raw_absolute_ignored=1)
             return
+        if not self._raw_contact_active and (dx != 0 or dy != 0):
+            idle_identity = self._get_raw_device_identity(int(device_handle))
+            with self._precontact_lock:
+                self._idle_raw_history.append(
+                    (
+                        float(observed_at),
+                        int(device_handle),
+                        idle_identity,
+                        int(dx),
+                        int(dy),
+                    )
+                )
         # Auxiliary buttons (for example pressure-to-X-tilt) are held alongside
         # the contact owner. Track their state without letting them keep the
         # Raw Input contact session alive across separate strokes.
@@ -1367,6 +1486,16 @@ class _MouseLmbSuppressor:
             self._cursor_baseline_y = self._raw_y
             self._cursor_baseline_initialized = True
             self._button_anchor = None
+            precontact_path = self._precontact_path_for_down(
+                "right" if flags & RI_MOUSE_RIGHT_BUTTON_DOWN else "left",
+                observed_at=observed_at,
+                device_handle=int(device_handle),
+                device_identity=incoming_identity,
+                anchor_x=int(self._raw_x),
+                anchor_y=int(self._raw_y),
+            ) if immediate_wake and self._first_contact_pending else []
+            self._first_contact_pending = False
+            self._contact_anchor_ready = bool(anchor_ready or precontact_path)
             with self._button_anchor_wait_lock:
                 self._button_anchor_wait_timed_out = False
                 if immediate_wake and not anchor_ready:
@@ -1385,7 +1514,13 @@ class _MouseLmbSuppressor:
                     self._button_anchor_wait_dy = 0
             with self._position_lock:
                 self._hardware_positions.clear()
+                self._hardware_positions.extend(precontact_path)
             self._reset_motion_diagnostics()
+            if precontact_path:
+                self._add_motion_diagnostics(
+                    precontact_recovered=1,
+                    precontact_points=len(precontact_path),
+                )
             if self.debug_mode:
                 self.log(
                     f"RAW button device handle=0x{self._raw_device_handle:X} "
@@ -1517,6 +1652,7 @@ class _MouseLmbSuppressor:
             self._raw_contact_active = self._contact_button_down()
             if not self._raw_contact_active:
                 self._idle_raw_position_fresh = False
+                self._contact_anchor_ready = False
             self._add_motion_diagnostics(raw_up_received=1)
             callback = self._movement_callback
             if callback is not None:
@@ -1577,10 +1713,20 @@ class _MouseLmbSuppressor:
         msg: int,
         *,
         injected: bool,
+        bridge_feedback: bool = False,
         suppress_left: bool = True,
         suppress_right: bool = False,
     ) -> bool:
-        """Block configured native button messages; movement must pass through."""
+        """Block configured hardware buttons; movement must pass through.
+
+        Coordinate-based bridge-feedback detection is intentionally not
+        allowed to bypass button suppression. A real press can occur at the
+        current pen coordinate during the short feedback window; passing its
+        down event while suppressing the later up event leaves Windows stuck
+        in a held-button state. Only the hook's explicit injected flag is
+        authoritative enough to exempt a button message.
+        """
+        del bridge_feedback
         if injected:
             return False
         left_message = msg in (
@@ -1609,6 +1755,7 @@ class _MouseLmbSuppressor:
         self._hook_lmb_up_pending_at = 0.0
         self._hook_rmb_up_pending_at = 0.0
         self._raw_contact_active = False
+        self._contact_anchor_ready = False
         self._input_ready.set()
         if not self._fail_open_logged:
             self._fail_open_logged = True
@@ -1767,7 +1914,8 @@ class _MouseLmbSuppressor:
                         )
                     if self._should_block_message(
                         msg,
-                        injected=(injected or bridge_feedback),
+                        injected=injected,
+                        bridge_feedback=bridge_feedback,
                         suppress_left=self.suppress_left,
                         suppress_right=self.suppress_right,
                     ):
@@ -2020,8 +2168,42 @@ class SyntheticPenEmitter:
         """Open the synthetic pen without suppressing physical mouse buttons yet."""
         self.pen.open()
 
+    def _wait_for_clean_button_baseline(self, timeout_s: float = 1.0) -> None:
+        """Do not arm halfway through the click that started the application.
+
+        The pressure reader and native relay are prepared before suppression.
+        If Start was clicked with a managed mouse button, that button may still
+        be physically down even though the not-yet-installed hook never saw its
+        down transition. Waiting only until it is released gives the hook a
+        clean baseline, so the next down event is always a complete first
+        stroke. There is no delay when both buttons are already up.
+        """
+        deadline = time.perf_counter() + max(0.0, float(timeout_s))
+        while True:
+            left_down = (
+                self.config.left_output_target != "off"
+                and bool(self.pen.is_lmb_down())
+            )
+            right_down = (
+                self.config.right_output_target != "off"
+                and bool(self.pen.is_rmb_down())
+            )
+            if not left_down and not right_down:
+                return
+            if time.perf_counter() >= deadline:
+                held = "/".join(
+                    name
+                    for name, down in (("left", left_down), ("right", right_down))
+                    if down
+                )
+                raise RuntimeError(
+                    f"Release the {held} mouse button before starting pressure output"
+                )
+            time.sleep(0.002)
+
     def arm_input(self) -> None:
         """Begin button suppression after the pressure pipeline is ready."""
+        self._wait_for_clean_button_baseline()
         if self._suppressor is not None:
             self._suppressor.start()
 
@@ -2980,6 +3162,51 @@ class SyntheticPenEmitter:
         prev_state = self.state
         left_down = self._read_button("left")
         right_down = self._read_button("right")
+        if self._suppressor is not None:
+            if left_raw is not None and self.config.left_output_target == "pressure":
+                left_activation_raw = self.config.trace_raw_min
+                self._suppressor.note_precontact_pressure(
+                    "left",
+                    raw=int(left_raw),
+                    activation_raw=int(
+                        380 if left_activation_raw is None else left_activation_raw
+                    ),
+                    button_down=bool(left_down),
+                    observed_at=update_at,
+                )
+            if right_raw is not None and self.config.right_output_target == "pressure":
+                right_activation_raw = self.config.right_trace_raw_min
+                self._suppressor.note_precontact_pressure(
+                    "right",
+                    raw=int(right_raw),
+                    activation_raw=int(
+                        380
+                        if right_activation_raw is None
+                        and self.config.trace_raw_min is None
+                        else self.config.trace_raw_min
+                        if right_activation_raw is None
+                        else right_activation_raw
+                    ),
+                    button_down=bool(right_down),
+                    observed_at=update_at,
+                )
+            # Raw Input can report DOWN before the low-level hook supplies the
+            # new desktop coordinate. Never begin a stroke from the previous
+            # pen endpoint while that authoritative anchor is still pending.
+            anchor_ready = getattr(self._suppressor, "contact_anchor_ready", None)
+            if callable(anchor_ready) and getattr(self._suppressor, "enabled", False):
+                if (
+                    left_down
+                    and self.config.left_output_target == "pressure"
+                    and not anchor_ready("left")
+                ):
+                    left_down = False
+                if (
+                    right_down
+                    and self.config.right_output_target == "pressure"
+                    and not anchor_ready("right")
+                ):
+                    right_down = False
         auxiliary_mapped = (
             left_mapped
             if self.config.left_output_target == "x_tilt"
@@ -3245,6 +3472,7 @@ class SyntheticPenEmitter:
         inject_x = x
         inject_y = y
         injection_path: list[tuple[int, int]] | None = None
+        recovered_opening_path: list[tuple[int, int]] = []
         pressure_before_update = self.prev_contact_pressure
         next_state = self.state
         moved_from_contact = 0
@@ -3331,6 +3559,8 @@ class SyntheticPenEmitter:
                     inject_pressure = map_1023_to_1024(target_mapped)
                     injection_path = self._buffered_contact_path + movement_path
                     self._buffered_contact_path.clear()
+                    if injection_path:
+                        inject_x, inject_y = injection_path[-1]
                     if not injection_path and (x, y) != (self.contact_start_x, self.contact_start_y):
                         if path_stabilization <= 0:
                             injection_path = [(x, y)]
@@ -3401,8 +3631,17 @@ class SyntheticPenEmitter:
             if contact_requested():
                 begin_contact = False
                 if self.precontact_frames == 0:
-                    self.precontact_x = x
-                    self.precontact_y = y
+                    recovered_opening_path = (
+                        list(movement_path)
+                        if immediate_button_wake and len(movement_path) >= 2
+                        else []
+                    )
+                    if recovered_opening_path:
+                        self.precontact_x = recovered_opening_path[0][0]
+                        self.precontact_y = recovered_opening_path[0][1]
+                    else:
+                        self.precontact_x = x
+                        self.precontact_y = y
                     self.precontact_mapped = pressure_input_mapped
                     self._buffered_contact_path.clear()
                     if onset_buffer:
@@ -3419,7 +3658,10 @@ class SyntheticPenEmitter:
                     begin_contact = True
 
                 if begin_contact:
-                    self._buffer_movement_path(movement_path)
+                    opening_path = recovered_opening_path
+                    self._buffer_movement_path(
+                        opening_path[1:] if opening_path else movement_path
+                    )
                     self.contact_frame_no = 1
                     start_mapped = self.precontact_mapped
                     if self._event_driven_movement:
@@ -3454,7 +3696,7 @@ class SyntheticPenEmitter:
                     self.contact_start_y = self.precontact_y
                     self.contact_warmup_done = True
                     self.stroke_base_mapped = self.precontact_mapped
-                    self.onset_catchup_pending = onset_buffer
+                    self.onset_catchup_pending = bool(onset_buffer or opening_path)
                     self._contact_path_direction = None
                     self._stationary_anchor_started_at = update_at
                     self._stationary_dab_emitted = False
@@ -3481,7 +3723,7 @@ class SyntheticPenEmitter:
                     )
                     next_state = "contact"
                     self.precontact_frames = 0
-                    if not onset_buffer:
+                    if not onset_buffer and not opening_path:
                         self._buffered_contact_path.clear()
                 elif self.precontact_frames > 0:
                     self._buffer_movement_path(movement_path)

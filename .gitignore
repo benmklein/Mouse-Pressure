@@ -2,12 +2,6 @@ __pycache__/
 *.pyc
 *.egg-info/
 dist/
-!dist/
-dist/*
-!dist/krita/
-dist/krita/*
-!dist/krita/5.3.3/
-!dist/krita/5.3.3/**
 build/
 .venv/
 .pytest_cache/

@@ -1,6 +1,0 @@
-*
-!.gitignore
-!krita/
-krita/*
-!krita/5.3.3/
-!krita/5.3.3/**

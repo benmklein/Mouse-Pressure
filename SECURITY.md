@@ -3,8 +3,7 @@
 ## Supported releases
 
 Security fixes are provided for the newest published Mouse Pressure release.
-Development snapshots and unsigned driver packages are not supported for
-ordinary end-user installation.
+Development snapshots are not supported for ordinary end-user installation.
 
 ## Reporting a vulnerability
 
@@ -18,18 +17,13 @@ Include the application version, Windows version, output backend, reproduction
 steps, and whether Secure Boot and Memory Integrity are enabled. Redact HID
 instance paths, usernames, stroke traces, and unrelated application data.
 
-## Driver trust boundary
+## Application trust boundary
 
-The optional VMulti package is a kernel-mode virtual HID driver. Official
-installers must accept only a payload whose hashes match its manifest, whose
-catalog and driver have Microsoft production signatures, and whose project-owned
-provisioner has a valid Authenticode signature. Unsigned or test-signed drivers
-must not be included in a public installer.
-
-The application communicates with the driver through a deliberately limited
-vendor HID collection. The virtual device exposes pressure/tilt pen input; it
-does not expose the historical VMulti keyboard, joystick, multitouch, or virtual
-mouse interfaces.
+Mouse Pressure uses the Windows synthetic-pointer API and does not install a
+kernel driver. The application reads compatible HID interfaces and emits
+pressure or tilt through Windows Ink. It must not download or execute driver
+payloads, disable Windows security features, or expose its local developer
+interfaces beyond the loopback address.
 
 ## Recovery
 
