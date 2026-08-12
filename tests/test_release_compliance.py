@@ -22,6 +22,20 @@ def test_release_license_bundle_is_complete_and_verified() -> None:
     licenses.check()
 
 
+def test_release_manifest_hash_is_independent_of_checkout_line_endings(
+    tmp_path: Path,
+) -> None:
+    licenses = _load_script("vendor_release_licenses")
+    lf = tmp_path / "lf.sha256"
+    crlf = tmp_path / "crlf.sha256"
+    lf.write_bytes(b"abc  A.txt\ndef  B.txt\n")
+    crlf.write_bytes(b"abc  A.txt\r\ndef  B.txt\r\n")
+
+    assert licenses.digest(licenses.normalized(lf)) == licenses.digest(
+        licenses.normalized(crlf)
+    )
+
+
 def test_generated_sbom_lists_runtime_and_source_components(tmp_path: Path) -> None:
     metadata = _load_script("generate_release_metadata")
     sbom_path, revision_path = metadata.generate(tmp_path)

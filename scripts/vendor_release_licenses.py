@@ -135,7 +135,10 @@ def check() -> None:
             changed.append(label)
     if not QT_LICENSE_MANIFEST.is_file():
         missing.append(QT_LICENSE_MANIFEST.name)
-    elif digest(QT_LICENSE_MANIFEST.read_bytes()) != QT_LICENSE_MANIFEST_SHA256:
+    # Git may materialize this text manifest with LF or CRLF depending on the
+    # Windows checkout configuration. Its entries and the referenced upstream
+    # license bytes are authoritative; newline representation is not.
+    elif digest(normalized(QT_LICENSE_MANIFEST)) != QT_LICENSE_MANIFEST_SHA256:
         changed.append(QT_LICENSE_MANIFEST.name)
     else:
         qt_root = OUTPUT / "qtbase-6.11.1"
