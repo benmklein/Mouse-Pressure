@@ -1,0 +1,4 @@
+# These vendored Qt license files are verified byte-for-byte against the
+# checked-in SHA-256 manifest. Preserve their upstream bytes on every OS.
+packaging/legal/licenses/qtbase-6.11.1.sha256 -text
+packaging/legal/licenses/qtbase-6.11.1/** -text
