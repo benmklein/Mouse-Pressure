@@ -149,12 +149,12 @@ No feature enable/subscribe commands were sent for this pass.
 Confirmed pressure carrier in this capture: `index 0x0C` -> feature ID `0x1B0C`.
 Other unknown features remain candidates for additional HITS metadata.
 
-## G Hub Capture Analysis (pcapng + payload export)
+## G Hub Capture Analysis
 
-Capture files analyzed:
-- `docs/ghub_pressure_capture.pcapng`
-- `docs/ghub_payloads.csv` (summary export; no payload bytes in `usb.capdata`)
-- `docs/ghub_payloads_ext.csv` (payload-capable export with `usbhid.data`)
+The following findings were derived from privately retained packet captures.
+The raw pcapng and payload exports are intentionally excluded under the
+[diagnostic data policy](diagnostic-data.md); sanitized aggregate evidence is
+retained under `docs/investigation/results`.
 
 ### 1) SET_REPORT requests (host writes)
 
@@ -249,9 +249,8 @@ Detailed logs:
 
 ## Mode Comparison (from user captures)
 
-Parsed logs:
-- `docs/pressure_mode2_log.txt`
-- `docs/pressure_mode3_log.txt`
+The private mode logs were reduced to the sanitized aggregate data in
+`docs/investigation/results/input_evidence_summary.json`.
 
 Observed cadence:
 - Mode `0x02`: `1564` feature-`0x0C` packets over `8.675s` -> `~180.3 Hz` total
@@ -323,12 +322,9 @@ Current interpretation:
 - 2026-03-21 — Feature table enumerated (`35` entries); `0x0C -> 0x1B0C` (unknown), `0x0F -> 0x8110` (MouseButtonSpy).
 - 2026-03-21 — G Hub pcap decode identified pressure ramps in `11 01 0C 00 PP ...` with `PP=0..10`.
 
-Raw logs:
-- `docs/capture_log.txt` (60s passive capture, no dedup)
-- `docs/hidpp_probe_log.txt` (initial ROOT/FEATURE_SET write probes)
-- `docs/hidpp_feature_enum.txt` (full feature index enumeration)
-- `docs/hidpp_8110_probe.txt` (function sweep for feature index `0x0F`)
-- `docs/ghub_payloads_ext.csv` (tshark payload export with `usbhid.data`)
+Raw captures and full device logs are not published. See
+[`diagnostic-data.md`](diagnostic-data.md) for the retention and sanitization
+policy.
 
 Safety:
 - Use `scripts/hidpp_probe.py` for HID++ write probing.

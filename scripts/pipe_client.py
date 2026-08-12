@@ -1,4 +1,4 @@
-"""Simple named-pipe client for Superstrike bridge output."""
+"""Simple named-pipe client for Mouse Pressure output."""
 
 from __future__ import annotations
 
@@ -9,12 +9,12 @@ from multiprocessing.connection import Client
 
 def parse_args() -> argparse.Namespace:
     p = argparse.ArgumentParser(
-        description="Connect to the Superstrike named pipe and print pressure samples."
+        description="Connect to the Mouse Pressure named pipe and print pressure samples."
     )
     p.add_argument(
         "--pipe-name",
-        default=r"\\.\pipe\superstrike_pressure",
-        help=r"Named pipe path (default: \\.\pipe\superstrike_pressure).",
+        default=r"\\.\pipe\mouse_pressure",
+        help=r"Named pipe path (default: \\.\pipe\mouse_pressure).",
     )
     p.add_argument(
         "--duration",

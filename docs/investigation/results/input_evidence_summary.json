@@ -1,0 +1,354 @@
+{
+  "schema_version": 1,
+  "mode_logs": [
+    {
+      "file": "private mode 0x02 diagnostic (raw omitted)",
+      "frame_count": 1564,
+      "addresses": {
+        "0x10": {
+          "count": 522,
+          "interval_ms": {
+            "n": 521,
+            "min": 13.999999999999346,
+            "median": 16.99999999999946,
+            "p90": 17.999999999999794,
+            "p99": 19.000000000000128,
+            "max": 20.000000000000018
+          },
+          "mean_hz": 60.05763688760807
+        },
+        "0x20": {
+          "count": 521,
+          "interval_ms": {
+            "n": 520,
+            "min": 14.000000000000012,
+            "median": 16.99999999999946,
+            "p90": 17.999999999999794,
+            "p99": 18.000000000000682,
+            "max": 18.000000000000682
+          },
+          "mean_hz": 60.04618937644341
+        },
+        "0x30": {
+          "count": 521,
+          "interval_ms": {
+            "n": 520,
+            "min": 13.99999999999979,
+            "median": 16.99999999999946,
+            "p90": 17.999999999999794,
+            "p99": 18.000000000000682,
+            "max": 18.99999999999924
+          },
+          "mean_hz": 60.04618937644342
+        }
+      },
+      "decoded_10bit": {
+        "left_min": 313,
+        "left_max": 594,
+        "left_unique": 92,
+        "right_min": 311,
+        "right_max": 315,
+        "right_unique": 5,
+        "left_low_two_bit_codes": {
+          "0": 183,
+          "3": 198,
+          "2": 72,
+          "1": 69
+        },
+        "right_low_two_bit_codes": {
+          "1": 314,
+          "2": 170,
+          "0": 31,
+          "3": 7
+        }
+      }
+    },
+    {
+      "file": "private mode 0x03 diagnostic (raw omitted)",
+      "frame_count": 754,
+      "addresses": {
+        "0x10": {
+          "count": 251,
+          "interval_ms": {
+            "n": 250,
+            "min": 13.99999999999979,
+            "median": 16.999999999999904,
+            "p90": 18.000000000000014,
+            "p99": 19.000000000000128,
+            "max": 19.000000000000128
+          },
+          "mean_hz": 60.081711127132905
+        },
+        "0x20": {
+          "count": 251,
+          "interval_ms": {
+            "n": 250,
+            "min": 13.99999999999979,
+            "median": 16.999999999999904,
+            "p90": 18.000000000000014,
+            "p99": 18.999999999999684,
+            "max": 19.000000000000128
+          },
+          "mean_hz": 60.05284650492433
+        },
+        "0x30": {
+          "count": 251,
+          "interval_ms": {
+            "n": 250,
+            "min": 13.000000000000123,
+            "median": 16.999999999999904,
+            "p90": 17.999999999999904,
+            "p99": 18.999999999999684,
+            "max": 19.000000000000128
+          },
+          "mean_hz": 60.08171112713289
+        },
+        "0x3F": {
+          "count": 1,
+          "interval_ms": {
+            "n": 0,
+            "min": null,
+            "median": null,
+            "p90": null,
+            "p99": null,
+            "max": null
+          },
+          "mean_hz": null
+        }
+      },
+      "decoded_10bit": {
+        "left_min": 315,
+        "left_max": 616,
+        "left_unique": 98,
+        "right_min": 312,
+        "right_max": 315,
+        "right_unique": 4,
+        "left_low_two_bit_codes": {
+          "1": 57,
+          "0": 75,
+          "3": 59,
+          "2": 60
+        },
+        "right_low_two_bit_codes": {
+          "1": 125,
+          "3": 12,
+          "2": 97,
+          "0": 17
+        }
+      }
+    }
+  ],
+  "ghub_capture": {
+    "file": "private G Hub diagnostic (raw omitted)",
+    "mouse_down_count": 15,
+    "mouse_button_spy_down_count": 14,
+    "legacy_pressure_frame_count": 150,
+    "metrics": {
+      "preceding_pressure_age_ms": {
+        "n": 15,
+        "min": 61.12199999999923,
+        "median": 321.1630000000003,
+        "p90": 756.1320000000001,
+        "p99": 1134.242,
+        "max": 1134.242
+      },
+      "next_pressure_delta_ms": {
+        "n": 15,
+        "min": 0.8349999999985869,
+        "median": 5.880000000001218,
+        "p90": 13.873000000000246,
+        "p99": 14.8539999999997,
+        "max": 14.8539999999997
+      },
+      "first_nonzero_delta_ms": {
+        "n": 15,
+        "min": 0.8349999999985869,
+        "median": 5.880000000001218,
+        "p90": 13.873000000000246,
+        "p99": 14.8539999999997,
+        "max": 14.8539999999997
+      },
+      "spy_minus_mouse_ms": {
+        "n": 14,
+        "min": -0.10599999999993948,
+        "median": 0.09049999999977132,
+        "p90": 0.1260000000016248,
+        "p99": 0.128000000000128,
+        "max": 0.128000000000128
+      }
+    },
+    "presses": [
+      {
+        "mouse_down_s": 1.237403,
+        "preceding_pressure": 0,
+        "preceding_pressure_age_ms": 1134.242,
+        "next_pressure_delta_ms": 4.759999999999875,
+        "next_pressure": 1,
+        "first_nonzero_delta_ms": 4.759999999999875
+      },
+      {
+        "mouse_down_s": 1.990418,
+        "spy_delta_ms": -0.10599999999993948,
+        "preceding_pressure": 0,
+        "preceding_pressure_age_ms": 664.261,
+        "next_pressure_delta_ms": 4.7360000000000735,
+        "next_pressure": 1,
+        "first_nonzero_delta_ms": 4.7360000000000735
+      },
+      {
+        "mouse_down_s": 4.880293,
+        "spy_delta_ms": 0.1020000000000465,
+        "preceding_pressure": 0,
+        "preceding_pressure_age_ms": 756.1320000000001,
+        "next_pressure_delta_ms": 13.849999999999696,
+        "next_pressure": 1,
+        "first_nonzero_delta_ms": 13.849999999999696
+      },
+      {
+        "mouse_down_s": 5.686286,
+        "spy_delta_ms": 0.128000000000128,
+        "preceding_pressure": 6,
+        "preceding_pressure_age_ms": 122.14100000000005,
+        "next_pressure_delta_ms": 11.851000000000056,
+        "next_pressure": 7,
+        "first_nonzero_delta_ms": 11.851000000000056
+      },
+      {
+        "mouse_down_s": 6.5223,
+        "spy_delta_ms": 0.08399999999930685,
+        "preceding_pressure": 8,
+        "preceding_pressure_age_ms": 321.1630000000003,
+        "next_pressure_delta_ms": 1.8359999999999488,
+        "next_pressure": 9,
+        "first_nonzero_delta_ms": 1.8359999999999488
+      },
+      {
+        "mouse_down_s": 7.27428,
+        "spy_delta_ms": 0.12499999999970868,
+        "preceding_pressure": 7,
+        "preceding_pressure_age_ms": 69.11800000000045,
+        "next_pressure_delta_ms": 14.8539999999997,
+        "next_pressure": 8,
+        "first_nonzero_delta_ms": 14.8539999999997
+      },
+      {
+        "mouse_down_s": 9.89731,
+        "spy_delta_ms": 0.09400000000070463,
+        "preceding_pressure": 0,
+        "preceding_pressure_age_ms": 450.1579999999983,
+        "next_pressure_delta_ms": 1.8320000000002779,
+        "next_pressure": 1,
+        "first_nonzero_delta_ms": 1.8320000000002779
+      },
+      {
+        "mouse_down_s": 11.600238,
+        "spy_delta_ms": 0.1260000000016248,
+        "preceding_pressure": 4,
+        "preceding_pressure_age_ms": 61.12199999999923,
+        "next_pressure_delta_ms": 5.880000000001218,
+        "next_pressure": 5,
+        "first_nonzero_delta_ms": 5.880000000001218
+      },
+      {
+        "mouse_down_s": 11.901267,
+        "spy_delta_ms": 0.09499999999995623,
+        "preceding_pressure": 4,
+        "preceding_pressure_age_ms": 128.15200000000004,
+        "next_pressure_delta_ms": 5.848999999999549,
+        "next_pressure": 5,
+        "first_nonzero_delta_ms": 5.848999999999549
+      },
+      {
+        "mouse_down_s": 14.251269,
+        "spy_delta_ms": 0.086999999998838,
+        "preceding_pressure": 2,
+        "preceding_pressure_age_ms": 402.159000000001,
+        "next_pressure_delta_ms": 0.8349999999985869,
+        "next_pressure": 3,
+        "first_nonzero_delta_ms": 0.8349999999985869
+      },
+      {
+        "mouse_down_s": 17.106247,
+        "spy_delta_ms": 0.036999999998954536,
+        "preceding_pressure": 1,
+        "preceding_pressure_age_ms": 242.09300000000056,
+        "next_pressure_delta_ms": 9.848000000001633,
+        "next_pressure": 2,
+        "first_nonzero_delta_ms": 9.848000000001633
+      },
+      {
+        "mouse_down_s": 19.580213,
+        "spy_delta_ms": 0.030999999999892225,
+        "preceding_pressure": 1,
+        "preceding_pressure_age_ms": 203.01600000000164,
+        "next_pressure_delta_ms": 13.873000000000246,
+        "next_pressure": 3,
+        "first_nonzero_delta_ms": 13.873000000000246
+      },
+      {
+        "mouse_down_s": 21.781233,
+        "spy_delta_ms": 0.09599999999920783,
+        "preceding_pressure": 2,
+        "preceding_pressure_age_ms": 263.145999999999,
+        "next_pressure_delta_ms": 4.846999999998047,
+        "next_pressure": 3,
+        "first_nonzero_delta_ms": 4.846999999998047
+      },
+      {
+        "mouse_down_s": 24.823312,
+        "spy_delta_ms": -0.09600000000276054,
+        "preceding_pressure": 0,
+        "preceding_pressure_age_ms": 662.2270000000015,
+        "next_pressure_delta_ms": 7.759999999997547,
+        "next_pressure": 1,
+        "first_nonzero_delta_ms": 7.759999999997547
+      },
+      {
+        "mouse_down_s": 25.390315,
+        "spy_delta_ms": -0.08800000000164232,
+        "preceding_pressure": 0,
+        "preceding_pressure_age_ms": 491.08000000000015,
+        "next_pressure_delta_ms": 11.751000000000289,
+        "next_pressure": 4,
+        "first_nonzero_delta_ms": 11.751000000000289
+      }
+    ]
+  },
+  "stroke_traces": {
+    "directory": "work\\stroke_traces",
+    "total_files": 5137,
+    "files_examined": 500,
+    "usable_strokes": 500,
+    "configuration_counts": {
+      "{\"button\": \"left\", \"min_contact_pressure\": 256, \"onset_buffer\": false, \"true_low_latency\": false}": 475,
+      "{\"button\": \"left\", \"min_contact_pressure\": 256, \"onset_buffer\": true, \"true_low_latency\": false}": 25
+    },
+    "metrics": {
+      "button_proxy_to_virtual_down_ms": {
+        "n": 500,
+        "min": 0.059099999999999986,
+        "median": 18.731650000000002,
+        "p90": 31.735300000000002,
+        "p99": 48.9915,
+        "max": 90.14240000000001
+      },
+      "button_proxy_to_next_fresh_ms": {
+        "n": 500,
+        "min": 0.12739999999999999,
+        "median": 12.998999999999999,
+        "p90": 18.6374,
+        "p99": 31.957,
+        "max": 34.3461
+      },
+      "button_proxy_to_pressure_rise_32_ms": {
+        "n": 499,
+        "min": 4.5149,
+        "median": 20.6436,
+        "p90": 33.0857,
+        "p99": 54.2953,
+        "max": 98.9591
+      }
+    },
+    "warning": "Stroke begin is an emitter-observed button proxy, not the original hook edge."
+  }
+}
