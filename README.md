@@ -16,7 +16,7 @@
   </p>
 </div>
 
-Mouse Pressure lets compatible analog button mice behave like
+Mouse Pressure lets analog button mice (Logitech Superstrike) behave like
 a pressure sensitive tablet. It uses native Windows Ink and does not
 install a kernel driver.
 
@@ -33,7 +33,7 @@ install a kernel driver.
 
 [![Controlling a retractable chain game with analog mouse buttons](docs/media/pressure-game.gif)](docs/media/pressure-game.mp4)
 
-The driver includes a test sandbox demonstrating analog input outside a drawing application. The pressure signal controls a length of a chain, allowing for a simple momentum based game. The sandbox is located in the mouse tab in the driver menu.
+The driver includes a test sandbox demonstrating analog input outside a drawing application. The pressure signal controls a length of a chain, in a simple test game. The sandbox is located in the mouse tab in the driver menu.
 
 ## Features
 
