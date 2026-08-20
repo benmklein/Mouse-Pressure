@@ -16,18 +16,20 @@
   </p>
 </div>
 
+| Pressure sensitive writing                                                                                         | Color control during a stroke                                                                                       |
+|:------------------------------------------------------------------------------------------------------------------:|:-------------------------------------------------------------------------------------------------------------------:|
+| [![Writing in Krita with mouse-button pressure](docs/media/pressure-writing.gif)](docs/media/pressure-writing.mp4) | [![Changing color in Krita with analog X-tilt](docs/media/pressure-coloring.gif)](docs/media/pressure-coloring.mp4) |
+| Button force controls pressure for drawing applications.                                                           | Left and right buttons can be used simultaneously. Here, right button controls hue.                                 |
+
 Mice like the Logitech Superstrike have sensors that allow for reading mouse pressure, but their drivers don't allow you to use it for anything other than actuation point adjustments. Mouse Pressure lets these mice behave like a pressure sensitive tablet. 
 
 <p align="center">
   <img src="docs/media/interface.png" width="960" alt="Mouse Pressure configuration interface">
 </p>
 
-| Pressure sensitive writing                                                                                         | Color control during a stroke                                                                                       |
-|:------------------------------------------------------------------------------------------------------------------:|:-------------------------------------------------------------------------------------------------------------------:|
-| [![Writing in Krita with mouse-button pressure](docs/media/pressure-writing.gif)](docs/media/pressure-writing.mp4) | [![Changing color in Krita with analog X-tilt](docs/media/pressure-coloring.gif)](docs/media/pressure-coloring.mp4) |
-| Button force controls pressure for drawing applications.                                                           | Left and right buttons can be used simultaneously. Here, right button controls hue.                                 |
 
-### Games and other applications
+
+## Games and other applications
 
 [![Controlling a retractable chain game with analog mouse buttons](docs/media/pressure-game.gif)](docs/media/pressure-game.mp4)
 
