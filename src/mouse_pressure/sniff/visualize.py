@@ -2,10 +2,10 @@
 
 from __future__ import annotations
 
+import time
 from collections import deque
 from queue import Empty, SimpleQueue
 from threading import Event, Thread
-import time
 
 from mouse_pressure.bridge.curves import PressureConfig, map_normalized_pressure
 from mouse_pressure.sniff.hidpp_pressure import (
@@ -18,8 +18,8 @@ from mouse_pressure.sniff.hidpp_pressure import (
 
 def run_visualize() -> None:
     try:
-        from matplotlib.animation import FuncAnimation
         import matplotlib.pyplot as plt
+        from matplotlib.animation import FuncAnimation
     except ImportError:
         print("matplotlib is not installed.")
         print("Install optional dev dependencies: uv sync --extra dev")

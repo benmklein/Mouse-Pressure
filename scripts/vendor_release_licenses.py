@@ -10,10 +10,9 @@ from __future__ import annotations
 
 import argparse
 import hashlib
+import sys
 from importlib.metadata import PackageNotFoundError, distribution
 from pathlib import Path
-import sys
-
 
 ROOT = Path(__file__).resolve().parents[1]
 OUTPUT = ROOT / "packaging" / "legal" / "licenses"

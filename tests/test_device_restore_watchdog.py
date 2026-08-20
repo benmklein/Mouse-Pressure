@@ -4,11 +4,15 @@ import json
 import sys
 from pathlib import Path
 
-import mouse_pressure.web.device_restore_watchdog as watchdog_module
-from mouse_pressure.web.device_restore_watchdog import (
+import mouse_pressure.runtime.device_restore_watchdog as watchdog_module
+from mouse_pressure.runtime.device_restore_watchdog import (
     arm_restore_watchdog,
-    restore_device_settings,
     run_watchdog,
+)
+from mouse_pressure.runtime.device_settings import (
+    DeviceSettingsSnapshot,
+    SessionDeviceSettings,
+    restore_device_settings,
 )
 
 
@@ -56,14 +60,12 @@ class _FakeSession:
         self.profile = (enabled, active_sector or 0)
 
 
-def _original_settings() -> dict[str, int]:
-    return {
-        "dpi": 800,
-        "haptic_left": 3,
-        "haptic_right": 4,
-        "onboard_profiles_enabled": 1,
-        "onboard_profile_sector": 2,
-    }
+def _original_settings() -> DeviceSettingsSnapshot:
+    return DeviceSettingsSnapshot(
+        session=SessionDeviceSettings(dpi=800, haptic_left=3, haptic_right=4),
+        onboard_profiles_enabled=True,
+        onboard_profile_sector=2,
+    )
 
 
 def test_restore_device_settings_restores_dpi_haptics_and_profile() -> None:
@@ -71,7 +73,7 @@ def test_restore_device_settings_restores_dpi_haptics_and_profile() -> None:
 
     restored = restore_device_settings(session, _original_settings())
 
-    assert restored == {"dpi": 800, "haptic_left": 3, "haptic_right": 4}
+    assert restored == SessionDeviceSettings(dpi=800, haptic_left=3, haptic_right=4)
     assert session.dpi == 800
     assert session.haptics == (3, 4)
     assert session.profile_writes == [(False, None), (True, 2)]
@@ -84,7 +86,7 @@ def test_watchdog_restores_after_parent_is_already_gone(tmp_path: Path) -> None:
             {
                 "version": 1,
                 "parent_pid": 0x7FFFFFFF,
-                "settings": _original_settings(),
+                "settings": _original_settings().to_dict(),
             }
         ),
         encoding="utf-8",

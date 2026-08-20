@@ -11,7 +11,6 @@ import time
 from ctypes import wintypes
 from pathlib import Path
 
-
 OUTPUT_PATH = Path("docs/synthetic_pen_test.txt")
 
 # Pointer types

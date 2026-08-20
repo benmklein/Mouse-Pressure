@@ -8,141 +8,23 @@ synthetic backend while moving frame pacing off the Python event loop.
 
 from __future__ import annotations
 
-import ctypes
-import os
-import sys
 import threading
 import time
 from pathlib import Path
 from typing import Any, Callable
 
+from mouse_pressure.bridge.native_relay_binding import (
+    NativeInputCaptureHandle,
+    NativeRelayInput,
+    NativeSyntheticRelayHandle,
+    load_native_relay,
+)
+from mouse_pressure.bridge.native_relay_binding import (
+    find_native_relay as find_native_relay,
+)
 from mouse_pressure.bridge.synthetic_pen import _SyntheticPenInjector
 
-
-NATIVE_RELAY_FILENAME = "mouse_pressure_synthetic_relay.dll"
-NATIVE_RELAY_API_VERSION = 3
 NATIVE_FRAME_INTERVAL_US = 120
-
-
-class NativeRelayStats(ctypes.Structure):
-    _fields_ = [
-        ("struct_size", ctypes.c_uint32),
-        ("api_version", ctypes.c_uint32),
-        ("submitted", ctypes.c_uint64),
-        ("injected", ctypes.c_uint64),
-        ("failed", ctypes.c_uint64),
-        ("queue_full", ctypes.c_uint64),
-        ("max_queue_depth", ctypes.c_uint32),
-        ("last_error", ctypes.c_uint32),
-        ("total_queue_delay_us", ctypes.c_uint64),
-        ("total_inject_call_us", ctypes.c_uint64),
-        ("last_queue_delay_us", ctypes.c_uint32),
-        ("last_inject_call_us", ctypes.c_uint32),
-        ("max_queue_delay_us", ctypes.c_uint32),
-        ("max_inject_call_us", ctypes.c_uint32),
-        ("completion_dropped", ctypes.c_uint64),
-        ("qpc_frequency", ctypes.c_uint64),
-    ]
-
-
-class NativeRelayInput(ctypes.Structure):
-    _fields_ = [
-        ("flags", ctypes.c_uint32),
-        ("x", ctypes.c_int32),
-        ("y", ctypes.c_int32),
-        ("pressure", ctypes.c_uint32),
-        ("tilt_x", ctypes.c_int32),
-        ("tilt_enabled", ctypes.c_uint32),
-        ("token", ctypes.c_uint64),
-    ]
-
-
-class NativeRelayCompletion(ctypes.Structure):
-    _fields_ = [
-        ("token", ctypes.c_uint64),
-        ("submitted_qpc", ctypes.c_uint64),
-        ("inject_begin_qpc", ctypes.c_uint64),
-        ("completed_qpc", ctypes.c_uint64),
-        ("qpc_frequency", ctypes.c_uint64),
-        ("flags", ctypes.c_uint32),
-        ("x", ctypes.c_int32),
-        ("y", ctypes.c_int32),
-        ("pressure", ctypes.c_uint32),
-        ("success", ctypes.c_uint32),
-        ("error", ctypes.c_uint32),
-        ("queue_delay_us", ctypes.c_uint32),
-        ("inject_call_us", ctypes.c_uint32),
-    ]
-
-
-class NativeInputMove(ctypes.Structure):
-    _fields_ = [
-        ("x", ctypes.c_int32),
-        ("y", ctypes.c_int32),
-        ("flags", ctypes.c_uint32),
-        ("message_time_ms", ctypes.c_uint32),
-        ("observed_qpc", ctypes.c_uint64),
-        ("qpc_frequency", ctypes.c_uint64),
-    ]
-
-
-class NativeInputStats(ctypes.Structure):
-    _fields_ = [
-        ("struct_size", ctypes.c_uint32),
-        ("api_version", ctypes.c_uint32),
-        ("captured", ctypes.c_uint64),
-        ("drained", ctypes.c_uint64),
-        ("dropped", ctypes.c_uint64),
-        ("max_queue_depth", ctypes.c_uint32),
-        ("last_error", ctypes.c_uint32),
-        ("qpc_frequency", ctypes.c_uint64),
-    ]
-
-
-def native_relay_path_candidates() -> list[Path]:
-    """Return supported relay locations in priority order."""
-    candidates: list[Path] = []
-    override = os.environ.get("MOUSE_PRESSURE_NATIVE_RELAY")
-    if override:
-        candidates.append(Path(override).expanduser())
-
-    package_root = Path(__file__).resolve().parents[1]
-    candidates.append(package_root / "native" / NATIVE_RELAY_FILENAME)
-    candidates.append(
-        Path(__file__).resolve().parents[3]
-        / "build"
-        / "native"
-        / NATIVE_RELAY_FILENAME
-    )
-
-    frozen_root = getattr(sys, "_MEIPASS", None)
-    if frozen_root:
-        candidates.append(
-            Path(frozen_root)
-            / "mouse_pressure"
-            / "native"
-            / NATIVE_RELAY_FILENAME
-        )
-
-    unique: list[Path] = []
-    seen: set[str] = set()
-    for candidate in candidates:
-        key = os.path.normcase(str(candidate.resolve(strict=False)))
-        if key not in seen:
-            seen.add(key)
-            unique.append(candidate)
-    return unique
-
-
-def find_native_relay() -> Path | None:
-    return next(
-        (path for path in native_relay_path_candidates() if path.is_file()),
-        None,
-    )
-
-
-def native_relay_available() -> bool:
-    return find_native_relay() is not None
 
 
 class NativeTransformedMouseCapture:
@@ -162,65 +44,19 @@ class NativeTransformedMouseCapture:
     ) -> None:
         self.log = log
         self._library_path = Path(library_path) if library_path is not None else None
-        self._dll: ctypes.WinDLL | None = None
-        self._capture = ctypes.c_void_p()
-
-    def _load_library(self) -> tuple[ctypes.WinDLL, Path]:
-        path = self._library_path or find_native_relay()
-        if path is None:
-            raise RuntimeError("The native transformed-input collector is not built.")
-        dll = ctypes.WinDLL(str(path), use_last_error=True)
-        dll.mp_synth_api_version.argtypes = []
-        dll.mp_synth_api_version.restype = ctypes.c_uint32
-        dll.mp_input_create.argtypes = [ctypes.POINTER(ctypes.c_uint32)]
-        dll.mp_input_create.restype = ctypes.c_void_p
-        dll.mp_input_drain_moves.argtypes = [
-            ctypes.c_void_p,
-            ctypes.POINTER(NativeInputMove),
-            ctypes.c_uint32,
-        ]
-        dll.mp_input_drain_moves.restype = ctypes.c_uint32
-        dll.mp_input_get_stats.argtypes = [
-            ctypes.c_void_p,
-            ctypes.POINTER(NativeInputStats),
-            ctypes.c_uint32,
-        ]
-        dll.mp_input_get_stats.restype = ctypes.c_int
-        dll.mp_input_destroy.argtypes = [ctypes.c_void_p]
-        dll.mp_input_destroy.restype = None
-        return dll, path
+        self._capture: NativeInputCaptureHandle | None = None
 
     def open(self) -> None:
         if self._capture:
             return
-        dll, path = self._load_library()
-        api_version = int(dll.mp_synth_api_version())
-        if api_version != NATIVE_RELAY_API_VERSION:
-            raise RuntimeError(
-                f"Native transformed-input API {api_version} is incompatible with "
-                f"expected API {NATIVE_RELAY_API_VERSION}."
-            )
-        error = ctypes.c_uint32()
-        capture = dll.mp_input_create(ctypes.byref(error))
-        if not capture:
-            raise RuntimeError(
-                f"Native transformed-input startup failed, err={error.value}"
-            )
-        self._dll = dll
-        self._capture = ctypes.c_void_p(capture)
-        self.log(f"Native transformed-input capture active path={path}")
+        library = load_native_relay(self._library_path)
+        self._capture = library.create_input_capture()
+        self.log(f"Native transformed-input capture active path={library.path}")
 
     def drain_moves(self, capacity: int = 4096) -> list[dict[str, int | bool | float]]:
-        if self._dll is None or not self._capture or capacity <= 0:
+        if self._capture is None or capacity <= 0:
             return []
-        batch = (NativeInputMove * capacity)()
-        count = int(
-            self._dll.mp_input_drain_moves(
-                self._capture,
-                batch,
-                max(1, int(capacity)),
-            )
-        )
+        batch = self._capture.drain_moves(capacity)
         return [
             {
                 "x": int(item.x),
@@ -234,22 +70,14 @@ class NativeTransformedMouseCapture:
                     else time.perf_counter()
                 ),
             }
-            for item in batch[:count]
+            for item in batch
         ]
 
     def stats(self) -> dict[str, int]:
-        if self._dll is None or not self._capture:
+        if self._capture is None:
             return {}
-        stats = NativeInputStats()
-        stats.struct_size = ctypes.sizeof(stats)
-        ok = bool(
-            self._dll.mp_input_get_stats(
-                self._capture,
-                ctypes.byref(stats),
-                ctypes.sizeof(stats),
-            )
-        )
-        if not ok:
+        stats = self._capture.stats()
+        if stats is None:
             return {}
         return {
             "captured": int(stats.captured),
@@ -260,14 +88,12 @@ class NativeTransformedMouseCapture:
         }
 
     def close(self) -> None:
-        dll = self._dll
         capture = self._capture
-        if dll is None or not capture:
+        if capture is None:
             return
         stats = self.stats()
-        dll.mp_input_destroy(capture)
-        self._capture = ctypes.c_void_p()
-        self._dll = None
+        capture.close()
+        self._capture = None
         if stats:
             self.log(
                 "Native transformed-input stats "
@@ -290,105 +116,28 @@ class NativeSyntheticPenInjector:
         self.log = log
         self._desktop = _SyntheticPenInjector(log=log)
         self._library_path = Path(library_path) if library_path is not None else None
-        self._dll: ctypes.WinDLL | None = None
-        self._relay = ctypes.c_void_p()
+        self._relay: NativeSyntheticRelayHandle | None = None
         self._next_token = 1
         self.last_submission_token: int | None = None
         self._delivery_lock = threading.Lock()
         self._pending_deliveries: dict[int, dict[str, int | bool]] = {}
 
-    def _load_library(self) -> tuple[ctypes.WinDLL, Path]:
-        path = self._library_path or find_native_relay()
-        if path is None:
-            checked = "\n  ".join(str(item) for item in native_relay_path_candidates())
-            raise RuntimeError(
-                "The native synthetic relay is not built. Checked:\n  " + checked
-            )
-        dll = ctypes.WinDLL(str(path), use_last_error=True)
-        dll.mp_synth_api_version.argtypes = []
-        dll.mp_synth_api_version.restype = ctypes.c_uint32
-        dll.mp_synth_create.argtypes = [
-            ctypes.c_uint32,
-            ctypes.POINTER(ctypes.c_uint32),
-        ]
-        dll.mp_synth_create.restype = ctypes.c_void_p
-        dll.mp_synth_submit.argtypes = [
-            ctypes.c_void_p,
-            ctypes.c_uint32,
-            ctypes.c_int32,
-            ctypes.c_int32,
-            ctypes.c_uint32,
-            ctypes.c_int32,
-            ctypes.c_uint32,
-            ctypes.c_uint64,
-        ]
-        dll.mp_synth_submit.restype = ctypes.c_int
-        dll.mp_synth_submit_batch.argtypes = [
-            ctypes.c_void_p,
-            ctypes.POINTER(NativeRelayInput),
-            ctypes.c_uint32,
-        ]
-        dll.mp_synth_submit_batch.restype = ctypes.c_int
-        dll.mp_synth_drain_completions.argtypes = [
-            ctypes.c_void_p,
-            ctypes.POINTER(NativeRelayCompletion),
-            ctypes.c_uint32,
-        ]
-        dll.mp_synth_drain_completions.restype = ctypes.c_uint32
-        dll.mp_synth_wait_idle.argtypes = [ctypes.c_void_p, ctypes.c_uint32]
-        dll.mp_synth_wait_idle.restype = ctypes.c_int
-        dll.mp_synth_get_stats.argtypes = [
-            ctypes.c_void_p,
-            ctypes.POINTER(NativeRelayStats),
-            ctypes.c_uint32,
-        ]
-        dll.mp_synth_get_stats.restype = ctypes.c_int
-        dll.mp_synth_destroy.argtypes = [ctypes.c_void_p]
-        dll.mp_synth_destroy.restype = None
-        return dll, path
-
     def open(self) -> None:
-        dll, path = self._load_library()
-        api_version = int(dll.mp_synth_api_version())
-        if api_version != NATIVE_RELAY_API_VERSION:
-            raise RuntimeError(
-                f"Native synthetic relay API {api_version} is incompatible with "
-                f"expected API {NATIVE_RELAY_API_VERSION}."
-            )
-        error = ctypes.c_uint32()
-        relay = dll.mp_synth_create(NATIVE_FRAME_INTERVAL_US, ctypes.byref(error))
-        if not relay:
-            raise RuntimeError(
-                f"Native synthetic relay startup failed, err={error.value}"
-            )
-        self._dll = dll
-        self._relay = ctypes.c_void_p(relay)
+        if self._relay is not None:
+            return
+        library = load_native_relay(self._library_path)
+        self._relay = library.create_synthetic_relay(NATIVE_FRAME_INTERVAL_US)
         self.log(
-            f"SYNTH native relay open api={api_version} "
-            f"frame_interval={NATIVE_FRAME_INTERVAL_US}us path={path}"
+            f"SYNTH native relay open api={library.api_version} "
+            f"frame_interval={NATIVE_FRAME_INTERVAL_US}us path={library.path}"
         )
-
-    def _stats(self) -> NativeRelayStats | None:
-        if self._dll is None or not self._relay:
-            return None
-        stats = NativeRelayStats()
-        stats.struct_size = ctypes.sizeof(stats)
-        ok = bool(
-            self._dll.mp_synth_get_stats(
-                self._relay,
-                ctypes.byref(stats),
-                ctypes.sizeof(stats),
-            )
-        )
-        return stats if ok else None
 
     def close(self) -> None:
-        dll = self._dll
         relay = self._relay
-        if dll is None or not relay:
+        if relay is None:
             return
-        drained = bool(dll.mp_synth_wait_idle(relay, 3000))
-        stats = self._stats()
+        drained = relay.wait_idle(3000)
+        stats = relay.stats()
         if stats is not None:
             injected = max(1, int(stats.injected + stats.failed))
             self.log(
@@ -402,9 +151,8 @@ class NativeSyntheticPenInjector:
                 f"inject_max={stats.max_inject_call_us}us drained={int(drained)}"
                 f" completion_dropped={stats.completion_dropped}"
             )
-        dll.mp_synth_destroy(relay)
-        self._relay = ctypes.c_void_p()
-        self._dll = None
+        relay.close()
+        self._relay = None
 
     def inject(
         self,
@@ -416,25 +164,20 @@ class NativeSyntheticPenInjector:
         tag: str,
         tilt_x: int | None = None,
     ) -> tuple[bool, int]:
-        if self._dll is None or not self._relay:
+        if self._relay is None:
             return False, 6  # ERROR_INVALID_HANDLE
         token = self._next_token
         self._next_token += 1
         self.last_submission_token = token
-        ctypes.set_last_error(0)
-        ok = bool(
-            self._dll.mp_synth_submit(
-                self._relay,
-                int(flags),
-                int(x),
-                int(y),
-                max(0, min(1024, int(pressure_1024))),
-                max(-90, min(90, int(tilt_x or 0))),
-                int(tilt_x is not None),
-                token,
-            )
+        ok, error = self._relay.submit(
+            flags=int(flags),
+            x=int(x),
+            y=int(y),
+            pressure=max(0, min(1024, int(pressure_1024))),
+            tilt_x=max(-90, min(90, int(tilt_x or 0))),
+            tilt_enabled=tilt_x is not None,
+            token=token,
         )
-        error = int(ctypes.get_last_error())
         if not ok:
             self.log(
                 f"INJECT {tag} native submit failed err={error} flags=0x{flags:08X} "
@@ -447,7 +190,7 @@ class NativeSyntheticPenInjector:
         reports: list[dict[str, Any]],
     ) -> tuple[bool, int, list[int]]:
         """Submit one Raw Input-derived path to the native scheduler."""
-        if self._dll is None or not self._relay:
+        if self._relay is None:
             return False, 6, []  # ERROR_INVALID_HANDLE
         if not reports:
             return True, 0, []
@@ -466,15 +209,7 @@ class NativeSyntheticPenInjector:
                 int(tilt_x is not None),
                 token,
             )
-        ctypes.set_last_error(0)
-        ok = bool(
-            self._dll.mp_synth_submit_batch(
-                self._relay,
-                native_reports,
-                len(reports),
-            )
-        )
-        error = int(ctypes.get_last_error())
+        ok, error = self._relay.submit_batch(native_reports, len(reports))
         if not ok:
             self.log(
                 f"INJECT native batch submit failed err={error} "
@@ -483,22 +218,15 @@ class NativeSyntheticPenInjector:
         return ok, error, tokens
 
     def wait_idle(self, timeout_ms: int = 10) -> bool:
-        if self._dll is None or not self._relay:
+        if self._relay is None:
             return False
-        return bool(self._dll.mp_synth_wait_idle(self._relay, max(0, int(timeout_ms))))
+        return self._relay.wait_idle(timeout_ms)
 
     def drain_delivery_events(self, capacity: int = 4096) -> list[dict[str, int | bool]]:
         """Return completed native reports without blocking the input path."""
-        if self._dll is None or not self._relay or capacity <= 0:
+        if self._relay is None or capacity <= 0:
             return []
-        batch = (NativeRelayCompletion * capacity)()
-        count = int(
-            self._dll.mp_synth_drain_completions(
-                self._relay,
-                batch,
-                capacity,
-            )
-        )
+        batch = self._relay.drain_completions(capacity)
         drained = [
             {
                 "token": int(item.token),
@@ -515,7 +243,7 @@ class NativeSyntheticPenInjector:
                 "queue_delay_us": int(item.queue_delay_us),
                 "inject_call_us": int(item.inject_call_us),
             }
-            for item in batch[:count]
+            for item in batch
         ]
         with self._delivery_lock:
             pending = list(self._pending_deliveries.values())

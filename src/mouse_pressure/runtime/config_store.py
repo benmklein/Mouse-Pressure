@@ -9,11 +9,10 @@ from pathlib import Path
 from typing import Any
 
 from mouse_pressure.bridge.config import ChannelConfig, RuntimeConfig
-from mouse_pressure.web.models import (
+from mouse_pressure.runtime.models import (
     SchemaMismatchError,
     ValidationError,
     validate_channel_config,
-    validate_process_name,
 )
 
 SCHEMA_VERSION = 1
@@ -27,25 +26,6 @@ def resolve_config_dir(config_dir: str | Path | None = None) -> Path:
     if env_dir:
         return Path(env_dir).expanduser()
     return Path.home() / ".mouse-pressure"
-
-
-def _normalize_app_profiles(raw: Any) -> dict[str, str]:
-    if raw is None:
-        return {}
-    if not isinstance(raw, dict):
-        raise ValidationError("app_profiles must be an object")
-
-    out: dict[str, str] = {}
-    for proc, profile_name in raw.items():
-        if not isinstance(proc, str):
-            raise ValidationError("app_profiles keys must be strings")
-        proc_errors = validate_process_name(proc)
-        if proc_errors:
-            raise ValidationError(proc_errors[0])
-        if not isinstance(profile_name, str):
-            raise ValidationError("app_profiles values must be strings")
-        out[proc] = profile_name
-    return out
 
 
 def _channel_from_dict(raw: Any, defaults: ChannelConfig) -> ChannelConfig:
@@ -181,7 +161,6 @@ def runtime_config_from_dict(raw: Any) -> RuntimeConfig:
         session_device_settings_follow_normal=follow_normal,
         left=_channel_from_dict(raw.get("left", {}), defaults.left),
         right=_channel_from_dict(raw.get("right", {}), defaults.right),
-        app_profiles=_normalize_app_profiles(raw.get("app_profiles")),
     )
 
 
@@ -205,7 +184,6 @@ def runtime_config_to_dict(config: RuntimeConfig) -> dict[str, Any]:
         ),
         "left": asdict(config.left),
         "right": asdict(config.right),
-        "app_profiles": dict(config.app_profiles),
     }
 
 

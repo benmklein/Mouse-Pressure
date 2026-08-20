@@ -14,6 +14,10 @@ from ctypes import wintypes
 from pathlib import Path
 from typing import Any, Callable
 
+from mouse_pressure.runtime.device_settings import (
+    DeviceSettingsSnapshot,
+    restore_device_settings,
+)
 from mouse_pressure.sniff.hidpp_pressure import PressureHidppSession
 
 SYNCHRONIZE = 0x00100000
@@ -37,7 +41,7 @@ def arm_restore_watchdog(
     *,
     config_dir: Path,
     parent_pid: int,
-    settings: dict[str, int],
+    settings: DeviceSettingsSnapshot,
 ) -> tuple[subprocess.Popen[bytes], Path]:
     """Persist a recovery snapshot and launch its independent watcher."""
     state_path = config_dir / (
@@ -48,7 +52,7 @@ def arm_restore_watchdog(
         {
             "version": 1,
             "parent_pid": int(parent_pid),
-            "settings": {key: int(value) for key, value in settings.items()},
+            "settings": settings.to_dict(),
         },
     )
     if getattr(sys, "frozen", False):
@@ -60,7 +64,7 @@ def arm_restore_watchdog(
         command = [
             sys.executable,
             "-m",
-            "mouse_pressure.web.device_restore_watchdog",
+            "mouse_pressure.runtime.device_restore_watchdog",
         ]
     command.extend(
         [
@@ -88,76 +92,6 @@ def arm_restore_watchdog(
 def disarm_restore_watchdog(state_path: Path | None) -> None:
     if state_path is not None:
         state_path.unlink(missing_ok=True)
-
-
-def _read_device_settings(session: PressureHidppSession) -> dict[str, int]:
-    discover = getattr(session, "discover_pressure_feature_index", None)
-    if callable(discover):
-        discover()
-    dpi = session.get_dpi()
-    left, right = session.get_haptic_levels()
-    result = {
-        "dpi": int(dpi),
-        "haptic_left": int(left),
-        "haptic_right": int(right),
-    }
-    profile_reader = getattr(session, "get_onboard_profile_state", None)
-    if callable(profile_reader):
-        enabled, sector = profile_reader()
-        result["onboard_profiles_enabled"] = int(bool(enabled))
-        result["onboard_profile_sector"] = int(sector or 0)
-    return result
-
-
-def restore_device_settings(
-    session: PressureHidppSession,
-    settings: dict[str, int],
-) -> dict[str, int]:
-    """Restore the same DPI/haptic/profile snapshot used by normal Stop."""
-    current = _read_device_settings(session)
-    if int(current["dpi"]) != int(settings["dpi"]):
-        if bool(current.get("onboard_profiles_enabled", 0)):
-            profile_writer = getattr(session, "set_onboard_profile_state", None)
-            if not callable(profile_writer):
-                raise RuntimeError("Onboard profile cannot be disabled for DPI restore")
-            profile_writer(enabled=False)
-            current["onboard_profiles_enabled"] = 0
-            current["onboard_profile_sector"] = 0
-        session.set_dpi(int(settings["dpi"]))
-    if (
-        int(current["haptic_left"]) != int(settings["haptic_left"])
-        or int(current["haptic_right"]) != int(settings["haptic_right"])
-    ):
-        session.set_haptic_levels(
-            left=int(settings["haptic_left"]),
-            right=int(settings["haptic_right"]),
-        )
-
-    original_profiles_enabled = bool(settings.get("onboard_profiles_enabled", 0))
-    original_profile_sector = int(settings.get("onboard_profile_sector", 0))
-    current_profiles_enabled = bool(current.get("onboard_profiles_enabled", 0))
-    current_profile_sector = int(current.get("onboard_profile_sector", 0))
-    if (
-        original_profiles_enabled != current_profiles_enabled
-        or (
-            original_profiles_enabled
-            and original_profile_sector != current_profile_sector
-        )
-    ):
-        profile_writer = getattr(session, "set_onboard_profile_state", None)
-        if not callable(profile_writer):
-            raise RuntimeError("Onboard profile cannot be restored")
-        profile_writer(
-            enabled=original_profiles_enabled,
-            active_sector=(
-                original_profile_sector if original_profiles_enabled else None
-            ),
-        )
-    return {
-        "dpi": int(settings["dpi"]),
-        "haptic_left": int(settings["haptic_left"]),
-        "haptic_right": int(settings["haptic_right"]),
-    }
 
 
 def _wait_for_parent_or_disarm(parent_pid: int, state_path: Path) -> bool:
@@ -200,7 +134,7 @@ def run_watchdog(
     time.sleep(0.4)
     try:
         payload = json.loads(state_path.read_text(encoding="utf-8"))
-        settings = payload["settings"]
+        settings = DeviceSettingsSnapshot.from_mapping(payload["settings"])
     except (OSError, KeyError, TypeError, json.JSONDecodeError):
         return False
 

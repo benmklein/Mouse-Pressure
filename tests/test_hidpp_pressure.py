@@ -3,9 +3,9 @@ from __future__ import annotations
 from unittest.mock import patch
 
 from mouse_pressure.sniff.hidpp_pressure import (
+    WIRED_DEVICE_INDEX,
     Feature0CFrame,
     PressureHidppSession,
-    WIRED_DEVICE_INDEX,
     build_monitoring_lease_report,
     extract_mode3_lr_pressure_raw,
     parse_feature_0c_frame,

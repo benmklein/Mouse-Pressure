@@ -64,7 +64,7 @@ def list_usb_details():
                         print(f"        Interval:   {ep.bInterval}")
         except Exception as e:
             print(f"    (Could not read config: {e})")
-            print(f"    This is normal if G Hub has the device open.")
+            print("    This is normal if G Hub has the device open.")
 
 
 if __name__ == "__main__":

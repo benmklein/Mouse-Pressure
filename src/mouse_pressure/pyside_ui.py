@@ -13,7 +13,7 @@ from concurrent.futures import Future
 from pathlib import Path
 from typing import Any, Callable
 
-from PySide6.QtCore import QEvent, QObject, QSize, Qt, QSettings, QTimer
+from PySide6.QtCore import QEvent, QObject, QSettings, QSize, Qt, QTimer
 from PySide6.QtGui import QAction, QCloseEvent, QIcon
 from PySide6.QtWidgets import (
     QApplication,
@@ -31,8 +31,8 @@ from PySide6.QtWidgets import (
     QPlainTextEdit,
     QPushButton,
     QScrollArea,
-    QSlider,
     QSizePolicy,
+    QSlider,
     QSpinBox,
     QStackedWidget,
     QSystemTrayIcon,
@@ -41,14 +41,15 @@ from PySide6.QtWidgets import (
     QWidget,
 )
 
-from mouse_pressure.bridge.config import LaunchConfig, RuntimeConfig
+from mouse_pressure.bridge.config import ChannelConfig, LaunchConfig, RuntimeConfig
 from mouse_pressure.dev_ui import (
     BridgeController,
-    DevSettings,
-    effective_pressure_for_raw,
-    parse_dev_settings,
     stroke_analysis_data,
 )
+from mouse_pressure.runtime.config_store import ConfigStore
+from mouse_pressure.runtime.device_settings import SessionDeviceSettings
+from mouse_pressure.runtime.log_bus import LogBus, LogEntry
+from mouse_pressure.runtime.runtime_service import RuntimeService
 from mouse_pressure.ui.qt_theme import Theme, stylesheet, theme_for
 from mouse_pressure.ui.qt_widgets import (
     Card,
@@ -58,16 +59,13 @@ from mouse_pressure.ui.qt_widgets import (
     StrokeGraph,
     metric_card,
 )
+from mouse_pressure.ui.settings_model import SettingsDraft
 from mouse_pressure.ui.windows_shell import (
     SingleInstanceGuard,
     StartHotkeyListener,
     asset_path,
     set_windows_app_identity,
 )
-from mouse_pressure.web.config_store import ConfigStore
-from mouse_pressure.web.log_bus import LogBus, LogEntry
-from mouse_pressure.web.runtime_service import RuntimeService
-
 
 CHANNEL_COLORS = {"left": "#378ADD", "right": "#EF9F27"}
 
@@ -434,7 +432,7 @@ class MainWindow(QMainWindow):
         self.calibration_dialog: QDialog | None = None
         self._latest_raw = {"left": 0, "right": 0}
         self._latest_mapped = {"left": 0, "right": 0}
-        self._normal_device = {"dpi": None, "haptic_left": None, "haptic_right": None}
+        self._normal_device: SessionDeviceSettings | None = None
         self._trace_paths: dict[str, Path] = {}
         self._qt_settings = QSettings("Mouse Pressure", "Mouse Pressure")
         self.theme_name = str(self._qt_settings.value("theme", "light"))
@@ -1006,23 +1004,50 @@ class MainWindow(QMainWindow):
         self.save_button.setText("Apply changes")
         self.save_button.setEnabled(not self.busy)
 
-    def _channel_settings(self, channel: str) -> DevSettings:
+    def _channel_config(self, channel: str) -> ChannelConfig:
         editor = self.editors[channel]
-        return parse_dev_settings(
-            raw_min=str(editor.raw_min.value()),
-            raw_max=str(editor.raw_max.value()),
-            deadzone=str(editor.deadzone.value()),
+        deadzone = int(editor.deadzone.value())
+        return ChannelConfig(
+            output_target=str(editor.output_target.currentData()),
+            raw_min=int(editor.raw_min.value()),
+            raw_max=int(editor.raw_max.value()),
+            deadzone_low=deadzone,
+            deadzone_high=deadzone,
             curve=str(editor.curve.currentData()),
-            curve_strength=str(editor.curve_strength_value()),
+            curve_strength=float(editor.curve_strength_value()),
             contact_preset=str(editor.contact.currentData()),
-            suppress_lmb=editor.suppress.isChecked(),
-            release_teardown=self.release_teardown.isChecked(),
-            pressure_floor=str(editor.pressure_floor.value()),
-            path_stabilization=str(editor.path_stabilization.value()),
-            pressure_influence=str(editor.pressure_influence.value()),
+            pressure_floor=int(editor.pressure_floor.value()),
+            path_stabilization=int(editor.path_stabilization.value()),
+            pressure_influence=int(editor.pressure_influence.value()),
             immediate_button_wake=editor.immediate_button_wake.isChecked(),
             clean_stroke_endings=editor.clean_stroke_endings.isChecked(),
-            injection_hz=str(self.injection_hz.currentData()),
+        )
+
+    def _settings_draft(self) -> SettingsDraft:
+        current = self.service.get_config()
+        config = RuntimeConfig(
+            schema_version=current.schema_version,
+            linked=self.linked.isChecked(),
+            left_enabled=self.left_enabled.isChecked(),
+            right_enabled=self.right_enabled.isChecked(),
+            suppress_lmb=self.editors["left"].suppress.isChecked(),
+            suppress_rmb=self.editors["right"].suppress.isChecked(),
+            debug_mode=self.debug_mode.isChecked(),
+            minimize_to_tray=self.minimize_to_tray.isChecked(),
+            release_teardown=self.release_teardown.isChecked(),
+            session_dpi=self.dpi.value(),
+            session_haptic_left=self.haptics["left"].value(),
+            session_haptic_right=self.haptics["right"].value(),
+            session_device_settings_follow_normal=(
+                current.session_device_settings_follow_normal
+            ),
+            left=self._channel_config("left"),
+            right=self._channel_config("right"),
+        )
+        return SettingsDraft(
+            config=config,
+            injection_hz=float(self.injection_hz.currentData()),
+            normal_device=self._normal_device,
         )
 
     def _device_settings(self) -> dict[str, int]:
@@ -1034,70 +1059,10 @@ class MainWindow(QMainWindow):
 
     def _apply_settings(self) -> bool:
         try:
-            left = self._channel_settings("left")
-            right = self._channel_settings("right")
-            device = self._device_settings()
-            backend = "native_synthetic"
-            left_target = str(self.editors["left"].output_target.currentData())
-            right_target = (
-                left_target
-                if self.linked.isChecked()
-                else str(self.editors["right"].output_target.currentData())
-            )
-            enabled_targets = [
-                target
-                for enabled, target in (
-                    (self.left_enabled.isChecked(), left_target),
-                    (self.right_enabled.isChecked(), right_target),
-                )
-                if enabled
-            ]
-            if enabled_targets and "pressure" not in enabled_targets:
-                raise ValueError(
-                    "At least one enabled button must map to Pressure; "
-                    "X-tilt modifies an active pressure stroke."
-                )
-            normal = self._normal_device
-            follows_normal = (
-                normal["dpi"] is not None
-                and device["dpi"] == normal["dpi"]
-                and device["haptic_left"] == normal["haptic_left"]
-                and device["haptic_right"] == normal["haptic_right"]
-            )
-            self.service.apply_config(
-                {
-                    "linked": self.linked.isChecked(),
-                    "left_enabled": self.left_enabled.isChecked(),
-                    "right_enabled": self.right_enabled.isChecked(),
-                    "suppress_lmb": left.suppress_lmb,
-                    "suppress_rmb": right.suppress_lmb,
-                    "debug_mode": self.debug_mode.isChecked(),
-                    "minimize_to_tray": self.minimize_to_tray.isChecked(),
-                    "release_teardown": (
-                        self.release_teardown.isChecked()
-                        if backend in {"synthetic", "native_synthetic"}
-                        else False
-                    ),
-                    "session_dpi": device["dpi"],
-                    "session_haptic_left": device["haptic_left"],
-                    "session_haptic_right": device["haptic_right"],
-                    "session_device_settings_follow_normal": follows_normal,
-                    "left": {
-                        **left.as_runtime_patch()["left"],
-                        "output_target": str(
-                            left_target
-                        ),
-                    },
-                    "right": {
-                        **right.as_runtime_patch()["left"],
-                        "output_target": str(
-                            right_target
-                        ),
-                    },
-                }
-            )
-            self.service.launch_config.hz = float(self.injection_hz.currentData())
-            self.service.launch_config.backend = backend
+            draft = self._settings_draft()
+            self.service.apply_config(draft.runtime_patch())
+            self.service.launch_config.hz = draft.injection_hz
+            self.service.launch_config.backend = "native_synthetic"
         except Exception as exc:
             self.write_system(f"Settings error: {exc}", level="ERROR")
             self._select_page(3)
@@ -1143,8 +1108,8 @@ class MainWindow(QMainWindow):
         )
         if dialog.exec() != QDialog.DialogCode.Accepted:
             return
-        defaults = RuntimeConfig()
-        source = defaults.left if channel == "left" else defaults.right
+        reset = self._settings_draft().reset_channel(channel).config
+        source = reset.left if channel == "left" else reset.right
         editor = self.editors[channel]
         self._loading = True
         try:
@@ -1163,7 +1128,7 @@ class MainWindow(QMainWindow):
             editor.immediate_button_wake.setChecked(source.immediate_button_wake)
             editor.clean_stroke_endings.setChecked(source.clean_stroke_endings)
             editor.suppress.setChecked(
-                defaults.suppress_lmb if channel == "left" else defaults.suppress_rmb
+                reset.suppress_lmb if channel == "left" else reset.suppress_rmb
             )
         finally:
             self._loading = False
@@ -1355,15 +1320,18 @@ class MainWindow(QMainWindow):
             self.output_metric_caption.setText(output_label)
         series: dict[str, list[tuple[int, int]]] = {}
         raw_ranges: dict[str, tuple[int, int]] = {}
+        try:
+            draft = self._settings_draft()
+        except Exception:
+            return
         for channel in ("left", "right"):
-            try:
-                settings = self._channel_settings(channel)
-            except Exception:
-                continue
-            series[channel] = [
-                (raw, effective_pressure_for_raw(settings, raw))
-                for raw in range(MappingGraph.RAW_MIN, MappingGraph.RAW_MAX + 1, 4)
-            ]
+            settings = draft.effective_channel(channel)
+            series[channel] = draft.mapping_points(
+                channel,
+                raw_start=MappingGraph.RAW_MIN,
+                raw_end=MappingGraph.RAW_MAX,
+                step=4,
+            )
             raw_ranges[channel] = (settings.raw_min, settings.raw_max)
         self.mapping_graph.set_data(
             series,
@@ -1573,7 +1541,7 @@ class MainWindow(QMainWindow):
 
     def _handle_device_detected(self, payload: dict[str, int]) -> None:
         self.detecting = False
-        self._normal_device = dict(payload)
+        self._normal_device = SessionDeviceSettings.from_mapping(payload)
         self.normal_dpi.setText(str(payload["dpi"]))
         self.normal_haptics["left"].setText(str(payload["haptic_left"]))
         self.normal_haptics["right"].setText(str(payload["haptic_right"]))
@@ -1590,15 +1558,20 @@ class MainWindow(QMainWindow):
 
     def _handle_telemetry(self, payload: dict[str, Any]) -> None:
         effective_by_channel: dict[str, int] = {}
+        try:
+            draft = self._settings_draft()
+        except Exception:
+            draft = None
         for channel in ("left", "right"):
             raw = int(payload[f"{channel}_raw"])
             mapped = int(payload[f"{channel}_mapped"])
             self._latest_raw[channel] = raw
             self._latest_mapped[channel] = mapped
-            settings_channel = "left" if self.linked.isChecked() else channel
             try:
-                effective = effective_pressure_for_raw(
-                    self._channel_settings(settings_channel), raw
+                effective = (
+                    draft.effective_pressure(channel, raw)
+                    if draft is not None
+                    else mapped
                 )
             except Exception:
                 effective = mapped
@@ -1611,11 +1584,9 @@ class MainWindow(QMainWindow):
         mapped = self._latest_mapped[selected]
         effective = effective_by_channel[selected]
         self.input_metric.setText(f"{mapped / 1024:.0%}")
-        editors = getattr(self, "editors", {})
-        selected_editor = editors.get(selected) if isinstance(editors, dict) else None
         output_target = (
-            str(selected_editor.output_target.currentData())
-            if selected_editor is not None
+            draft.effective_channel(selected).output_target
+            if draft is not None
             else "pressure"
         )
         self.output_metric.setText(

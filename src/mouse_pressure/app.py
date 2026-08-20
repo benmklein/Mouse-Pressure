@@ -10,14 +10,13 @@ from __future__ import annotations
 import sys
 from collections.abc import Sequence
 
-
 WATCHDOG_SWITCH = "--device-restore-watchdog"
 
 
 def main(argv: Sequence[str] | None = None) -> int:
     args = list(sys.argv[1:] if argv is None else argv)
     if args and args[0] == WATCHDOG_SWITCH:
-        from mouse_pressure.web.device_restore_watchdog import (
+        from mouse_pressure.runtime.device_restore_watchdog import (
             main as watchdog_main,
         )
 

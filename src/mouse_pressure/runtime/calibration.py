@@ -6,9 +6,9 @@ import asyncio
 import math
 from typing import Callable
 
-from mouse_pressure.web.config_store import ConfigStore
-from mouse_pressure.web.models import ValidationError
-from mouse_pressure.web.runtime_service import RuntimeService
+from mouse_pressure.runtime.config_store import ConfigStore
+from mouse_pressure.runtime.models import ValidationError
+from mouse_pressure.runtime.runtime_service import RuntimeService
 
 PHASES: tuple[str, ...] = ("idle", "light", "heavy")
 PHASE_DURATION_S = 2.0

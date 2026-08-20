@@ -10,7 +10,7 @@ from unittest.mock import AsyncMock, patch
 sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "src"))
 
 from mouse_pressure.bridge.config import ChannelConfig, RuntimeConfig  # noqa: E402
-from mouse_pressure.web import calibration  # noqa: E402
+from mouse_pressure.runtime import calibration  # noqa: E402
 
 
 @dataclass

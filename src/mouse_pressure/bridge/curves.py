@@ -2,6 +2,8 @@
 
 from dataclasses import dataclass
 
+from mouse_pressure.bridge.config import ChannelConfig
+
 _CURVE_ALIASES = {
     "linear": "linear",
     "soft": "ease_in",
@@ -29,6 +31,20 @@ class PressureConfig:
     deadzone_high: float = 0.95  # Cap top 5% (avoid needing max force)
     curve: str = "s_curve"       # linear, ease_in, ease_out, s_curve
     curve_strength: float = 2.0  # How aggressive the curve is (1.0 = mild)
+
+
+def pressure_config_for_channel(channel: ChannelConfig) -> PressureConfig:
+    """Compile one channel's persisted settings into mapping semantics."""
+    return PressureConfig(
+        raw_min=channel.raw_min,
+        raw_max=channel.raw_max,
+        out_min=0,
+        out_max=1023,
+        deadzone_low=channel.deadzone_low / 100.0,
+        deadzone_high=1.0 - channel.deadzone_high / 100.0,
+        curve=normalize_curve_name(channel.curve),
+        curve_strength=channel.curve_strength,
+    )
 
 
 def normalize_curve_name(name: str) -> str:

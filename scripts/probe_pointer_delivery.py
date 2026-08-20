@@ -18,6 +18,7 @@ from ctypes import wintypes
 from pathlib import Path
 from typing import Any
 
+from mouse_pressure.bridge.native_synthetic import NativeSyntheticPenInjector
 from mouse_pressure.bridge.synthetic_pen import (
     POINTER_FLAG_DOWN,
     POINTER_FLAG_FIRSTBUTTON,
@@ -25,14 +26,13 @@ from mouse_pressure.bridge.synthetic_pen import (
     POINTER_FLAG_INRANGE,
     POINTER_FLAG_NEW,
     POINTER_FLAG_PRIMARY,
-    POINTER_FLAG_UPDATE,
     POINTER_FLAG_UP,
+    POINTER_FLAG_UPDATE,
     POINTER_PEN_INFO,
     WNDCLASSW,
     WNDPROC,
     _SyntheticPenInjector,
 )
-from mouse_pressure.bridge.native_synthetic import NativeSyntheticPenInjector
 
 WM_DESTROY = 0x0002
 WM_CLOSE = 0x0010

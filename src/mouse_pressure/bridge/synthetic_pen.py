@@ -9,8 +9,8 @@ import threading
 import time
 import winreg
 from collections import deque
-from dataclasses import dataclass, replace
 from ctypes import wintypes
+from dataclasses import dataclass, replace
 from pathlib import Path
 from typing import Any, Callable
 
@@ -1912,13 +1912,14 @@ class _MouseLmbSuppressor:
                             x=int(info.pt.x),
                             y=int(info.pt.y),
                         )
-                    if self._should_block_message(
+                    should_block = self._should_block_message(
                         msg,
                         injected=injected,
                         bridge_feedback=bridge_feedback,
                         suppress_left=self.suppress_left,
                         suppress_right=self.suppress_right,
-                    ):
+                    )
+                    if should_block:
                         return 1
             return int(self.user32.CallNextHookEx(self.hook, n_code, w_param, l_param))
 
@@ -2084,25 +2085,27 @@ class _MouseLmbSuppressor:
         self.log("Mouse button suppressor stopped")
 
 
-class SyntheticPenEmitter:
-    def __init__(self, config: SyntheticPenConfig, log: Callable[[str], None]) -> None:
+class _StrokePlanner:
+    """Own the complete synchronous stroke state machine.
+
+    The emitter owns adapter construction and lifecycle. The planner receives
+    those adapters because delivery success is an input to stroke state, and it
+    synchronously preserves report order without exposing a plan/commit seam.
+    """
+    def __init__(
+        self,
+        config: SyntheticPenConfig,
+        log: Callable[[str], None],
+        *,
+        pen: Any,
+        suppressor: Any | None,
+        trace: StrokeTraceRecorder | None,
+    ) -> None:
         self.config = config
         self.log = log
-        self.pen = _SyntheticPenInjector(log=log)
-        self._trace = (
-            StrokeTraceRecorder(config.trace_dir, log)
-            if config.debug_mode and config.trace_dir
-            else None
-        )
-        self._suppressor = _MouseLmbSuppressor(
-            log=log,
-            suppress_left=config.suppress_lmb,
-            suppress_right=config.suppress_rmb,
-            debug_mode=config.debug_mode,
-            allow_raw_direct_motion=config.allow_raw_direct_motion,
-            left_button_owns_contact=(config.left_output_target == "pressure"),
-            right_button_owns_contact=(config.right_output_target == "pressure"),
-        )
+        self.pen = pen
+        self._trace = trace
+        self._suppressor = suppressor
         self._pending_native_timing: deque[
             tuple[str, float, dict[str, int | float | str]]
         ] = deque(maxlen=512)
@@ -2153,6 +2156,7 @@ class SyntheticPenEmitter:
         self._last_sent_tilt_x = 0
         self._stationary_anchor_started_at = 0.0
         self._stationary_dab_emitted = False
+        self._startup_contact_prime_pending = True
 
         self.click_candidate_active = False
         self.click_start_t = 0.0
@@ -2160,80 +2164,9 @@ class SyntheticPenEmitter:
         self.click_start_y = 0
         self.click_peak_mapped = 0
 
-    def open(self) -> None:
-        self.open_unarmed()
-        self.arm_input()
-
-    def open_unarmed(self) -> None:
-        """Open the synthetic pen without suppressing physical mouse buttons yet."""
-        self.pen.open()
-
-    def _wait_for_clean_button_baseline(self, timeout_s: float = 1.0) -> None:
-        """Do not arm halfway through the click that started the application.
-
-        The pressure reader and native relay are prepared before suppression.
-        If Start was clicked with a managed mouse button, that button may still
-        be physically down even though the not-yet-installed hook never saw its
-        down transition. Waiting only until it is released gives the hook a
-        clean baseline, so the next down event is always a complete first
-        stroke. There is no delay when both buttons are already up.
-        """
-        deadline = time.perf_counter() + max(0.0, float(timeout_s))
-        while True:
-            left_down = (
-                self.config.left_output_target != "off"
-                and bool(self.pen.is_lmb_down())
-            )
-            right_down = (
-                self.config.right_output_target != "off"
-                and bool(self.pen.is_rmb_down())
-            )
-            if not left_down and not right_down:
-                return
-            if time.perf_counter() >= deadline:
-                held = "/".join(
-                    name
-                    for name, down in (("left", left_down), ("right", right_down))
-                    if down
-                )
-                raise RuntimeError(
-                    f"Release the {held} mouse button before starting pressure output"
-                )
-            time.sleep(0.002)
-
-    def arm_input(self) -> None:
-        """Begin button suppression after the pressure pipeline is ready."""
-        self._wait_for_clean_button_baseline()
-        if self._suppressor is not None:
-            self._suppressor.start()
-
-    def close(self) -> None:
-        if self._trace is not None:
-            self._finish_trace("bridge_close")
-            self._trace.close()
-        if self._suppressor is not None:
-            self._suppressor.stop()
-        self.pen.close()
-
-    def fail_open(self, reason: str) -> None:
-        if self._suppressor is not None:
-            self._suppressor.fail_open(reason)
-
-    def set_force_stop_callback(
-        self,
-        callback: Callable[[str], None] | None,
-    ) -> None:
-        if self._suppressor is not None:
-            self._suppressor.set_force_stop_callback(callback)
-
     def set_debug_mode(self, enabled: bool) -> None:
         """Enable or disable detailed stroke diagnostics without restarting."""
         self.config.debug_mode = bool(enabled)
-        if self._suppressor is not None:
-            self._suppressor.debug_mode = bool(enabled)
-            self._suppressor.set_timing_callback(
-                self._observe_native_timing if enabled else None
-            )
         if enabled:
             if self._trace is None and self.config.trace_dir:
                 self._trace = StrokeTraceRecorder(self.config.trace_dir, self.log)
@@ -2242,14 +2175,6 @@ class SyntheticPenEmitter:
             self._trace.close()
             self._trace = None
             self._pending_native_timing.clear()
-
-    def sync_button_modes(self) -> None:
-        """Apply live button-role changes to the native input owner."""
-        if self._suppressor is not None:
-            self._suppressor.set_button_ownership(
-                left=self.config.left_output_target == "pressure",
-                right=self.config.right_output_target == "pressure",
-            )
 
     def _output_target(self, button: str) -> str:
         return str(
@@ -2286,10 +2211,13 @@ class SyntheticPenEmitter:
         tokens = frozenset(self._trace_submission_tokens)
         deferred = None
         if callable(collector) and tokens:
-            deferred = lambda: [
-                {"kind": "native_delivery", **event}
-                for event in collector(tokens, 25)
-            ]
+            def collect_native_delivery() -> list[dict[str, Any]]:
+                return [
+                    {"kind": "native_delivery", **event}
+                    for event in collector(tokens, 25)
+                ]
+
+            deferred = collect_native_delivery
         trace.finish(reason, deferred_events=deferred)
         self._trace_submission_tokens.clear()
 
@@ -2303,15 +2231,8 @@ class SyntheticPenEmitter:
             if observed_at >= cutoff:
                 trace.record(kind, at=observed_at, **fields)
 
-    def set_movement_callback(self, callback: Callable[[], None] | None) -> None:
+    def note_movement_callback(self, callback: Callable[[], None] | None) -> None:
         self._event_driven_movement = callback is not None
-        if self._suppressor is not None:
-            self._suppressor.set_movement_callback(callback)
-
-    def set_native_input_capture(self, capture: Any | None) -> None:
-        """Install an optional native transformed-motion collector."""
-        if self._suppressor is not None:
-            self._suppressor.set_native_input_capture(capture)
 
     def _button_down_wake_enabled(self, button: str) -> bool:
         if self._output_target(button) != "pressure":
@@ -2889,7 +2810,7 @@ class SyntheticPenEmitter:
                     )
                 )
             previous = point
-        return SyntheticPenEmitter._dedupe_path(dense)
+        return _StrokePlanner._dedupe_path(dense)
 
     def _densify_contact_path(
         self,
@@ -3073,6 +2994,51 @@ class SyntheticPenEmitter:
                 )
         return bool(ok), int(error)
 
+    def _prime_first_native_contact(self, *, flags: int, x: int, y: int) -> None:
+        """Complete the native pen's first contact before exposing real ink.
+
+        Krita accepts every report in the first synthetic contact lifecycle but
+        renders only its initial dab. A zero-pressure DOWN/UP initializes that
+        application path invisibly; the immediately following real lifecycle
+        then renders normally. Hover-only priming is not sufficient.
+        """
+        if (
+            not self._startup_contact_prime_pending
+            or self.config.output_backend != "native_synthetic"
+        ):
+            return
+        self._startup_contact_prime_pending = False
+        prime_reports: list[dict[str, int | str | None]] = [
+            {
+                "flags": int(flags),
+                "x": int(x),
+                "y": int(y),
+                "pressure_1024": 0,
+                "tag": "startup_contact_prime_down",
+                "tilt_x": None,
+            },
+            {
+                "flags": POINTER_FLAG_UP | POINTER_FLAG_PRIMARY,
+                "x": int(x),
+                "y": int(y),
+                "pressure_1024": 0,
+                "tag": "startup_contact_prime_up",
+                "tilt_x": None,
+            },
+        ]
+        ok, error = self._inject_pen_batch(prime_reports)
+        wait_idle = getattr(self.pen, "wait_idle", None)
+        drained = bool(wait_idle(25)) if ok and callable(wait_idle) else ok
+        if not ok or not drained:
+            self.log(
+                "WARN first native pen contact could not be primed "
+                f"error={error} drained={int(drained)}"
+            )
+            return
+        # Let Windows finish routing the completed zero-pressure lifecycle
+        # before the real DOWN. This is paid once per Start session.
+        time.sleep(0.002)
+
     def _emit_release_teardown(
         self,
         *,
@@ -3139,7 +3105,7 @@ class SyntheticPenEmitter:
         ok = final_ok and ok1 and ok2 and ok3
         return ok, not ok
 
-    def update(
+    def advance(
         self,
         left_mapped: int,
         right_mapped: int,
@@ -3927,6 +3893,16 @@ class SyntheticPenEmitter:
                     }
                 )
             native_batch = callable(getattr(self.pen, "inject_batch", None))
+            if (
+                scheduled_reports
+                and native_batch
+                and bool(inject_flags & POINTER_FLAG_NEW)
+            ):
+                self._prime_first_native_contact(
+                    flags=int(inject_flags),
+                    x=int(points[0][0]),
+                    y=int(points[0][1]),
+                )
             if scheduled_reports and native_batch:
                 ok, _err = self._inject_pen_batch(scheduled_reports)
                 all_ok = all_ok and ok
@@ -4051,6 +4027,174 @@ class SyntheticPenEmitter:
             status=status,
             injected=injected,
             failed=failed,
+        )
+
+
+class SyntheticPenEmitter:
+    """Own output adapters and expose the synchronous stroke-planning lifecycle.
+
+    ``update`` remains the stable hot-path interface. Adapter construction,
+    arming, fail-open behavior, and close ordering stay outside planner state.
+    """
+
+    __slots__ = ("_pen", "_planner", "_suppressor_adapter")
+
+    def __init__(self, config: SyntheticPenConfig, log: Callable[[str], None]) -> None:
+        pen = _SyntheticPenInjector(log=log)
+        trace = (
+            StrokeTraceRecorder(config.trace_dir, log)
+            if config.debug_mode and config.trace_dir
+            else None
+        )
+        suppressor = _MouseLmbSuppressor(
+            log=log,
+            suppress_left=config.suppress_lmb,
+            suppress_right=config.suppress_rmb,
+            debug_mode=config.debug_mode,
+            allow_raw_direct_motion=config.allow_raw_direct_motion,
+            left_button_owns_contact=(config.left_output_target == "pressure"),
+            right_button_owns_contact=(config.right_output_target == "pressure"),
+        )
+        object.__setattr__(self, "_pen", pen)
+        object.__setattr__(self, "_suppressor_adapter", suppressor)
+        object.__setattr__(
+            self,
+            "_planner",
+            _StrokePlanner(
+                config,
+                log,
+                pen=pen,
+                suppressor=suppressor,
+                trace=trace,
+            ),
+        )
+
+    @property
+    def config(self) -> SyntheticPenConfig:
+        return self._planner.config
+
+    @config.setter
+    def config(self, value: SyntheticPenConfig) -> None:
+        self._planner.config = value
+
+    @property
+    def pen(self) -> Any:
+        return self._pen
+
+    @pen.setter
+    def pen(self, value: Any) -> None:
+        object.__setattr__(self, "_pen", value)
+        self._planner.pen = value
+
+    @property
+    def _suppressor(self) -> Any | None:
+        return self._suppressor_adapter
+
+    @_suppressor.setter
+    def _suppressor(self, value: Any | None) -> None:
+        object.__setattr__(self, "_suppressor_adapter", value)
+        self._planner._suppressor = value
+
+    def open(self) -> None:
+        self.open_unarmed()
+        self.arm_input()
+
+    def open_unarmed(self) -> None:
+        self._pen.open()
+
+    def _wait_for_clean_button_baseline(self, timeout_s: float = 1.0) -> None:
+        """Arm only after the click that started the application is released."""
+        deadline = time.perf_counter() + max(0.0, float(timeout_s))
+        while True:
+            left_down = (
+                self.config.left_output_target != "off"
+                and bool(self._pen.is_lmb_down())
+            )
+            right_down = (
+                self.config.right_output_target != "off"
+                and bool(self._pen.is_rmb_down())
+            )
+            if not left_down and not right_down:
+                return
+            if time.perf_counter() >= deadline:
+                held = "/".join(
+                    name
+                    for name, down in (("left", left_down), ("right", right_down))
+                    if down
+                )
+                raise RuntimeError(
+                    f"Release the {held} mouse button before starting pressure output"
+                )
+            time.sleep(0.002)
+
+    def arm_input(self) -> None:
+        self._wait_for_clean_button_baseline()
+        if self._suppressor is not None:
+            self._suppressor.start()
+
+    def close(self) -> None:
+        trace = self._planner._trace
+        if trace is not None:
+            self._planner._finish_trace("bridge_close")
+            trace.close()
+        if self._suppressor is not None:
+            self._suppressor.stop()
+        self._pen.close()
+
+    def fail_open(self, reason: str) -> None:
+        if self._suppressor is not None:
+            self._suppressor.fail_open(reason)
+
+    def set_force_stop_callback(
+        self,
+        callback: Callable[[str], None] | None,
+    ) -> None:
+        if self._suppressor is not None:
+            self._suppressor.set_force_stop_callback(callback)
+
+    def set_debug_mode(self, enabled: bool) -> None:
+        if self._suppressor is not None:
+            self._suppressor.debug_mode = bool(enabled)
+            self._suppressor.set_timing_callback(
+                self._planner._observe_native_timing if enabled else None
+            )
+        self._planner.set_debug_mode(enabled)
+
+    def sync_button_modes(self) -> None:
+        if self._suppressor is not None:
+            self._suppressor.set_button_ownership(
+                left=self.config.left_output_target == "pressure",
+                right=self.config.right_output_target == "pressure",
+            )
+
+    def set_movement_callback(self, callback: Callable[[], None] | None) -> None:
+        self._planner.note_movement_callback(callback)
+        if self._suppressor is not None:
+            self._suppressor.set_movement_callback(callback)
+
+    def set_native_input_capture(self, capture: Any | None) -> None:
+        if self._suppressor is not None:
+            self._suppressor.set_native_input_capture(capture)
+
+    def release(self) -> None:
+        self._planner.release()
+
+    def update(
+        self,
+        left_mapped: int,
+        right_mapped: int,
+        *,
+        pressure_fresh: bool = True,
+        left_raw: int | None = None,
+        right_raw: int | None = None,
+    ) -> SyntheticPenSample:
+        """Advance stroke planning and synchronously deliver its reports."""
+        return self._planner.advance(
+            left_mapped,
+            right_mapped,
+            pressure_fresh=pressure_fresh,
+            left_raw=left_raw,
+            right_raw=right_raw,
         )
 
 

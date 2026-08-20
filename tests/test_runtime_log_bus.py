@@ -6,7 +6,7 @@ from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "src"))
 
-from mouse_pressure.web.log_bus import LogBus  # noqa: E402
+from mouse_pressure.runtime.log_bus import LogBus  # noqa: E402
 
 
 class LogBusTests(unittest.TestCase):

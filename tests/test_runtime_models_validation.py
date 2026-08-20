@@ -6,7 +6,7 @@ from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "src"))
 
-from mouse_pressure.web.models import (  # noqa: E402
+from mouse_pressure.runtime.models import (  # noqa: E402
     deadzone_pct_to_float,
     validate_channel_config,
 )

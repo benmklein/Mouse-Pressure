@@ -14,14 +14,14 @@ To produce virtual pen input, Mouse Pressure observes:
 - temporary DPI and haptic values when the user asks the application to change
   those settings while mapping is active.
 
-It does not record keyboard text or inspect document contents. The optional
-local WebSocket developer mode binds only to `127.0.0.1`.
+It does not record keyboard text, inspect document contents, or expose a
+network service.
 
 ## Data stored locally
 
 By default, persistent files are stored in `%USERPROFILE%\.mouse-pressure`:
 
-- `config.json` and `profiles/` contain user-selected settings;
+- `config.json` contains user-selected settings;
 - short-lived `device_restore_*.json` files allow the independent watchdog to
   restore DPI and haptics after an unexpected exit; and
 - when Debug mode is enabled, `stroke_traces/stroke-*.json` contains pointer

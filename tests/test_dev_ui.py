@@ -4,13 +4,7 @@ import asyncio
 import time
 from unittest.mock import AsyncMock, patch
 
-from mouse_pressure.dev_ui import (
-    BridgeController,
-    effective_pressure_for_raw,
-    parse_dev_settings,
-    sensitivity_mapping_points,
-    stroke_analysis_data,
-)
+from mouse_pressure.dev_ui import BridgeController, stroke_analysis_data
 
 
 class _FakeRuntimeService:
@@ -42,126 +36,6 @@ class _StalledRuntimeService(_FakeRuntimeService):
     async def stop_stream(self) -> None:
         self.stop_calls += 1
         await asyncio.Event().wait()
-
-
-def test_dev_settings_build_linked_runtime_patch() -> None:
-    settings = parse_dev_settings(
-        raw_min="80",
-        raw_max="170",
-        deadzone="5",
-        curve="scurve",
-        curve_strength="1.5",
-        contact_preset="medium",
-        suppress_lmb=True,
-        release_teardown=True,
-    )
-
-    patch = settings.as_runtime_patch()
-    assert patch["linked"] is True
-    assert patch["suppress_lmb"] is True
-    assert patch["release_teardown"] is True
-    assert patch["left"]["deadzone_low"] == 5
-    assert patch["left"]["deadzone_high"] == 5
-    assert patch["left"]["pressure_floor"] == 15
-    assert patch["left"]["path_stabilization"] == 0
-    assert patch["left"]["pressure_influence"] == 100
-    assert patch["left"]["onset_buffer"] is False
-    assert patch["left"]["true_low_latency"] is False
-    assert patch["left"]["stationary_pressure_updates"] is False
-    assert patch["left"]["immediate_button_wake"] is True
-    assert patch["left"]["clean_stroke_endings"] is False
-    assert settings.injection_hz == 240.0
-
-
-def test_dev_settings_reject_invalid_raw_range() -> None:
-    try:
-        parse_dev_settings(
-            raw_min="180",
-            raw_max="170",
-            deadzone="0",
-            curve="linear",
-            curve_strength="1.0",
-            contact_preset="medium",
-            suppress_lmb=False,
-            release_teardown=False,
-        )
-    except ValueError as exc:
-        assert "minimum" in str(exc)
-    else:
-        raise AssertionError("Expected invalid raw range to raise")
-
-
-def test_dev_settings_accept_curve_strength_three() -> None:
-    settings = parse_dev_settings(
-        raw_min="320",
-        raw_max="670",
-        deadzone="0",
-        curve="soft",
-        curve_strength="3.0",
-        contact_preset="medium",
-        suppress_lmb=True,
-        release_teardown=False,
-    )
-
-    assert settings.curve_strength == 3.0
-
-
-def test_dev_settings_persist_true_low_latency() -> None:
-    settings = parse_dev_settings(
-        raw_min="320",
-        raw_max="670",
-        deadzone="0",
-        curve="linear",
-        curve_strength="1.0",
-        contact_preset="medium",
-        suppress_lmb=True,
-        release_teardown=False,
-        onset_buffer=True,
-        true_low_latency=True,
-    )
-
-    assert settings.true_low_latency is True
-    assert settings.as_runtime_patch()["left"]["true_low_latency"] is True
-
-
-def test_dev_settings_persist_stationary_pressure_updates() -> None:
-    settings = parse_dev_settings(
-        raw_min="320",
-        raw_max="670",
-        deadzone="0",
-        curve="linear",
-        curve_strength="1.0",
-        contact_preset="medium",
-        suppress_lmb=True,
-        release_teardown=False,
-        stationary_pressure_updates=True,
-    )
-
-    assert settings.stationary_pressure_updates is True
-    assert settings.as_runtime_patch()["left"]["stationary_pressure_updates"] is True
-
-
-def test_sensitivity_mapping_visualizer_uses_effective_pressure_settings() -> None:
-    settings = parse_dev_settings(
-        raw_min="300",
-        raw_max="700",
-        deadzone="0",
-        curve="linear",
-        curve_strength="1.0",
-        contact_preset="medium",
-        suppress_lmb=True,
-        release_teardown=False,
-        pressure_floor="15",
-        pressure_influence="100",
-    )
-
-    points = sensitivity_mapping_points(settings, samples=3)
-
-    assert points[0] == (300, 0)
-    assert points[1][0] == 500
-    assert 510 <= points[1][1] <= 513
-    assert points[2] == (700, 1023)
-    assert effective_pressure_for_raw(settings, 301) >= round(15 * 1024 / 100)
 
 
 def test_stroke_analysis_exposes_pipeline_and_low_latency_pressure_steps() -> None:

@@ -5,7 +5,6 @@ from dataclasses import dataclass, field
 
 import pygame
 
-
 Vec2 = pygame.Vector2
 
 

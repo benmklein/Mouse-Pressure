@@ -15,8 +15,8 @@ from mouse_pressure.bridge.synthetic_pen import (  # noqa: E402
     CLEAN_STROKE_ENDING_HOLD_S,
     MOUSE_MOVE_ABSOLUTE,
     POINTER_FLAG_DOWN,
-    POINTER_FLAG_INCONTACT,
     POINTER_FLAG_FIRSTBUTTON,
+    POINTER_FLAG_INCONTACT,
     POINTER_FLAG_INRANGE,
     POINTER_FLAG_NEW,
     POINTER_FLAG_PRIMARY,
@@ -32,9 +32,9 @@ from mouse_pressure.bridge.synthetic_pen import (  # noqa: E402
     WM_MOUSEMOVE,
     WM_RBUTTONDOWN,
     WM_RBUTTONUP,
-    _MouseLmbSuppressor,
     SyntheticPenConfig,
     SyntheticPenEmitter,
+    _MouseLmbSuppressor,
     map_1024_to_1023,
 )
 
@@ -176,6 +176,65 @@ class SyntheticPenReleaseTests(unittest.TestCase):
         with self.assertRaisesRegex(RuntimeError, "Release the right mouse button"):
             emitter._wait_for_clean_button_baseline(timeout_s=0.005)  # noqa: SLF001
 
+    def test_first_native_contact_is_primed_before_real_pen_down(self) -> None:
+        class _BatchPen(_FakePen):
+            manages_frame_spacing = True
+
+            def __init__(self) -> None:
+                super().__init__()
+                self.events: list[tuple[str, object]] = []
+                self.next_token = 1
+
+            def inject_batch(self, reports):
+                copied = [dict(report) for report in reports]
+                self.events.append(("batch", copied))
+                tokens = list(
+                    range(self.next_token, self.next_token + len(copied))
+                )
+                self.next_token += len(copied)
+                return True, 0, tokens
+
+            def wait_idle(self, timeout_ms: int) -> bool:
+                self.events.append(("wait_idle", int(timeout_ms)))
+                return True
+
+        config = SyntheticPenConfig(
+            contact_source="lmb_and_pressure",
+            onset_buffer=False,
+            output_backend="native_synthetic",
+            suppress_lmb=False,
+        )
+        emitter = SyntheticPenEmitter(config, log=lambda _line: None)
+        pen = _BatchPen()
+        pen._lmb = True
+        emitter.pen = pen
+        emitter._suppressor = None  # noqa: SLF001
+
+        emitter.update(left_mapped=400, right_mapped=0, pressure_fresh=True)
+
+        self.assertEqual([event[0] for event in pen.events], ["batch", "wait_idle", "batch"])
+        prime = pen.events[0][1]
+        assert isinstance(prime, list)
+        self.assertEqual(len(prime), 2)
+        self.assertTrue(int(prime[0]["flags"]) & POINTER_FLAG_DOWN)
+        self.assertEqual(int(prime[0]["pressure_1024"]), 0)
+        self.assertTrue(int(prime[1]["flags"]) & POINTER_FLAG_UP)
+        self.assertEqual(int(prime[1]["pressure_1024"]), 0)
+        real = pen.events[2][1]
+        assert isinstance(real, list)
+        self.assertTrue(int(real[0]["flags"]) & POINTER_FLAG_DOWN)
+        self.assertGreater(int(real[0]["pressure_1024"]), 0)
+
+        pen._lmb = False
+        emitter.update(left_mapped=0, right_mapped=0, pressure_fresh=True)
+        pen._lmb = True
+        emitter.update(left_mapped=400, right_mapped=0, pressure_fresh=True)
+
+        self.assertEqual(
+            [event[0] for event in pen.events],
+            ["batch", "wait_idle", "batch", "batch"],
+        )
+
     def test_analog_precontact_reconstructs_only_motion_after_pressure_rises(self) -> None:
         suppressor = _MouseLmbSuppressor(log=lambda _line: None)
         suppressor._raw_direct_mode = True  # noqa: SLF001
@@ -219,7 +278,7 @@ class SyntheticPenReleaseTests(unittest.TestCase):
         emitter.config.onset_buffer = False
         emitter.config.immediate_button_wake = True
         emitter.config.min_contact_pressure = 123
-        emitter._event_driven_movement = True  # noqa: SLF001
+        emitter._planner._event_driven_movement = True  # noqa: SLF001
         now = time.perf_counter()
         emitter._suppressor._hardware_positions.extend(  # noqa: SLF001
             [(now, 100, 100), (now + 0.001, 104, 101), (now + 0.002, 108, 102)]
@@ -235,7 +294,7 @@ class SyntheticPenReleaseTests(unittest.TestCase):
         )
         self.assertEqual(first.state, "contact")
         self.assertEqual((fake.calls[0]["x"], fake.calls[0]["y"]), (100, 100))
-        self.assertTrue(emitter.onset_catchup_pending)
+        self.assertTrue(emitter._planner.onset_catchup_pending)
 
         emitter.update(
             left_mapped=300,
@@ -294,14 +353,14 @@ class SyntheticPenReleaseTests(unittest.TestCase):
             fake._lmb = True
             emitter.pen = fake  # type: ignore[assignment]
 
-            self.assertIsNone(emitter._trace)  # noqa: SLF001
+            self.assertIsNone(emitter._planner._trace)  # noqa: SLF001
             emitter.update(left_mapped=400, right_mapped=0, pressure_fresh=True)
             self.assertFalse(any(line.startswith("STATE ") for line in lines))
 
             emitter.set_debug_mode(True)
-            self.assertIsNotNone(emitter._trace)  # noqa: SLF001
+            self.assertIsNotNone(emitter._planner._trace)  # noqa: SLF001
             emitter.set_debug_mode(False)
-            self.assertIsNone(emitter._trace)  # noqa: SLF001
+            self.assertIsNone(emitter._planner._trace)  # noqa: SLF001
         self.assertFalse(
             _MouseLmbSuppressor._should_block_message(WM_LBUTTONDOWN, injected=True)
         )
@@ -330,14 +389,14 @@ class SyntheticPenReleaseTests(unittest.TestCase):
 
         sample = emitter.update(left_mapped=0, right_mapped=300, pressure_fresh=True)
 
-        self.assertEqual(emitter.active_button, "right")
+        self.assertEqual(emitter._planner.active_button, "right")
         self.assertEqual(sample.state, "contact")
         self.assertGreaterEqual(sample.pen_1024, 205)
 
         fake._rmb = False
         released = emitter.update(left_mapped=900, right_mapped=300, pressure_fresh=True)
         self.assertEqual(released.state, "idle")
-        self.assertIsNone(emitter.active_button)
+        self.assertIsNone(emitter._planner.active_button)
 
     def test_pressure_drop_never_ends_button_authoritative_contact(self) -> None:
         config = SyntheticPenConfig(
@@ -710,7 +769,7 @@ class SyntheticPenReleaseTests(unittest.TestCase):
             pressure_fresh=True,
         )
         self.assertEqual(no_stroke.state, "idle")
-        self.assertIsNone(emitter.active_button)
+        self.assertIsNone(emitter._planner.active_button)
         self.assertEqual(fake.calls, [])
 
         fake._lmb = True
@@ -720,7 +779,7 @@ class SyntheticPenReleaseTests(unittest.TestCase):
             pressure_fresh=True,
         )
         self.assertEqual(stroke.state, "contact")
-        self.assertEqual(emitter.active_button, "left")
+        self.assertEqual(emitter._planner.active_button, "left")
         self.assertEqual(fake.calls[-1]["tilt_x"], 30)
         self.assertGreater(fake.calls[-1]["pressure"], 0)
 
@@ -751,7 +810,7 @@ class SyntheticPenReleaseTests(unittest.TestCase):
             pressure_fresh=True,
         )
         self.assertEqual(no_stroke.state, "idle")
-        self.assertIsNone(emitter.active_button)
+        self.assertIsNone(emitter._planner.active_button)
 
         fake._rmb = True
         stroke = emitter.update(
@@ -760,7 +819,7 @@ class SyntheticPenReleaseTests(unittest.TestCase):
             pressure_fresh=True,
         )
         self.assertEqual(stroke.state, "contact")
-        self.assertEqual(emitter.active_button, "right")
+        self.assertEqual(emitter._planner.active_button, "right")
         self.assertEqual(fake.calls[-1]["tilt_x"], 30)
         self.assertGreater(fake.calls[-1]["pressure"], 0)
 
@@ -1505,9 +1564,9 @@ class SyntheticPenReleaseTests(unittest.TestCase):
 
     def test_release_without_teardown_sends_single_up(self) -> None:
         emitter, fake = self._mk_emitter(release_teardown=False)
-        emitter.state = "contact"
-        emitter.contact_frame_no = 5
-        emitter.prev_contact_pressure = 400
+        emitter._planner.state = "contact"
+        emitter._planner.contact_frame_no = 5
+        emitter._planner.prev_contact_pressure = 400
         fake._lmb = False
 
         sample = emitter.update(left_mapped=400, right_mapped=0)
@@ -1534,10 +1593,10 @@ class SyntheticPenReleaseTests(unittest.TestCase):
 
     def test_release_does_not_repeat_pressure_at_same_endpoint(self) -> None:
         emitter, fake = self._mk_emitter(release_teardown=False)
-        emitter.state = "contact"
-        emitter.contact_frame_no = 5
-        emitter.prev_contact_pressure = 400
-        emitter._last_contact_position = fake.pos  # noqa: SLF001
+        emitter._planner.state = "contact"
+        emitter._planner.contact_frame_no = 5
+        emitter._planner.prev_contact_pressure = 400
+        emitter._planner._last_contact_position = fake.pos  # noqa: SLF001
         fake._lmb = False
 
         sample = emitter.update(left_mapped=400, right_mapped=0)
@@ -1550,10 +1609,10 @@ class SyntheticPenReleaseTests(unittest.TestCase):
     def test_low_latency_release_uses_last_emitted_point_without_final_dab(self) -> None:
         emitter, fake = self._mk_emitter(release_teardown=False)
         emitter.config.true_low_latency = True
-        emitter.state = "contact"
-        emitter.contact_frame_no = 5
-        emitter.prev_contact_pressure = 400
-        emitter._last_contact_position = (390, 295)  # noqa: SLF001
+        emitter._planner.state = "contact"
+        emitter._planner.contact_frame_no = 5
+        emitter._planner.prev_contact_pressure = 400
+        emitter._planner._last_contact_position = (390, 295)  # noqa: SLF001
         fake.pos = (400, 300)
         fake._lmb = False
 
@@ -1566,9 +1625,9 @@ class SyntheticPenReleaseTests(unittest.TestCase):
 
     def test_release_with_teardown_sends_up_hover_endhover(self) -> None:
         emitter, fake = self._mk_emitter(release_teardown=True)
-        emitter.state = "contact"
-        emitter.contact_frame_no = 5
-        emitter.prev_contact_pressure = 400
+        emitter._planner.state = "contact"
+        emitter._planner.contact_frame_no = 5
+        emitter._planner.prev_contact_pressure = 400
         fake._lmb = False
 
         sample = emitter.update(left_mapped=400, right_mapped=0)
@@ -1660,7 +1719,7 @@ class SyntheticPenReleaseTests(unittest.TestCase):
         emitter, fake = self._mk_emitter(release_teardown=False)
         emitter.config.onset_buffer = False
         emitter.config.min_contact_pressure = 123
-        emitter._event_driven_movement = True  # noqa: SLF001
+        emitter._planner._event_driven_movement = True  # noqa: SLF001
         fake._lmb = True
 
         first = emitter.update(left_mapped=40, right_mapped=0, pressure_fresh=True)
@@ -1668,15 +1727,15 @@ class SyntheticPenReleaseTests(unittest.TestCase):
         self.assertEqual(first.state, "contact")
         self.assertEqual(len(fake.calls), 1)
         self.assertEqual(fake.calls[0]["pressure"], 123)
-        self.assertFalse(emitter.onset_catchup_pending)
+        self.assertFalse(emitter._planner.onset_catchup_pending)
         visible_floor = map_1024_to_1023(123)
-        self.assertEqual(emitter._pressure_interp_value, visible_floor)  # noqa: SLF001
+        self.assertEqual(emitter._planner._pressure_interp_value, visible_floor)  # noqa: SLF001
         self.assertEqual(  # noqa: SLF001
-            emitter._pressure_interp_start_value,
+            emitter._planner._pressure_interp_start_value,
             visible_floor,
         )
         self.assertGreaterEqual(  # noqa: SLF001
-            emitter._pressure_interp_target,
+            emitter._planner._pressure_interp_target,
             visible_floor,
         )
 
@@ -1684,14 +1743,14 @@ class SyntheticPenReleaseTests(unittest.TestCase):
         # in Krita, rather than from a hidden zero state below the floor.
         emitter.update(left_mapped=400, right_mapped=0, pressure_fresh=True)
         self.assertGreaterEqual(  # noqa: SLF001
-            emitter._pressure_interp_value,
+            emitter._planner._pressure_interp_value,
             visible_floor,
         )
         self.assertGreaterEqual(  # noqa: SLF001
-            emitter._pressure_interp_start_value,
+            emitter._planner._pressure_interp_start_value,
             visible_floor,
         )
-        self.assertEqual(emitter._pressure_interp_target, 400.0)  # noqa: SLF001
+        self.assertEqual(emitter._planner._pressure_interp_target, 400.0)  # noqa: SLF001
 
     def test_native_mouse_move_path_is_preserved_between_pen_ticks(self) -> None:
         class _FakeSuppressor:
@@ -1713,13 +1772,13 @@ class SyntheticPenReleaseTests(unittest.TestCase):
         emitter, fake = self._mk_emitter(release_teardown=False)
         fake._lmb = True
         emitter._suppressor = _FakeSuppressor()  # type: ignore[assignment]  # noqa: SLF001
-        emitter.state = "contact"
-        emitter._event_driven_movement = True  # noqa: SLF001
-        emitter.contact_warmup_done = True
-        emitter.prev_contact_pressure = 400
-        emitter._pressure_interp_initialized = True  # noqa: SLF001
-        emitter._pressure_interp_value = 400.0  # noqa: SLF001
-        emitter._pressure_interp_target = 400.0  # noqa: SLF001
+        emitter._planner.state = "contact"
+        emitter._planner._event_driven_movement = True  # noqa: SLF001
+        emitter._planner.contact_warmup_done = True
+        emitter._planner.prev_contact_pressure = 400
+        emitter._planner._pressure_interp_initialized = True  # noqa: SLF001
+        emitter._planner._pressure_interp_value = 400.0  # noqa: SLF001
+        emitter._planner._pressure_interp_target = 400.0  # noqa: SLF001
         sample = emitter.update(left_mapped=400, right_mapped=0, pressure_fresh=False)
 
         self.assertEqual(sample.state, "contact")
@@ -1757,15 +1816,15 @@ class SyntheticPenReleaseTests(unittest.TestCase):
         suppressor = _FakeSuppressor()
         fake._lmb = True
         emitter._suppressor = suppressor  # type: ignore[assignment]  # noqa: SLF001
-        emitter._event_driven_movement = True  # noqa: SLF001
-        emitter.state = "contact"
-        emitter.contact_warmup_done = True
-        emitter.prev_contact_pressure = 400
-        emitter._last_contact_position = (400, 300)  # noqa: SLF001
-        emitter._pressure_interp_initialized = True  # noqa: SLF001
-        emitter._pressure_interp_value = 400.0  # noqa: SLF001
-        emitter._pressure_interp_start_value = 400.0  # noqa: SLF001
-        emitter._pressure_interp_target = 400.0  # noqa: SLF001
+        emitter._planner._event_driven_movement = True  # noqa: SLF001
+        emitter._planner.state = "contact"
+        emitter._planner.contact_warmup_done = True
+        emitter._planner.prev_contact_pressure = 400
+        emitter._planner._last_contact_position = (400, 300)  # noqa: SLF001
+        emitter._planner._pressure_interp_initialized = True  # noqa: SLF001
+        emitter._planner._pressure_interp_value = 400.0  # noqa: SLF001
+        emitter._planner._pressure_interp_start_value = 400.0  # noqa: SLF001
+        emitter._planner._pressure_interp_target = 400.0  # noqa: SLF001
 
         emitter.update(left_mapped=400, right_mapped=0, pressure_fresh=False)
 
@@ -1800,12 +1859,12 @@ class SyntheticPenReleaseTests(unittest.TestCase):
         fake._lmb = True
         fake.pos = (423, 316)
         emitter._suppressor = _FakeSuppressor()  # type: ignore[assignment]  # noqa: SLF001
-        emitter.state = "contact"
-        emitter.contact_warmup_done = True
-        emitter.prev_contact_pressure = 400
-        emitter._pressure_interp_initialized = True  # noqa: SLF001
-        emitter._pressure_interp_value = 400.0  # noqa: SLF001
-        emitter._pressure_interp_target = 400.0  # noqa: SLF001
+        emitter._planner.state = "contact"
+        emitter._planner.contact_warmup_done = True
+        emitter._planner.prev_contact_pressure = 400
+        emitter._planner._pressure_interp_initialized = True  # noqa: SLF001
+        emitter._planner._pressure_interp_value = 400.0  # noqa: SLF001
+        emitter._planner._pressure_interp_target = 400.0  # noqa: SLF001
 
         emitter.update(left_mapped=400, right_mapped=0, pressure_fresh=False)
         first_batch_count = len(fake.calls)
@@ -1826,9 +1885,9 @@ class SyntheticPenReleaseTests(unittest.TestCase):
     def test_midstroke_pressure_changes_are_distributed_over_four_ticks(self) -> None:
         emitter, fake = self._mk_emitter(release_teardown=False)
         fake._lmb = True
-        emitter.state = "contact"
-        emitter.contact_warmup_done = True
-        emitter.prev_contact_pressure = 100
+        emitter._planner.state = "contact"
+        emitter._planner.contact_warmup_done = True
+        emitter._planner.prev_contact_pressure = 100
 
         emitter.update(left_mapped=100, right_mapped=0, pressure_fresh=True)
         rising: list[int] = []
@@ -1859,9 +1918,9 @@ class SyntheticPenReleaseTests(unittest.TestCase):
         )
         fake._lmb = True
         fake.pos = (420, 300)
-        emitter.state = "contact"
-        emitter.contact_warmup_done = True
-        emitter.prev_contact_pressure = 200
+        emitter._planner.state = "contact"
+        emitter._planner.contact_warmup_done = True
+        emitter._planner.prev_contact_pressure = 200
 
         sample = emitter.update(left_mapped=50, right_mapped=0, pressure_fresh=True)
 
@@ -1872,56 +1931,56 @@ class SyntheticPenReleaseTests(unittest.TestCase):
         emitter, fake = self._mk_emitter(release_teardown=False)
         fake._lmb = True
         fake.pos = (360, 240)
-        emitter.state = "contact"
-        emitter._event_driven_movement = True  # noqa: SLF001
-        emitter.contact_warmup_done = True
-        emitter.prev_contact_pressure = 300
-        emitter._last_contact_position = (420, 300)  # noqa: SLF001
-        emitter._pressure_interp_initialized = True  # noqa: SLF001
-        emitter._pressure_interp_value = 400.0  # noqa: SLF001
-        emitter._pressure_interp_target = 400.0  # noqa: SLF001
+        emitter._planner.state = "contact"
+        emitter._planner._event_driven_movement = True  # noqa: SLF001
+        emitter._planner.contact_warmup_done = True
+        emitter._planner.prev_contact_pressure = 300
+        emitter._planner._last_contact_position = (420, 300)  # noqa: SLF001
+        emitter._planner._pressure_interp_initialized = True  # noqa: SLF001
+        emitter._planner._pressure_interp_value = 400.0  # noqa: SLF001
+        emitter._planner._pressure_interp_target = 400.0  # noqa: SLF001
 
         emitter.update(left_mapped=600, right_mapped=0, pressure_fresh=True)
 
         self.assertEqual(fake.calls, [])
-        self.assertEqual(emitter.prev_contact_pressure, 300)
-        self.assertEqual(emitter._last_contact_position, (420, 300))  # noqa: SLF001
+        self.assertEqual(emitter._planner.prev_contact_pressure, 300)
+        self.assertEqual(emitter._planner._last_contact_position, (420, 300))  # noqa: SLF001
 
     def test_event_driven_first_fresh_zero_starts_taper_without_releasing(self) -> None:
         emitter, fake = self._mk_emitter(release_teardown=False)
         fake._lmb = True
-        emitter.state = "contact"
-        emitter._event_driven_movement = True  # noqa: SLF001
-        emitter.contact_warmup_done = True
-        emitter.prev_contact_pressure = 267
-        emitter._last_contact_position = (420, 300)  # noqa: SLF001
-        emitter._pressure_interp_initialized = True  # noqa: SLF001
-        emitter._pressure_interp_value = 267.0  # noqa: SLF001
-        emitter._pressure_interp_start_value = 267.0  # noqa: SLF001
-        emitter._pressure_interp_target = 267.0  # noqa: SLF001
-        emitter._pressure_interp_started_at = time.perf_counter()  # noqa: SLF001
+        emitter._planner.state = "contact"
+        emitter._planner._event_driven_movement = True  # noqa: SLF001
+        emitter._planner.contact_warmup_done = True
+        emitter._planner.prev_contact_pressure = 267
+        emitter._planner._last_contact_position = (420, 300)  # noqa: SLF001
+        emitter._planner._pressure_interp_initialized = True  # noqa: SLF001
+        emitter._planner._pressure_interp_value = 267.0  # noqa: SLF001
+        emitter._planner._pressure_interp_start_value = 267.0  # noqa: SLF001
+        emitter._planner._pressure_interp_target = 267.0  # noqa: SLF001
+        emitter._planner._pressure_interp_started_at = time.perf_counter()  # noqa: SLF001
 
         first_low = emitter.update(left_mapped=0, right_mapped=0, pressure_fresh=True)
 
         self.assertEqual(first_low.state, "contact")
-        self.assertEqual(emitter._pressure_interp_target, 0.0)  # noqa: SLF001
+        self.assertEqual(emitter._planner._pressure_interp_target, 0.0)  # noqa: SLF001
         self.assertEqual(fake.calls, [])
 
     def test_opted_in_stationary_pressure_change_repaints_current_point(self) -> None:
         emitter, fake = self._mk_emitter(release_teardown=False)
         emitter.config.stationary_pressure_updates = True
         emitter.config.true_low_latency = True
-        emitter._event_driven_movement = True  # noqa: SLF001
+        emitter._planner._event_driven_movement = True  # noqa: SLF001
         fake._lmb = True
-        emitter.state = "contact"
-        emitter.contact_warmup_done = True
-        emitter.prev_contact_pressure = 400
-        emitter._last_contact_position = fake.pos  # noqa: SLF001
-        emitter._pressure_interp_initialized = True  # noqa: SLF001
-        emitter._pressure_interp_value = 400.0  # noqa: SLF001
-        emitter._pressure_interp_target = 400.0  # noqa: SLF001
-        emitter._stationary_anchor_started_at = time.perf_counter() - 0.1  # noqa: SLF001
-        emitter._stationary_dab_emitted = True  # noqa: SLF001
+        emitter._planner.state = "contact"
+        emitter._planner.contact_warmup_done = True
+        emitter._planner.prev_contact_pressure = 400
+        emitter._planner._last_contact_position = fake.pos  # noqa: SLF001
+        emitter._planner._pressure_interp_initialized = True  # noqa: SLF001
+        emitter._planner._pressure_interp_value = 400.0  # noqa: SLF001
+        emitter._planner._pressure_interp_target = 400.0  # noqa: SLF001
+        emitter._planner._stationary_anchor_started_at = time.perf_counter() - 0.1  # noqa: SLF001
+        emitter._planner._stationary_dab_emitted = True  # noqa: SLF001
 
         sample = emitter.update(left_mapped=700, right_mapped=0, pressure_fresh=True)
 
@@ -1937,7 +1996,7 @@ class SyntheticPenReleaseTests(unittest.TestCase):
         emitter, fake = self._mk_emitter(release_teardown=False)
         emitter.config.stationary_pressure_updates = True
         emitter.config.onset_buffer = False
-        emitter._event_driven_movement = True  # noqa: SLF001
+        emitter._planner._event_driven_movement = True  # noqa: SLF001
         fake._lmb = True
 
         sample = emitter.update(left_mapped=400, right_mapped=0, pressure_fresh=True)
@@ -1945,7 +2004,7 @@ class SyntheticPenReleaseTests(unittest.TestCase):
         self.assertEqual(sample.state, "contact")
         self.assertEqual([call["tag"] for call in fake.calls], ["contact"])
 
-        emitter._stationary_anchor_started_at = time.perf_counter() - 0.1  # noqa: SLF001
+        emitter._planner._stationary_anchor_started_at = time.perf_counter() - 0.1  # noqa: SLF001
         emitter.update(left_mapped=400, right_mapped=0, pressure_fresh=False)
 
         self.assertEqual(
@@ -1963,40 +2022,40 @@ class SyntheticPenReleaseTests(unittest.TestCase):
         emitter, fake = self._mk_emitter(release_teardown=False)
         emitter.config.stationary_pressure_updates = True
         emitter.config.true_low_latency = True
-        emitter._event_driven_movement = True  # noqa: SLF001
+        emitter._planner._event_driven_movement = True  # noqa: SLF001
         fake._lmb = True
-        emitter.state = "contact"
-        emitter.contact_warmup_done = True
-        emitter.prev_contact_pressure = 400
-        emitter._last_contact_position = fake.pos  # noqa: SLF001
-        emitter._pressure_interp_initialized = True  # noqa: SLF001
-        emitter._pressure_interp_value = 400.0  # noqa: SLF001
-        emitter._pressure_interp_target = 400.0  # noqa: SLF001
-        emitter._stationary_anchor_started_at = time.perf_counter() - 0.1  # noqa: SLF001
-        emitter._stationary_dab_emitted = True  # noqa: SLF001
+        emitter._planner.state = "contact"
+        emitter._planner.contact_warmup_done = True
+        emitter._planner.prev_contact_pressure = 400
+        emitter._planner._last_contact_position = fake.pos  # noqa: SLF001
+        emitter._planner._pressure_interp_initialized = True  # noqa: SLF001
+        emitter._planner._pressure_interp_value = 400.0  # noqa: SLF001
+        emitter._planner._pressure_interp_target = 400.0  # noqa: SLF001
+        emitter._planner._stationary_anchor_started_at = time.perf_counter() - 0.1  # noqa: SLF001
+        emitter._planner._stationary_dab_emitted = True  # noqa: SLF001
 
         emitter.update(left_mapped=405, right_mapped=0, pressure_fresh=True)
 
         self.assertEqual(fake.calls, [])
-        self.assertEqual(emitter.prev_contact_pressure, 400)
+        self.assertEqual(emitter._planner.prev_contact_pressure, 400)
 
     def test_right_stationary_option_repaints_auxiliary_xtilt_change(self) -> None:
         emitter, fake = self._mk_emitter(release_teardown=False)
         emitter.config.right_output_target = "x_tilt"
         emitter.config.right_stationary_pressure_updates = True
         emitter.config.true_low_latency = True
-        emitter._event_driven_movement = True  # noqa: SLF001
+        emitter._planner._event_driven_movement = True  # noqa: SLF001
         fake._lmb = True
-        emitter.state = "contact"
-        emitter.active_button = "left"
-        emitter.contact_warmup_done = True
-        emitter.prev_contact_pressure = 400
-        emitter._last_contact_position = fake.pos  # noqa: SLF001
-        emitter._pressure_interp_initialized = True  # noqa: SLF001
-        emitter._pressure_interp_value = 400.0  # noqa: SLF001
-        emitter._pressure_interp_target = 400.0  # noqa: SLF001
-        emitter._stationary_anchor_started_at = time.perf_counter() - 0.1  # noqa: SLF001
-        emitter._stationary_dab_emitted = True  # noqa: SLF001
+        emitter._planner.state = "contact"
+        emitter._planner.active_button = "left"
+        emitter._planner.contact_warmup_done = True
+        emitter._planner.prev_contact_pressure = 400
+        emitter._planner._last_contact_position = fake.pos  # noqa: SLF001
+        emitter._planner._pressure_interp_initialized = True  # noqa: SLF001
+        emitter._planner._pressure_interp_value = 400.0  # noqa: SLF001
+        emitter._planner._pressure_interp_target = 400.0  # noqa: SLF001
+        emitter._planner._stationary_anchor_started_at = time.perf_counter() - 0.1  # noqa: SLF001
+        emitter._planner._stationary_dab_emitted = True  # noqa: SLF001
 
         emitter.update(left_mapped=400, right_mapped=512, pressure_fresh=True)
 
@@ -2022,21 +2081,21 @@ class SyntheticPenReleaseTests(unittest.TestCase):
         emitter, fake = self._mk_emitter(release_teardown=False)
         emitter.config.stationary_pressure_updates = True
         emitter.config.true_low_latency = True
-        emitter._event_driven_movement = True  # noqa: SLF001
+        emitter._planner._event_driven_movement = True  # noqa: SLF001
         emitter._suppressor = _MovingSuppressor()  # type: ignore[assignment]  # noqa: SLF001
         fake._lmb = True
-        emitter.state = "contact"
-        emitter.contact_warmup_done = True
-        emitter.prev_contact_pressure = 400
-        emitter._last_contact_position = fake.pos  # noqa: SLF001
-        emitter._stationary_anchor_started_at = time.perf_counter() - 0.1  # noqa: SLF001
+        emitter._planner.state = "contact"
+        emitter._planner.contact_warmup_done = True
+        emitter._planner.prev_contact_pressure = 400
+        emitter._planner._last_contact_position = fake.pos  # noqa: SLF001
+        emitter._planner._stationary_anchor_started_at = time.perf_counter() - 0.1  # noqa: SLF001
 
         emitter.update(left_mapped=700, right_mapped=0, pressure_fresh=True)
 
         self.assertEqual(len(fake.calls), 1)
         self.assertEqual((fake.calls[0]["x"], fake.calls[0]["y"]), (420, 300))
         self.assertNotEqual(fake.calls[0]["tag"], "stationary_contact")
-        self.assertFalse(emitter._stationary_dab_emitted)  # noqa: SLF001
+        self.assertFalse(emitter._planner._stationary_dab_emitted)  # noqa: SLF001
 
     def test_event_driven_onset_spreads_new_pressure_without_reversal(self) -> None:
         class _FakeSuppressor:
@@ -2052,20 +2111,20 @@ class SyntheticPenReleaseTests(unittest.TestCase):
         emitter, fake = self._mk_emitter(release_teardown=False)
         fake._lmb = True
         emitter._suppressor = _FakeSuppressor()  # type: ignore[assignment]  # noqa: SLF001
-        emitter._event_driven_movement = True  # noqa: SLF001
-        emitter.state = "contact"
-        emitter.onset_catchup_pending = True
-        emitter.contact_warmup_done = True
-        emitter.prev_contact_pressure = 11
-        emitter.contact_start_x = 400
-        emitter.contact_start_y = 300
-        emitter._last_contact_position = (400, 300)  # noqa: SLF001
-        emitter._pressure_interp_initialized = True  # noqa: SLF001
-        emitter._pressure_interp_value = 13.0  # noqa: SLF001
-        emitter._pressure_interp_start_value = 13.0  # noqa: SLF001
-        emitter._pressure_interp_target = 232.0  # noqa: SLF001
-        emitter._pressure_interp_started_at = time.perf_counter()  # noqa: SLF001
-        emitter._pressure_interp_duration_s = 1.0  # noqa: SLF001
+        emitter._planner._event_driven_movement = True  # noqa: SLF001
+        emitter._planner.state = "contact"
+        emitter._planner.onset_catchup_pending = True
+        emitter._planner.contact_warmup_done = True
+        emitter._planner.prev_contact_pressure = 11
+        emitter._planner.contact_start_x = 400
+        emitter._planner.contact_start_y = 300
+        emitter._planner._last_contact_position = (400, 300)  # noqa: SLF001
+        emitter._planner._pressure_interp_initialized = True  # noqa: SLF001
+        emitter._planner._pressure_interp_value = 13.0  # noqa: SLF001
+        emitter._planner._pressure_interp_start_value = 13.0  # noqa: SLF001
+        emitter._planner._pressure_interp_target = 232.0  # noqa: SLF001
+        emitter._planner._pressure_interp_started_at = time.perf_counter()  # noqa: SLF001
+        emitter._planner._pressure_interp_duration_s = 1.0  # noqa: SLF001
 
         emitter.update(left_mapped=232, right_mapped=0, pressure_fresh=False)
 
@@ -2073,10 +2132,10 @@ class SyntheticPenReleaseTests(unittest.TestCase):
         self.assertTrue(pressures)
         self.assertEqual(pressures, sorted(pressures))
         self.assertGreaterEqual(pressures[-1], 230)
-        self.assertEqual(emitter._pressure_interp_value, 232.0)  # noqa: SLF001
-        self.assertEqual(emitter._pressure_interp_start_value, 232.0)  # noqa: SLF001
-        self.assertEqual(emitter._pressure_interp_target, 232.0)  # noqa: SLF001
-        after = emitter._interpolate_pressure(  # noqa: SLF001
+        self.assertEqual(emitter._planner._pressure_interp_value, 232.0)  # noqa: SLF001
+        self.assertEqual(emitter._planner._pressure_interp_start_value, 232.0)  # noqa: SLF001
+        self.assertEqual(emitter._planner._pressure_interp_target, 232.0)  # noqa: SLF001
+        after = emitter._planner._interpolate_pressure(  # noqa: SLF001
             232,
             pressure_fresh=False,
             now=time.perf_counter(),
@@ -2099,19 +2158,19 @@ class SyntheticPenReleaseTests(unittest.TestCase):
         emitter, fake = self._mk_emitter(release_teardown=False)
         emitter.config.onset_buffer = False
         emitter.config.path_stabilization = 0
-        emitter._event_driven_movement = True  # noqa: SLF001
+        emitter._planner._event_driven_movement = True  # noqa: SLF001
         emitter._suppressor = _FakeSuppressor()  # type: ignore[assignment]  # noqa: SLF001
         fake._lmb = True
-        emitter.state = "contact"
-        emitter.contact_warmup_done = True
-        emitter.contact_start_x = 400
-        emitter.contact_start_y = 300
-        emitter.prev_contact_pressure = 200
-        emitter._last_contact_position = (400, 300)  # noqa: SLF001
-        emitter._pressure_interp_initialized = True  # noqa: SLF001
-        emitter._pressure_interp_value = 800.0  # noqa: SLF001
-        emitter._pressure_interp_start_value = 800.0  # noqa: SLF001
-        emitter._pressure_interp_target = 800.0  # noqa: SLF001
+        emitter._planner.state = "contact"
+        emitter._planner.contact_warmup_done = True
+        emitter._planner.contact_start_x = 400
+        emitter._planner.contact_start_y = 300
+        emitter._planner.prev_contact_pressure = 200
+        emitter._planner._last_contact_position = (400, 300)  # noqa: SLF001
+        emitter._planner._pressure_interp_initialized = True  # noqa: SLF001
+        emitter._planner._pressure_interp_value = 800.0  # noqa: SLF001
+        emitter._planner._pressure_interp_start_value = 800.0  # noqa: SLF001
+        emitter._planner._pressure_interp_target = 800.0  # noqa: SLF001
 
         emitter.update(left_mapped=800, right_mapped=0, pressure_fresh=False)
 
@@ -2126,16 +2185,16 @@ class SyntheticPenReleaseTests(unittest.TestCase):
 
     def test_event_driven_pressure_interpolation_uses_elapsed_time(self) -> None:
         emitter, _fake = self._mk_emitter(release_teardown=False)
-        emitter._event_driven_movement = True  # noqa: SLF001
+        emitter._planner._event_driven_movement = True  # noqa: SLF001
 
-        initial = emitter._interpolate_pressure(  # noqa: SLF001
+        initial = emitter._planner._interpolate_pressure(  # noqa: SLF001
             100, pressure_fresh=True, now=1.0
         )
-        target_received = emitter._interpolate_pressure(  # noqa: SLF001
+        target_received = emitter._planner._interpolate_pressure(  # noqa: SLF001
             900, pressure_fresh=True, now=1.0 + (1.0 / 60.0)
         )
         ramp = [
-            emitter._interpolate_pressure(  # noqa: SLF001
+            emitter._planner._interpolate_pressure(  # noqa: SLF001
                 900,
                 pressure_fresh=False,
                 now=1.0 + (1.0 / 60.0) + offset,
@@ -2152,7 +2211,7 @@ class SyntheticPenReleaseTests(unittest.TestCase):
     def test_event_driven_contact_never_stamps_preinterpolation_pressure(self) -> None:
         emitter, fake = self._mk_emitter(release_teardown=False)
         fake._lmb = True
-        emitter._event_driven_movement = True  # noqa: SLF001
+        emitter._planner._event_driven_movement = True  # noqa: SLF001
 
         emitter.update(left_mapped=0, right_mapped=0, pressure_fresh=True)
         candidate = emitter.update(
@@ -2177,7 +2236,7 @@ class SyntheticPenReleaseTests(unittest.TestCase):
     def test_long_known_segment_is_subdivided_for_spatial_pressure_ramp(self) -> None:
         emitter, _fake = self._mk_emitter(release_teardown=False)
 
-        dense = emitter._densify_contact_path(  # noqa: SLF001
+        dense = emitter._planner._densify_contact_path(  # noqa: SLF001
             [(40, 0)],
             anchor=(0, 0),
             max_spacing_px=4.0,
@@ -2194,7 +2253,7 @@ class SyntheticPenReleaseTests(unittest.TestCase):
     def test_default_contact_path_spacing_is_pixel_dense(self) -> None:
         emitter, _fake = self._mk_emitter(release_teardown=False)
 
-        dense = emitter._densify_contact_path(  # noqa: SLF001
+        dense = emitter._planner._densify_contact_path(  # noqa: SLF001
             [(20, 0)],
             anchor=(0, 0),
         )
@@ -2212,7 +2271,7 @@ class SyntheticPenReleaseTests(unittest.TestCase):
     def test_contact_point_budget_is_small_for_stable_short_segment(self) -> None:
         emitter, _fake = self._mk_emitter(release_teardown=False)
 
-        budget = emitter._contact_point_budget(  # noqa: SLF001
+        budget = emitter._planner._contact_point_budget(  # noqa: SLF001
             [(20, 0)],
             anchor=(0, 0),
             pressure_start=500,
@@ -2224,13 +2283,13 @@ class SyntheticPenReleaseTests(unittest.TestCase):
     def test_contact_point_budget_expands_for_pressure_and_caps_fast_geometry(self) -> None:
         emitter, _fake = self._mk_emitter(release_teardown=False)
 
-        pressure_budget = emitter._contact_point_budget(  # noqa: SLF001
+        pressure_budget = emitter._planner._contact_point_budget(  # noqa: SLF001
             [(10, 0)],
             anchor=(0, 0),
             pressure_start=100,
             pressure_end=550,
         )
-        geometry_budget = emitter._contact_point_budget(  # noqa: SLF001
+        geometry_budget = emitter._planner._contact_point_budget(  # noqa: SLF001
             [(500, 0)],
             anchor=(0, 0),
             pressure_start=500,
@@ -2245,7 +2304,7 @@ class SyntheticPenReleaseTests(unittest.TestCase):
         emitter.config.path_stabilization = 60
         raw = [(0, 0), (10, 5), (20, 0), (30, 5)]
 
-        stabilized = emitter._stabilize_contact_path(raw)  # noqa: SLF001
+        stabilized = emitter._planner._stabilize_contact_path(raw)  # noqa: SLF001
 
         self.assertEqual(stabilized[0], raw[0])
         self.assertLess(stabilized[1][1], raw[1][1])
@@ -2260,14 +2319,14 @@ class SyntheticPenReleaseTests(unittest.TestCase):
         emitter.config.path_stabilization = 0
         raw = [(0, 0), (10, 5), (20, 0)]
 
-        self.assertEqual(emitter._stabilize_contact_path(raw), raw)  # noqa: SLF001
+        self.assertEqual(emitter._planner._stabilize_contact_path(raw), raw)  # noqa: SLF001
 
     def test_direct_contact_path_preserves_captured_coordinates_without_densifying(self) -> None:
         emitter, _fake = self._mk_emitter(release_teardown=False)
-        emitter._last_contact_position = (0, 0)  # noqa: SLF001
+        emitter._planner._last_contact_position = (0, 0)  # noqa: SLF001
         captured = [(5, 2), (11, 7), (18, 3)]
 
-        direct = emitter._prepare_direct_contact_path(  # noqa: SLF001
+        direct = emitter._planner._prepare_direct_contact_path(  # noqa: SLF001
             captured,
             endpoint=captured[-1],
         )
@@ -2276,10 +2335,10 @@ class SyntheticPenReleaseTests(unittest.TestCase):
 
     def test_low_latency_direct_path_keeps_only_newest_coordinate(self) -> None:
         emitter, _fake = self._mk_emitter(release_teardown=False)
-        emitter._last_contact_position = (0, 0)  # noqa: SLF001
+        emitter._planner._last_contact_position = (0, 0)  # noqa: SLF001
         captured = [(5, 2), (11, 7), (18, 3)]
 
-        direct = emitter._prepare_direct_contact_path(  # noqa: SLF001
+        direct = emitter._planner._prepare_direct_contact_path(  # noqa: SLF001
             captured,
             endpoint=captured[-1],
             latest_only=True,
@@ -2289,11 +2348,11 @@ class SyntheticPenReleaseTests(unittest.TestCase):
 
     def test_low_latency_pressure_bypasses_interpolation(self) -> None:
         emitter, _fake = self._mk_emitter(release_teardown=False)
-        emitter._pressure_interp_initialized = True  # noqa: SLF001
-        emitter._pressure_interp_value = 100.0  # noqa: SLF001
-        emitter._pressure_interp_target = 100.0  # noqa: SLF001
+        emitter._planner._pressure_interp_initialized = True  # noqa: SLF001
+        emitter._planner._pressure_interp_value = 100.0  # noqa: SLF001
+        emitter._planner._pressure_interp_target = 100.0  # noqa: SLF001
 
-        pressure = emitter._interpolate_pressure(  # noqa: SLF001
+        pressure = emitter._planner._interpolate_pressure(  # noqa: SLF001
             900,
             pressure_fresh=True,
             instant=True,
@@ -2301,57 +2360,57 @@ class SyntheticPenReleaseTests(unittest.TestCase):
         )
 
         self.assertEqual(pressure, 900)
-        self.assertEqual(emitter._pressure_interp_value, 900.0)  # noqa: SLF001
-        self.assertEqual(emitter._pressure_interp_remaining, 0)  # noqa: SLF001
+        self.assertEqual(emitter._planner._pressure_interp_value, 900.0)  # noqa: SLF001
+        self.assertEqual(emitter._planner._pressure_interp_remaining, 0)  # noqa: SLF001
 
     def test_pressure_influence_compresses_variation_but_preserves_pen_up(self) -> None:
         emitter, _fake = self._mk_emitter(release_teardown=False)
         emitter.config.pressure_influence = 50
 
-        self.assertEqual(emitter._apply_pressure_influence(0), 0)  # noqa: SLF001
-        self.assertEqual(emitter._apply_pressure_influence(512), 512)  # noqa: SLF001
-        self.assertEqual(emitter._apply_pressure_influence(912), 712)  # noqa: SLF001
-        self.assertEqual(emitter._apply_pressure_influence(112), 312)  # noqa: SLF001
+        self.assertEqual(emitter._planner._apply_pressure_influence(0), 0)  # noqa: SLF001
+        self.assertEqual(emitter._planner._apply_pressure_influence(512), 512)  # noqa: SLF001
+        self.assertEqual(emitter._planner._apply_pressure_influence(912), 712)  # noqa: SLF001
+        self.assertEqual(emitter._planner._apply_pressure_influence(112), 312)  # noqa: SLF001
 
     def test_clean_stroke_endings_discards_a_short_release_pressure_ramp(self) -> None:
         emitter, _fake = self._mk_emitter(release_teardown=False)
 
         self.assertEqual(
-            emitter._apply_clean_stroke_ending(800, enabled=True, pressure_fresh=True, button_down=True, now=1.0),  # noqa: SLF001
+            emitter._planner._apply_clean_stroke_ending(800, enabled=True, pressure_fresh=True, button_down=True, now=1.0),  # noqa: SLF001
             800,
         )
         self.assertEqual(
-            emitter._apply_clean_stroke_ending(250, enabled=True, pressure_fresh=True, button_down=True, now=1.010),  # noqa: SLF001
+            emitter._planner._apply_clean_stroke_ending(250, enabled=True, pressure_fresh=True, button_down=True, now=1.010),  # noqa: SLF001
             800,
         )
         self.assertEqual(
-            emitter._apply_clean_stroke_ending(0, enabled=True, pressure_fresh=True, button_down=False, now=1.015),  # noqa: SLF001
+            emitter._planner._apply_clean_stroke_ending(0, enabled=True, pressure_fresh=True, button_down=False, now=1.015),  # noqa: SLF001
             800,
         )
 
     def test_clean_stroke_endings_commits_an_intentional_pressure_drop(self) -> None:
         emitter, _fake = self._mk_emitter(release_teardown=False)
-        emitter._apply_clean_stroke_ending(800, enabled=True, pressure_fresh=True, button_down=True, now=2.0)  # noqa: SLF001
+        emitter._planner._apply_clean_stroke_ending(800, enabled=True, pressure_fresh=True, button_down=True, now=2.0)  # noqa: SLF001
 
-        held = emitter._apply_clean_stroke_ending(300, enabled=True, pressure_fresh=True, button_down=True, now=2.001)  # noqa: SLF001
-        committed = emitter._apply_clean_stroke_ending(300, enabled=True, pressure_fresh=False, button_down=True, now=2.001 + CLEAN_STROKE_ENDING_HOLD_S + 0.000001)  # noqa: SLF001
+        held = emitter._planner._apply_clean_stroke_ending(300, enabled=True, pressure_fresh=True, button_down=True, now=2.001)  # noqa: SLF001
+        committed = emitter._planner._apply_clean_stroke_ending(300, enabled=True, pressure_fresh=False, button_down=True, now=2.001 + CLEAN_STROKE_ENDING_HOLD_S + 0.000001)  # noqa: SLF001
 
         self.assertEqual(held, 800)
         self.assertEqual(committed, 300)
 
     def test_clean_stroke_endings_keeps_pressure_increases_immediate(self) -> None:
         emitter, _fake = self._mk_emitter(release_teardown=False)
-        emitter._apply_clean_stroke_ending(300, enabled=True, pressure_fresh=True, button_down=True, now=3.0)  # noqa: SLF001
+        emitter._planner._apply_clean_stroke_ending(300, enabled=True, pressure_fresh=True, button_down=True, now=3.0)  # noqa: SLF001
 
-        increased = emitter._apply_clean_stroke_ending(700, enabled=True, pressure_fresh=True, button_down=True, now=3.001)  # noqa: SLF001
+        increased = emitter._planner._apply_clean_stroke_ending(700, enabled=True, pressure_fresh=True, button_down=True, now=3.001)  # noqa: SLF001
 
         self.assertEqual(increased, 700)
 
     def test_cubic_join_continues_previous_direction_without_prediction(self) -> None:
         emitter, _fake = self._mk_emitter(release_teardown=False)
-        emitter._contact_path_direction = (1.0, 0.0)  # noqa: SLF001
+        emitter._planner._contact_path_direction = (1.0, 0.0)  # noqa: SLF001
 
-        dense = emitter._densify_contact_path(  # noqa: SLF001
+        dense = emitter._planner._densify_contact_path(  # noqa: SLF001
             [(20, 20)],
             anchor=(0, 0),
             max_spacing_px=4.0,
@@ -2359,7 +2418,7 @@ class SyntheticPenReleaseTests(unittest.TestCase):
 
         self.assertEqual(dense[-1], (20, 20))
         self.assertGreater(dense[0][0], dense[0][1])
-        direction = emitter._contact_path_direction  # noqa: SLF001
+        direction = emitter._planner._contact_path_direction  # noqa: SLF001
         self.assertIsNotNone(direction)
         assert direction is not None
         self.assertAlmostEqual(direction[0], 2**-0.5, places=5)
@@ -2368,12 +2427,12 @@ class SyntheticPenReleaseTests(unittest.TestCase):
     def test_single_zero_pressure_glitch_does_not_release_held_lmb(self) -> None:
         emitter, fake = self._mk_emitter(release_teardown=False)
         fake._lmb = True
-        emitter.state = "contact"
-        emitter.contact_warmup_done = True
-        emitter.prev_contact_pressure = 800
-        emitter._pressure_interp_initialized = True  # noqa: SLF001
-        emitter._pressure_interp_value = 800.0  # noqa: SLF001
-        emitter._pressure_interp_target = 800.0  # noqa: SLF001
+        emitter._planner.state = "contact"
+        emitter._planner.contact_warmup_done = True
+        emitter._planner.prev_contact_pressure = 800
+        emitter._planner._pressure_interp_initialized = True  # noqa: SLF001
+        emitter._planner._pressure_interp_value = 800.0  # noqa: SLF001
+        emitter._planner._pressure_interp_target = 800.0  # noqa: SLF001
 
         glitch = emitter.update(left_mapped=0, right_mapped=0, pressure_fresh=True)
 
@@ -2387,9 +2446,9 @@ class SyntheticPenReleaseTests(unittest.TestCase):
     def test_repeated_fresh_lows_wait_for_button_up(self) -> None:
         emitter, fake = self._mk_emitter(release_teardown=False)
         fake._lmb = True
-        emitter.state = "contact"
-        emitter.contact_warmup_done = True
-        emitter.prev_contact_pressure = 800
+        emitter._planner.state = "contact"
+        emitter._planner.contact_warmup_done = True
+        emitter._planner.prev_contact_pressure = 800
 
         first = emitter.update(left_mapped=0, right_mapped=0, pressure_fresh=True)
         second = emitter.update(left_mapped=0, right_mapped=0, pressure_fresh=True)
@@ -2412,12 +2471,12 @@ class SyntheticPenReleaseTests(unittest.TestCase):
         emitter, fake = self._mk_emitter(release_teardown=False)
         emitter.config.min_contact_pressure = 154
         emitter.config.true_low_latency = True
-        emitter._event_driven_movement = True  # noqa: SLF001
+        emitter._planner._event_driven_movement = True  # noqa: SLF001
         fake._lmb = True
-        emitter.state = "contact"
-        emitter.contact_warmup_done = True
-        emitter.prev_contact_pressure = 400
-        emitter._last_contact_position = (400, 300)  # noqa: SLF001
+        emitter._planner.state = "contact"
+        emitter._planner.contact_warmup_done = True
+        emitter._planner.prev_contact_pressure = 400
+        emitter._planner._last_contact_position = (400, 300)  # noqa: SLF001
 
         class _MovingSuppressor:
             def __init__(self) -> None:

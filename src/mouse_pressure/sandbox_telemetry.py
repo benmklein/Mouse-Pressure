@@ -14,7 +14,6 @@ import time
 from dataclasses import dataclass
 from typing import Final
 
-
 TELEMETRY_TAG: Final = r"Local\MousePressureTelemetryV1"
 TELEMETRY_VERSION: Final = 1
 TELEMETRY_SIZE: Final = 64

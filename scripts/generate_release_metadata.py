@@ -8,13 +8,12 @@ CycloneDX SBOM and records the source revision used for the build.
 from __future__ import annotations
 
 import argparse
-from importlib.metadata import PackageNotFoundError, metadata, version
 import json
-from pathlib import Path
-import subprocess
 import ssl
+import subprocess
 import sys
-
+from importlib.metadata import PackageNotFoundError, metadata, version
+from pathlib import Path
 
 ROOT = Path(__file__).resolve().parents[1]
 DEFAULT_OUTPUT = ROOT / "dist" / "release-metadata"

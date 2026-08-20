@@ -9,9 +9,16 @@ from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "src"))
 
-from mouse_pressure.bridge.config import ChannelConfig, LaunchConfig, RuntimeConfig  # noqa: E402
-from mouse_pressure.web.models import StreamAlreadyActiveError, StreamNotActiveError  # noqa: E402
-from mouse_pressure.web.runtime_service import RuntimeService  # noqa: E402
+from mouse_pressure.bridge.config import (  # noqa: E402
+    ChannelConfig,
+    LaunchConfig,
+    RuntimeConfig,
+)
+from mouse_pressure.runtime.models import (  # noqa: E402
+    StreamAlreadyActiveError,
+    StreamNotActiveError,
+)
+from mouse_pressure.runtime.runtime_service import RuntimeService  # noqa: E402
 
 
 def _frame(left_raw: int, right_raw: int) -> list[int]:
@@ -45,6 +52,8 @@ class _MemoryConfigStore:
 class _FakeSession:
     def __init__(self, rows: list[tuple[float, list[int]]]) -> None:
         self.rows = list(rows)
+        if not self.rows:
+            self.rows.append((time.perf_counter(), _frame(100, 100)))
         self.open_calls = 0
         self.close_calls = 0
         self.enable_calls = 0
@@ -142,10 +151,19 @@ class _FakeEmitter:
         self.fail_open_calls: list[str] = []
         self.updates: list[tuple[int, int]] = []
         self.raw_updates: list[tuple[int | None, int | None]] = []
+        self.pen = None
+        self.native_input_capture = None
         self.movement_callback = None
+        self.force_stop_callback = None
 
-    def open(self) -> None:
+    def set_native_input_capture(self, capture) -> None:
+        self.native_input_capture = capture
+
+    def open_unarmed(self) -> None:
         self.open_calls += 1
+
+    def arm_input(self) -> None:
+        pass
 
     def close(self) -> None:
         self.close_calls += 1
@@ -158,6 +176,15 @@ class _FakeEmitter:
 
     def set_movement_callback(self, callback) -> None:
         self.movement_callback = callback
+
+    def set_force_stop_callback(self, callback) -> None:
+        self.force_stop_callback = callback
+
+    def set_debug_mode(self, enabled: bool) -> None:
+        self.config.debug_mode = enabled
+
+    def sync_button_modes(self) -> None:
+        pass
 
     def update(
         self,
@@ -329,7 +356,6 @@ class RuntimeServiceTests(unittest.IsolatedAsyncioTestCase):
                 "linked": True,
                 "debug_mode": True,
                 "minimize_to_tray": False,
-                "app_profiles": {"krita.exe": "custom"},
             }
         )
         defaults = RuntimeConfig(
@@ -344,7 +370,6 @@ class RuntimeServiceTests(unittest.IsolatedAsyncioTestCase):
         self.assertFalse(restored.debug_mode)
         self.assertTrue(restored.minimize_to_tray)
         self.assertEqual(restored.session_dpi, 1200)
-        self.assertEqual(restored.app_profiles, {})
         self.assertEqual(store.current, restored)
 
     async def test_start_primes_pressure_before_arming_button_suppression(self) -> None:

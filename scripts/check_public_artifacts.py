@@ -3,10 +3,9 @@
 from __future__ import annotations
 
 import argparse
-from pathlib import Path
 import re
 import subprocess
-
+from pathlib import Path
 
 ROOT = Path(__file__).resolve().parents[1]
 DIAGNOSTIC_SUFFIXES = {".csv", ".json", ".log", ".md", ".txt"}

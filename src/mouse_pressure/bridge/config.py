@@ -62,7 +62,6 @@ class RuntimeConfig:
     session_device_settings_follow_normal: bool = True
     left: ChannelConfig = field(default_factory=ChannelConfig)
     right: ChannelConfig = field(default_factory=ChannelConfig)
-    app_profiles: dict[str, str] = field(default_factory=dict)
 
 
 @dataclass

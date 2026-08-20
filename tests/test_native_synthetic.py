@@ -5,6 +5,7 @@ from pathlib import Path
 
 import pytest
 
+import mouse_pressure.bridge.native_synthetic as native_synthetic_module
 from mouse_pressure.bridge.native_synthetic import (
     NativeSyntheticPenInjector,
     NativeTransformedMouseCapture,
@@ -21,6 +22,37 @@ def test_native_relay_override_is_preferred(
     relay.write_bytes(b"test")
     monkeypatch.setenv("MOUSE_PRESSURE_NATIVE_RELAY", str(relay))
     assert find_native_relay() == relay
+
+
+def test_native_synthetic_open_is_idempotent(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    class _Relay:
+        pass
+
+    class _Library:
+        api_version = 3
+        path = Path("relay.dll")
+
+        def __init__(self) -> None:
+            self.created = 0
+
+        def create_synthetic_relay(self, _frame_interval_us: int) -> _Relay:
+            self.created += 1
+            return _Relay()
+
+    library = _Library()
+    monkeypatch.setattr(
+        native_synthetic_module,
+        "load_native_relay",
+        lambda _path=None: library,
+    )
+    injector = NativeSyntheticPenInjector(log=lambda _line: None)
+
+    injector.open()
+    injector.open()
+
+    assert library.created == 1
 
 
 @pytest.mark.skipif(os.name != "nt", reason="Windows pointer injection only")

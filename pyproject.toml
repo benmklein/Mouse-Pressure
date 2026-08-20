@@ -17,6 +17,7 @@ dev = [
     "ipython>=8.0",
     "pillow>=11.0",
     "pytest>=8.0",
+    "ruff>=0.11",
 ]
 release = [
     "pyinstaller==6.22.0",
@@ -27,10 +28,6 @@ sandbox = [
 usb = [
     "pyusb>=1.2",
 ]
-web = [
-    "websockets>=13.0",
-]
-
 [project.scripts]
 mp-sniff = "mouse_pressure.cli:sniff"
 mp-bridge = "mouse_pressure.cli:bridge"
@@ -40,10 +37,16 @@ mp-pen = "mouse_pressure.bridge.synthetic_pen_cli:main"
 mp-dev-ui = "mouse_pressure.dev_ui:main"
 mouse-pressure = "mouse_pressure.app:main"
 mouse-pressure-sandbox = "mouse_pressure_sandbox.main:main"
-mp-bridge-ws = "mouse_pressure.web.main:main"
 
 [tool.pytest.ini_options]
 testpaths = ["tests"]
+
+[tool.ruff]
+target-version = "py312"
+src = ["src", "tests"]
+
+[tool.ruff.lint]
+select = ["E4", "E7", "E9", "F", "I"]
 
 [tool.hatch.build.targets.wheel]
 packages = ["src/mouse_pressure", "src/mouse_pressure_sandbox"]

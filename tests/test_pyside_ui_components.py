@@ -8,13 +8,13 @@ os.environ.setdefault("QT_QPA_PLATFORM", "offscreen")
 from PySide6.QtWidgets import QApplication, QLabel  # noqa: E402
 
 from mouse_pressure.bridge.config import ChannelConfig, RuntimeConfig  # noqa: E402
-from mouse_pressure.dev_ui import DevSettings  # noqa: E402
 from mouse_pressure.pyside_ui import (  # noqa: E402
     ChannelEditor,
     ConfirmationDialog,
     MainWindow,
 )
 from mouse_pressure.ui.qt_widgets import MappingGraph  # noqa: E402
+from mouse_pressure.ui.settings_model import SettingsDraft  # noqa: E402
 
 
 def _app() -> QApplication:
@@ -98,17 +98,16 @@ def test_reset_confirmation_uses_compact_themed_dialog() -> None:
 
 
 def test_live_mapping_marker_uses_effective_pressure_floor() -> None:
-    settings = DevSettings(
+    channel = ChannelConfig(
         raw_min=320,
         raw_max=680,
-        deadzone=0,
-        curve="linear",
-        curve_strength=1.0,
-        contact_preset="medium",
-        suppress_lmb=True,
-        release_teardown=False,
         pressure_floor=20,
         pressure_influence=100,
+    )
+    draft = SettingsDraft(
+        config=RuntimeConfig(left=channel),
+        injection_hz=240.0,
+        normal_device={},
     )
 
     class _Graph:
@@ -129,14 +128,13 @@ def test_live_mapping_marker_uses_effective_pressure_floor() -> None:
     window = SimpleNamespace(
         _latest_raw={"left": 0, "right": 0},
         _latest_mapped={"left": 0, "right": 0},
-        linked=SimpleNamespace(isChecked=lambda: False),
         channel_tabs=SimpleNamespace(currentIndex=lambda: 0),
         mapping_graph=graph,
         input_metric=_Metric(),
         output_metric=_Metric(),
         raw_metric=_Metric(),
         running=False,
-        _channel_settings=lambda _channel: settings,
+        _settings_draft=lambda: draft,
     )
 
     MainWindow._handle_telemetry(
@@ -150,7 +148,7 @@ def test_live_mapping_marker_uses_effective_pressure_floor() -> None:
         },
     )
 
-    expected_floor = round(settings.pressure_floor * 1024 / 100)
+    expected_floor = round(channel.pressure_floor * 1024 / 100)
     assert graph.current["left"] == (321, expected_floor)
     assert window.input_metric.text == "0%"
     assert window.output_metric.text == "20%"

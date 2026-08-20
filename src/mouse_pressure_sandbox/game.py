@@ -9,7 +9,6 @@ import pygame
 from mouse_pressure_sandbox.input import PressureSensorReader
 from mouse_pressure_sandbox.physics import RockSimulation, Vec2
 
-
 WINDOW_SIZE = (1280, 760)
 FIXED_DT = 1.0 / 120.0
 MAX_STEPS_PER_FRAME = 8

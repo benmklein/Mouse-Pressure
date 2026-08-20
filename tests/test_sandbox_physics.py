@@ -4,7 +4,6 @@ import pygame
 
 from mouse_pressure_sandbox.physics import RockSimulation, Vec2
 
-
 DT = 1.0 / 120.0
 BOUNDS = pygame.Rect(0, 0, 1200, 700)
 

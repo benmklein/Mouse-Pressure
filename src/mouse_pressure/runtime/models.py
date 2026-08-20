@@ -1,15 +1,8 @@
-"""Validation models/helpers shared by CLI and WS layers."""
-
+"""Validation errors and helpers shared by runtime configuration callers."""
 from __future__ import annotations
-
-import re
 
 
 class ValidationError(ValueError):
-    pass
-
-
-class ProfileNotFoundError(FileNotFoundError):
     pass
 
 
@@ -28,7 +21,6 @@ class StreamNotActiveError(RuntimeError):
 _PROTOCOL_CURVES = {"linear", "soft", "hard", "scurve"}
 _CONTACT_PRESETS = {"light", "medium", "firm"}
 _OUTPUT_TARGETS = {"pressure", "x_tilt"}
-_PROFILE_NAME_RE = re.compile(r"^[A-Za-z0-9 _-]{1,64}$")
 CURVE_STRENGTH_MIN = 0.5
 CURVE_STRENGTH_MAX = 4.0
 
@@ -140,30 +132,4 @@ def validate_channel_config(ch: dict) -> list[str]:
 
     return errors
 
-
-def validate_profile_name(name: str) -> list[str]:
-    errors: list[str] = []
-    if not isinstance(name, str):
-        return ["profile name must be a string"]
-    stripped = name.strip()
-    if not stripped:
-        errors.append("profile name cannot be empty")
-    if len(stripped) > 64:
-        errors.append("profile name must be 1..64 chars")
-    if not _PROFILE_NAME_RE.fullmatch(stripped):
-        errors.append("profile name may only contain alphanumeric, spaces, hyphen, underscore")
-    return errors
-
-
-def validate_process_name(proc: str) -> list[str]:
-    errors: list[str] = []
-    if not isinstance(proc, str):
-        return ["process name must be a string"]
-    if len(proc) < 1 or len(proc) > 128:
-        errors.append("process name must be 1..128 chars")
-    if "/" in proc or "\\" in proc:
-        errors.append("process name must not contain path separators")
-    if not proc.lower().endswith(".exe"):
-        errors.append("process name must end with .exe")
-    return errors
 

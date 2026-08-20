@@ -10,7 +10,7 @@ hidden_imports = [
     "PySide6.QtCore",
     "PySide6.QtGui",
     "PySide6.QtWidgets",
-    "mouse_pressure.web.device_restore_watchdog",
+    "mouse_pressure.runtime.device_restore_watchdog",
 ]
 
 a = Analysis(
@@ -44,7 +44,6 @@ a = Analysis(
         "numpy",
         "pytest",
         "tkinter",
-        "websockets",
     ],
     noarchive=False,
     optimize=1,

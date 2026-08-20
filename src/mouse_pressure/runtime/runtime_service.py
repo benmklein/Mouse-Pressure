@@ -3,21 +3,43 @@
 from __future__ import annotations
 
 import asyncio
-import os
 import queue
-import subprocess
 import threading
 import time
-from dataclasses import replace
 from typing import Callable, TypeAlias
 
-from mouse_pressure.bridge.config import CONTACT_PRESETS, ChannelConfig, LaunchConfig, RuntimeConfig
-from mouse_pressure.bridge.curves import PressureConfig, map_normalized_pressure, normalize_curve_name
-from mouse_pressure.bridge.native_synthetic import (
-    NativeSyntheticPenInjector,
-    NativeTransformedMouseCapture,
+from mouse_pressure.bridge.config import (
+    CONTACT_PRESETS,
+    ChannelConfig,
+    LaunchConfig,
+    RuntimeConfig,
 )
+from mouse_pressure.bridge.curves import (
+    map_normalized_pressure,
+    normalize_curve_name,
+    pressure_config_for_channel,
+)
+from mouse_pressure.bridge.pen_output import PenOutput
 from mouse_pressure.bridge.synthetic_pen import SyntheticPenConfig, SyntheticPenEmitter
+from mouse_pressure.runtime.config_store import (
+    ConfigStore,
+    runtime_config_from_dict,
+    runtime_config_to_dict,
+)
+from mouse_pressure.runtime.device_settings import (
+    SessionDeviceSettings,
+    apply_device_settings,
+    device_settings_differ,
+    read_device_settings,
+    validate_device_settings,
+)
+from mouse_pressure.runtime.device_settings_lease import TemporaryDeviceSettingsLease
+from mouse_pressure.runtime.log_bus import GLOBAL_LOG_BUS, LogBus
+from mouse_pressure.runtime.models import (
+    StreamAlreadyActiveError,
+    StreamNotActiveError,
+    ValidationError,
+)
 from mouse_pressure.sandbox_telemetry import SandboxTelemetryWriter
 from mouse_pressure.sniff.hidpp_pressure import (
     PressureHidppSession,
@@ -25,25 +47,12 @@ from mouse_pressure.sniff.hidpp_pressure import (
     normalize_raw_pressure,
     parse_feature_0c_frame,
 )
-from mouse_pressure.web.config_store import ConfigStore, runtime_config_from_dict, runtime_config_to_dict
-from mouse_pressure.web.device_restore_watchdog import (
-    arm_restore_watchdog,
-    disarm_restore_watchdog,
-)
-from mouse_pressure.web.log_bus import GLOBAL_LOG_BUS, LogBus
-from mouse_pressure.web.models import (
-    StreamAlreadyActiveError,
-    StreamNotActiveError,
-    ValidationError,
-    deadzone_pct_to_float,
-    validate_process_name,
-)
 
 _RawSample: TypeAlias = tuple[float, int, int]
 _DeviceCommand: TypeAlias = tuple[
-    dict[str, int],
+    SessionDeviceSettings,
     asyncio.AbstractEventLoop,
-    asyncio.Future[dict[str, int]],
+    asyncio.Future[SessionDeviceSettings],
 ]
 
 
@@ -73,8 +82,8 @@ class RuntimeService:
         self._max_stream_recovery_attempts = max(1, int(max_stream_recovery_attempts))
 
         self._config = self.config_store.load()
-        self._left_curve_config = self._curve_config_for(self._config.left)
-        self._right_curve_config = self._curve_config_for(
+        self._left_curve_config = pressure_config_for_channel(self._config.left)
+        self._right_curve_config = pressure_config_for_channel(
             self._effective_right_channel(self._config)
         )
 
@@ -85,7 +94,7 @@ class RuntimeService:
         self._device_found = False
 
         self._session: PressureHidppSession | None = None
-        self._emitter: SyntheticPenEmitter | None = None
+        self._emitter: PenOutput | None = None
 
         self._loop: asyncio.AbstractEventLoop | None = None
         self._reader_thread: threading.Thread | None = None
@@ -96,7 +105,7 @@ class RuntimeService:
         self._processor_task: asyncio.Task[None] | None = None
         self._movement_task: asyncio.Task[None] | None = None
         self._health_task: asyncio.Task[None] | None = None
-        self._startup_ready_event: asyncio.Event | None = None
+        self._telemetry_ready_event: asyncio.Event | None = None
         self._latest_emission_sample: _RawSample | None = None
         self._last_sample_t: float | None = None
         self._last_inject_monotonic: float | None = None
@@ -107,9 +116,7 @@ class RuntimeService:
         self._force_stop_scheduled = False
         self._state_lock = threading.Lock()
         self._device_commands: queue.Queue[_DeviceCommand] = queue.Queue()
-        self._original_device_settings: dict[str, int] | None = None
-        self._restore_watchdog_process: subprocess.Popen[bytes] | None = None
-        self._restore_watchdog_state_path = None
+        self._device_settings_lease: TemporaryDeviceSettingsLease | None = None
 
     async def start_stream(
         self,
@@ -125,7 +132,7 @@ class RuntimeService:
                 "expected 'native_synthetic' or internal 'telemetry'"
             )
         requested_device_settings = (
-            self._validate_device_settings(device_settings)
+            validate_device_settings(device_settings)
             if device_settings is not None
             else None
         )
@@ -138,7 +145,7 @@ class RuntimeService:
         self._sample_queue = asyncio.Queue(maxsize=1)
         self._raw_sample_queue = asyncio.Queue(maxsize=256)
         self._movement_queue = None if backend == "telemetry" else asyncio.Queue(maxsize=512)
-        self._startup_ready_event = asyncio.Event()
+        self._telemetry_ready_event = asyncio.Event() if backend == "telemetry" else None
         self._latest_emission_sample = None
         self._last_sample_t = None
         self._last_inject_monotonic = None
@@ -185,91 +192,52 @@ class RuntimeService:
         if session is None:
             raise RuntimeError("Could not create the pressure device session")
 
-        original_device_settings: dict[str, int] | None = None
-        settings_changed = False
+        device_settings_lease: TemporaryDeviceSettingsLease | None = None
         if requested_device_settings is not None:
+            device_settings_lease = TemporaryDeviceSettingsLease(
+                config_dir=getattr(self.config_store, "config_dir", None),
+                recovery_enabled=self._crash_restore_enabled,
+                pressure_mode=self.launch_config.mode,
+                pressure_mode_arg=self.launch_config.mode_arg,
+            )
             try:
-                original_device_settings = self._read_session_device_settings(
-                    session,
-                    discover_feature=False,
-                )
-                settings_changed = self._device_settings_differ(
-                    original_device_settings,
-                    requested_device_settings,
-                )
-                if settings_changed:
-                    self._arm_restore_watchdog(original_device_settings)
-                    session.disable_pressure_stream()
-                applied = self._apply_session_device_settings(
+                applied = device_settings_lease.activate(
                     session,
                     requested_device_settings,
-                    current_settings=original_device_settings,
                 )
-                if settings_changed:
-                    session.enable_pressure_stream(
-                        mode=self.launch_config.mode,
-                        mode_arg=self.launch_config.mode_arg,
-                    )
                 self.log_bus.info(
-                    f"Session mouse settings applied: DPI {applied['dpi']}, "
-                    f"haptics L{applied['haptic_left']}/R{applied['haptic_right']}"
+                    f"Session mouse settings applied: DPI {applied.dpi}, "
+                    f"haptics L{applied.haptic_left}/R{applied.haptic_right}"
                 )
             except Exception:
-                try:
-                    session.disable_pressure_stream()
-                except Exception:
-                    pass
-                if original_device_settings is not None:
-                    restored = self._try_restore_session_device_settings(
-                        session,
-                        original_device_settings,
-                    )
-                    if restored:
-                        self._disarm_restore_watchdog()
                 try:
                     session.close()
                 except Exception:
                     pass
                 raise
 
-        deferred_input_arm = False
-        emitter: SyntheticPenEmitter | None = None
+        emitter: PenOutput | None = None
         try:
             if backend != "telemetry":
-                emitter = self._emitter_factory(self._emitter_config_from_runtime(), self._log)
-                if backend == "native_synthetic" and isinstance(
-                    emitter, SyntheticPenEmitter
-                ):
-                    emitter.pen = NativeSyntheticPenInjector(log=self._log)
-                    emitter.set_native_input_capture(
-                        NativeTransformedMouseCapture(log=self._log)
-                    )
-                movement_callback = getattr(emitter, "set_movement_callback", None)
-                if callable(movement_callback):
-                    movement_callback(self._signal_movement)
-                force_stop_setter = getattr(emitter, "set_force_stop_callback", None)
-                if callable(force_stop_setter):
-                    force_stop_setter(self._schedule_force_stop)
-                open_unarmed = getattr(emitter, "open_unarmed", None)
-                arm_input = getattr(emitter, "arm_input", None)
-                deferred_input_arm = callable(open_unarmed) and callable(arm_input)
-                if deferred_input_arm:
-                    open_unarmed()
-                else:
-                    emitter.open()
+                emitter = PenOutput(
+                    self._emitter_config_from_runtime(),
+                    self._log,
+                    emitter_factory=self._emitter_factory,
+                    movement_callback=self._signal_movement,
+                    force_stop_callback=self._schedule_force_stop,
+                )
+                emitter.open()
         except Exception:
             self._device_found = False
-            if original_device_settings is not None:
+            if device_settings_lease is not None:
                 try:
-                    session.disable_pressure_stream()
-                except Exception:
-                    pass
-                restored = self._try_restore_session_device_settings(
-                    session,
-                    original_device_settings,
-                )
-                if restored:
-                    self._disarm_restore_watchdog()
+                    restored = device_settings_lease.restore(session)
+                    if restored is not None:
+                        self._log_restored_device_settings(restored)
+                except Exception as exc:
+                    self.log_bus.error(
+                        f"Could not restore the original mouse settings: {exc}"
+                    )
             try:
                 session.close()
             except Exception:
@@ -278,7 +246,7 @@ class RuntimeService:
 
         self._session = session
         self._emitter = emitter
-        self._original_device_settings = original_device_settings
+        self._device_settings_lease = device_settings_lease
         self._stream_active = True
         self._reader_thread = threading.Thread(target=self._reader_loop, name="mouse-pressure-reader", daemon=True)
         self._reader_thread.start()
@@ -289,14 +257,17 @@ class RuntimeService:
             else None
         )
         self._health_task = asyncio.create_task(self._monitor_stream_health())
-        if deferred_input_arm or backend == "telemetry":
+        if emitter is not None or backend == "telemetry":
             try:
-                ready_event = self._startup_ready_event
-                if ready_event is None:
-                    raise RuntimeError("Pressure startup readiness was not initialized")
-                await asyncio.wait_for(ready_event.wait(), timeout=1.0)
-                if deferred_input_arm and emitter is not None:
-                    emitter.arm_input()
+                if emitter is not None:
+                    await emitter.wait_until_ready(1.0)
+                else:
+                    ready_event = self._telemetry_ready_event
+                    if ready_event is None:
+                        raise RuntimeError(
+                            "Pressure startup readiness was not initialized"
+                        )
+                    await asyncio.wait_for(ready_event.wait(), timeout=1.0)
             except Exception as exc:
                 await self.stop_stream()
                 if isinstance(exc, TimeoutError):
@@ -306,7 +277,7 @@ class RuntimeService:
                         "try again."
                     ) from exc
                 raise
-            if deferred_input_arm:
+            if emitter is not None:
                 self.log_bus.info("Pressure input primed; mouse button suppression armed")
         if backend == "telemetry":
             self.log_bus.info("Telemetry-only pressure stream started; native mouse input unchanged.")
@@ -361,43 +332,35 @@ class RuntimeService:
                 self._movement_task = None
 
         if self._emitter is not None:
-            try:
-                movement_callback = getattr(self._emitter, "set_movement_callback", None)
-                if callable(movement_callback):
-                    movement_callback(None)
-                force_stop_setter = getattr(self._emitter, "set_force_stop_callback", None)
-                if callable(force_stop_setter):
-                    force_stop_setter(None)
-                self._emitter.release()
-            finally:
-                self._emitter.close()
+            self._emitter.close()
             self._emitter = None
 
         if self._session is not None:
-            restored = True
-            if self._original_device_settings is not None:
+            lease = self._device_settings_lease
+            if lease is not None:
                 try:
-                    self._session.disable_pressure_stream()
-                except Exception as exc:
-                    self.log_bus.warn(
-                        f"Could not pause the pressure stream before restoring "
-                        f"mouse settings: {exc}"
+                    restored = await asyncio.to_thread(
+                        lease.restore,
+                        self._session,
+                        on_pause_error=lambda exc: self.log_bus.warn(
+                            "Could not pause the pressure stream before restoring "
+                            f"mouse settings: {exc}"
+                        ),
                     )
-                restored = await asyncio.to_thread(
-                    self._try_restore_session_device_settings,
-                    self._session,
-                    self._original_device_settings,
-                )
+                    if restored is not None:
+                        self._log_restored_device_settings(restored)
+                except Exception as exc:
+                    self.log_bus.error(
+                        f"Could not restore the original mouse settings: {exc}"
+                    )
             self._session.close()
             self._session = None
-            if restored:
-                self._disarm_restore_watchdog()
-        self._original_device_settings = None
+        self._device_settings_lease = None
 
         self._sample_queue = None
         self._raw_sample_queue = None
         self._movement_queue = None
-        self._startup_ready_event = None
+        self._telemetry_ready_event = None
         self._latest_emission_sample = None
         self.log_bus.info("Stream stopped")
 
@@ -414,91 +377,10 @@ class RuntimeService:
         with self._state_lock:
             self._config = validated
             effective_right = self._effective_right_channel(validated)
-            self._left_curve_config = self._curve_config_for(validated.left)
-            self._right_curve_config = self._curve_config_for(effective_right)
+            self._left_curve_config = pressure_config_for_channel(validated.left)
+            self._right_curve_config = pressure_config_for_channel(effective_right)
             if self._emitter is not None:
-                left_presets = CONTACT_PRESETS[validated.left.contact_preset]
-                right_presets = CONTACT_PRESETS[effective_right.contact_preset]
-                left_target = (
-                    validated.left.output_target
-                    if validated.left_enabled
-                    else "disabled"
-                )
-                right_target = (
-                    effective_right.output_target
-                    if validated.right_enabled
-                    else "disabled"
-                )
-                self._emitter.config = replace(
-                    self._emitter.config,
-                    contact_threshold=left_presets["contact_threshold"],
-                    release_threshold=left_presets["release_threshold"],
-                    min_contact_pressure=round(
-                        validated.left.pressure_floor * 1024 / 100
-                    ),
-                    path_stabilization=validated.left.path_stabilization,
-                    pressure_influence=validated.left.pressure_influence,
-                    onset_buffer=validated.left.onset_buffer,
-                    true_low_latency=validated.left.true_low_latency,
-                    stationary_pressure_updates=(
-                        validated.left.stationary_pressure_updates
-                    ),
-                    immediate_button_wake=validated.left.immediate_button_wake,
-                    right_contact_threshold=right_presets["contact_threshold"],
-                    right_release_threshold=right_presets["release_threshold"],
-                    right_min_contact_pressure=round(
-                        effective_right.pressure_floor * 1024 / 100
-                    ),
-                    right_path_stabilization=effective_right.path_stabilization,
-                    right_pressure_influence=effective_right.pressure_influence,
-                    right_onset_buffer=effective_right.onset_buffer,
-                    right_true_low_latency=effective_right.true_low_latency,
-                    right_stationary_pressure_updates=(
-                        effective_right.stationary_pressure_updates
-                    ),
-                    right_immediate_button_wake=(
-                        effective_right.immediate_button_wake
-                    ),
-                    clean_stroke_endings=validated.left.clean_stroke_endings,
-                    right_clean_stroke_endings=(
-                        effective_right.clean_stroke_endings
-                    ),
-                    suppress_lmb=(
-                        validated.left_enabled
-                        and (validated.suppress_lmb or left_target == "x_tilt")
-                    ),
-                    suppress_rmb=(
-                        validated.right_enabled
-                        and (
-                            (
-                                validated.suppress_lmb
-                                if validated.linked
-                                else validated.suppress_rmb
-                            )
-                            or right_target == "x_tilt"
-                        )
-                    ),
-                    left_output_target=left_target,
-                    right_output_target=right_target,
-                    release_teardown=validated.release_teardown,
-                    trace_raw_min=validated.left.raw_min,
-                    trace_raw_max=validated.left.raw_max,
-                    trace_curve=normalize_curve_name(validated.left.curve),
-                    trace_curve_strength=validated.left.curve_strength,
-                    right_trace_raw_min=effective_right.raw_min,
-                    right_trace_raw_max=effective_right.raw_max,
-                    right_trace_curve=normalize_curve_name(effective_right.curve),
-                    right_trace_curve_strength=effective_right.curve_strength,
-                    debug_mode=validated.debug_mode,
-                )
-                debug_setter = getattr(self._emitter, "set_debug_mode", None)
-                if callable(debug_setter):
-                    debug_setter(validated.debug_mode)
-                button_mode_setter = getattr(
-                    self._emitter, "sync_button_modes", None
-                )
-                if callable(button_mode_setter):
-                    button_mode_setter()
+                self._emitter.reconfigure(self._emitter_config_from_runtime())
 
         self.config_store.save(validated)
         return validated
@@ -570,20 +452,24 @@ class RuntimeService:
         if not 0 <= haptic_left <= 5 or not 0 <= haptic_right <= 5:
             raise ValidationError("Haptic levels must be in 0..5")
 
+        requested = validate_device_settings(
+            {
+                "dpi": int(dpi),
+                "haptic_left": int(haptic_left),
+                "haptic_right": int(haptic_right),
+            }
+        )
         loop = asyncio.get_running_loop()
-        future: asyncio.Future[dict[str, int]] = loop.create_future()
+        future: asyncio.Future[SessionDeviceSettings] = loop.create_future()
         self._device_commands.put(
             (
-                {
-                    "dpi": int(dpi),
-                    "haptic_left": int(haptic_left),
-                    "haptic_right": int(haptic_right),
-                },
+                requested,
                 loop,
                 future,
             )
         )
-        return await asyncio.wait_for(future, timeout=3.0)
+        applied = await asyncio.wait_for(future, timeout=3.0)
+        return applied.to_dict()
 
     async def detect_device_settings(self) -> dict[str, int]:
         """Read DPI and haptics without starting the pressure driver."""
@@ -592,201 +478,30 @@ class RuntimeService:
                 "Stop the driver before detecting the normal mouse settings"
             )
 
-        def detect() -> dict[str, int]:
+        def detect() -> SessionDeviceSettings:
             session = self._session_factory(self._log)
             try:
                 session.open()
-                return self._read_session_device_settings(session)
+                return read_device_settings(session).session
             finally:
                 session.close()
 
         detected = await asyncio.to_thread(detect)
-        settings = {
-            key: int(detected[key])
-            for key in ("dpi", "haptic_left", "haptic_right")
-        }
+        settings = detected.to_dict()
         self.log_bus.info(
             f"Mouse settings detected: DPI {settings['dpi']}, "
             f"haptics L{settings['haptic_left']}/R{settings['haptic_right']}"
         )
         return settings
 
-    @staticmethod
-    def _validate_device_settings(settings: dict[str, int]) -> dict[str, int]:
-        try:
-            dpi = int(settings["dpi"])
-            haptic_left = int(settings["haptic_left"])
-            haptic_right = int(settings["haptic_right"])
-        except (KeyError, TypeError, ValueError) as exc:
-            raise ValidationError(
-                "Mouse settings require DPI and left/right haptic levels"
-            ) from exc
-        if not 100 <= dpi <= 32000 or dpi % 50 != 0:
-            raise ValidationError("DPI must be 100..32000 in 50-DPI increments")
-        if not 0 <= haptic_left <= 5 or not 0 <= haptic_right <= 5:
-            raise ValidationError("Haptic levels must be in 0..5")
-        return {
-            "dpi": dpi,
-            "haptic_left": haptic_left,
-            "haptic_right": haptic_right,
-        }
-
-    @staticmethod
-    def _read_session_device_settings(
-        session: PressureHidppSession,
-        *,
-        discover_feature: bool = True,
-    ) -> dict[str, int]:
-        discover = getattr(session, "discover_pressure_feature_index", None)
-        if discover_feature and callable(discover):
-            discover()
-        dpi = session.get_dpi()
-        left, right = session.get_haptic_levels()
-        result = {
-            "dpi": int(dpi),
-            "haptic_left": int(left),
-            "haptic_right": int(right),
-        }
-        profile_reader = getattr(session, "get_onboard_profile_state", None)
-        if callable(profile_reader):
-            enabled, sector = profile_reader()
-            result["onboard_profiles_enabled"] = int(bool(enabled))
-            result["onboard_profile_sector"] = int(sector or 0)
-        return result
-
-    @classmethod
-    def _apply_session_device_settings(
-        cls,
-        session: PressureHidppSession,
-        settings: dict[str, int],
-        *,
-        current_settings: dict[str, int] | None = None,
-    ) -> dict[str, int]:
-        current = (
-            dict(current_settings)
-            if current_settings is not None
-            else cls._read_session_device_settings(
-                session,
-                discover_feature=False,
-            )
-        )
-        dpi = int(current["dpi"])
-        left = int(current["haptic_left"])
-        right = int(current["haptic_right"])
-        if settings["dpi"] != dpi:
-            profile_enabled = bool(current.get("onboard_profiles_enabled", 0))
-            if profile_enabled:
-                profile_writer = getattr(session, "set_onboard_profile_state", None)
-                if not callable(profile_writer):
-                    raise RuntimeError(
-                        "DPI is controlled by an onboard profile that cannot be "
-                        "temporarily disabled"
-                    )
-                profile_writer(enabled=False)
-                current["onboard_profiles_enabled"] = 0
-                current["onboard_profile_sector"] = 0
-            dpi = session.set_dpi(settings["dpi"])
-        if (
-            settings["haptic_left"] != left
-            or settings["haptic_right"] != right
-        ):
-            left, right = session.set_haptic_levels(
-                left=settings["haptic_left"],
-                right=settings["haptic_right"],
-            )
-        return {
-            "dpi": int(dpi),
-            "haptic_left": int(left),
-            "haptic_right": int(right),
-        }
-
-    @staticmethod
-    def _device_settings_differ(
-        current: dict[str, int],
-        requested: dict[str, int],
-    ) -> bool:
-        return any(
-            int(current[key]) != int(requested[key])
-            for key in ("dpi", "haptic_left", "haptic_right")
-        )
-
-    def _restore_session_device_settings(
+    def _log_restored_device_settings(
         self,
-        session: PressureHidppSession,
-        settings: dict[str, int],
+        restored: SessionDeviceSettings,
     ) -> None:
-        current = self._read_session_device_settings(
-            session,
-            discover_feature=False,
-        )
-        restored = self._apply_session_device_settings(
-            session,
-            settings,
-            current_settings=current,
-        )
-        original_profiles_enabled = bool(
-            settings.get("onboard_profiles_enabled", 0)
-        )
-        original_profile_sector = int(settings.get("onboard_profile_sector", 0))
-        current_profiles_enabled = bool(
-            current.get("onboard_profiles_enabled", 0)
-        )
-        current_profile_sector = int(current.get("onboard_profile_sector", 0))
-        if (
-            original_profiles_enabled != current_profiles_enabled
-            or (
-                original_profiles_enabled
-                and original_profile_sector != current_profile_sector
-            )
-        ):
-            profile_writer = getattr(session, "set_onboard_profile_state", None)
-            if not callable(profile_writer):
-                raise RuntimeError("Could not restore the original onboard profile")
-            profile_writer(
-                enabled=original_profiles_enabled,
-                active_sector=(
-                    original_profile_sector if original_profiles_enabled else None
-                ),
-            )
         self.log_bus.info(
-            f"Original mouse settings restored: DPI {restored['dpi']}, "
-            f"haptics L{restored['haptic_left']}/R{restored['haptic_right']}"
+            f"Original mouse settings restored: DPI {restored.dpi}, "
+            f"haptics L{restored.haptic_left}/R{restored.haptic_right}"
         )
-
-    def _arm_restore_watchdog(self, settings: dict[str, int]) -> None:
-        if not self._crash_restore_enabled:
-            return
-        try:
-            process, state_path = arm_restore_watchdog(
-                config_dir=self.config_store.config_dir,
-                parent_pid=os.getpid(),
-                settings=settings,
-            )
-        except Exception as exc:
-            raise RuntimeError(
-                f"Could not arm mouse-settings crash recovery: {exc}"
-            ) from exc
-        self._restore_watchdog_process = process
-        self._restore_watchdog_state_path = state_path
-        self.log_bus.info("Mouse-settings crash recovery armed")
-
-    def _disarm_restore_watchdog(self) -> None:
-        disarm_restore_watchdog(self._restore_watchdog_state_path)
-        self._restore_watchdog_state_path = None
-        self._restore_watchdog_process = None
-
-    def _try_restore_session_device_settings(
-        self,
-        session: PressureHidppSession,
-        settings: dict[str, int],
-    ) -> bool:
-        try:
-            self._restore_session_device_settings(session, settings)
-        except Exception as exc:
-            self.log_bus.error(f"Could not restore the original mouse settings: {exc}")
-            return False
-        return True
-
     @property
     def stream_active(self) -> bool:
         return self._stream_active
@@ -841,37 +556,9 @@ class RuntimeService:
                 raise ValidationError("right patch must be an object")
             merged["right"] = {**merged["right"], **right_patch}
 
-        if "app_profiles" in patch:
-            profile_patch = patch["app_profiles"]
-            if not isinstance(profile_patch, dict):
-                raise ValidationError("app_profiles patch must be an object")
-            merged_profiles = dict(merged.get("app_profiles") or {})
-            for proc_name, profile_name in profile_patch.items():
-                if not isinstance(proc_name, str):
-                    raise ValidationError("app_profiles keys must be strings")
-                proc_errors = validate_process_name(proc_name)
-                if proc_errors:
-                    raise ValidationError(proc_errors[0])
-                if not isinstance(profile_name, str):
-                    raise ValidationError("app_profiles values must be strings")
-                merged_profiles[proc_name] = profile_name
-            merged["app_profiles"] = merged_profiles
-
     @staticmethod
     def _effective_right_channel(config: RuntimeConfig) -> ChannelConfig:
         return config.left if config.linked else config.right
-
-    def _curve_config_for(self, channel: ChannelConfig) -> PressureConfig:
-        return PressureConfig(
-            raw_min=channel.raw_min,
-            raw_max=channel.raw_max,
-            out_min=0,
-            out_max=1023,
-            deadzone_low=deadzone_pct_to_float(channel.deadzone_low),
-            deadzone_high=1.0 - deadzone_pct_to_float(channel.deadzone_high),
-            curve=normalize_curve_name(channel.curve),
-            curve_strength=channel.curve_strength,
-        )
 
     def _emitter_config_from_runtime(self) -> SyntheticPenConfig:
         effective_right = self._effective_right_channel(self._config)
@@ -1046,30 +733,43 @@ class RuntimeService:
             self._last_sample_monotonic = time.perf_counter()
             stream_paused = False
             try:
-                current = self._read_session_device_settings(
+                current = read_device_settings(
                     session,
                     discover_feature=False,
                 )
-                if self._device_settings_differ(current, settings):
-                    session.disable_pressure_stream()
-                    stream_paused = True
-                result = self._apply_session_device_settings(
-                    session,
-                    settings,
-                    current_settings=current,
-                )
-                if stream_paused:
-                    session.enable_pressure_stream(
-                        mode=self.launch_config.mode,
-                        mode_arg=self.launch_config.mode_arg,
+                if device_settings_differ(current, settings):
+                    lease = self._device_settings_lease
+                    if lease is not None:
+                        result = lease.apply_live(
+                            session,
+                            settings,
+                            current_settings=current,
+                        )
+                    else:
+                        session.disable_pressure_stream()
+                        stream_paused = True
+                        result = apply_device_settings(
+                            session,
+                            settings,
+                            current_settings=current,
+                        )
+                        session.enable_pressure_stream(
+                            mode=self.launch_config.mode,
+                            mode_arg=self.launch_config.mode_arg,
+                        )
+                        stream_paused = False
+                else:
+                    result = apply_device_settings(
+                        session,
+                        settings,
+                        current_settings=current,
                     )
-                    stream_paused = False
             except Exception as exc:
                 loop.call_soon_threadsafe(self._finish_device_command, future, None, exc)
             else:
                 self.log_bus.info(
-                    f"Device settings applied: DPI {result['dpi']}, "
-                    f"haptics L{result['haptic_left']}/R{result['haptic_right']}"
+                    f"Device settings applied: DPI {result.dpi}, "
+                    f"haptics L{result.haptic_left}/R{result.haptic_right}"
                 )
                 loop.call_soon_threadsafe(self._finish_device_command, future, result, None)
             finally:
@@ -1088,8 +788,8 @@ class RuntimeService:
 
     @staticmethod
     def _finish_device_command(
-        future: asyncio.Future[dict[str, int]],
-        result: dict[str, int] | None,
+        future: asyncio.Future[SessionDeviceSettings],
+        result: SessionDeviceSettings | None,
         error: Exception | None,
     ) -> None:
         if future.done():
@@ -1235,7 +935,7 @@ class RuntimeService:
                 right_raw=right_raw,
                 publish_telemetry=pressure_changed,
             )
-            startup_ready = self._startup_ready_event
+            startup_ready = self._telemetry_ready_event
             if startup_ready is not None and not startup_ready.is_set():
                 startup_ready.set()
             pressure_changed = False

@@ -2,7 +2,6 @@
 from __future__ import annotations
 
 import threading
-import time
 from dataclasses import dataclass
 
 from mouse_pressure.sandbox_telemetry import SandboxTelemetryReader

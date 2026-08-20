@@ -8,12 +8,12 @@ from mouse_pressure import app
 
 def test_main_dispatches_frozen_watchdog(monkeypatch) -> None:
     watchdog = types.ModuleType(
-        "mouse_pressure.web.device_restore_watchdog"
+        "mouse_pressure.runtime.device_restore_watchdog"
     )
     watchdog.main = lambda args: 7  # type: ignore[attr-defined]
     monkeypatch.setitem(
         sys.modules,
-        "mouse_pressure.web.device_restore_watchdog",
+        "mouse_pressure.runtime.device_restore_watchdog",
         watchdog,
     )
 
