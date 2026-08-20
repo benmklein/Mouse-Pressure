@@ -2,6 +2,7 @@
   <img src="src/mouse_pressure/assets/lucide_mouse.png" width="96" alt="Mouse Pressure icon">
   <h1>Mouse Pressure</h1>
   <p>Turn analog mouse button force into Windows Ink pressure and tilt.</p>
+  <p></p>Mice like the Logitech Superstrike have sensors that allow for reading mouse pressure, but their drivers don't allow you to use it for anything other than actuation point adjustments. Mouse Pressure lets these mice behave like a pressure sensitive tablet. </p>
 
 <p>
     <a href="docs/compatibility.md"><img src="https://img.shields.io/badge/Windows-10%20tested-0078D4?logo=windows" alt="Windows 10 tested; Windows 11 unverified"></a>
@@ -16,20 +17,20 @@
   </p>
 </div>
 
-Mouse Pressure lets analog button mice (Logitech Superstrike) behave like
-a pressure sensitive tablet. It uses native Windows Ink and does not
-install a kernel driver.
-
-<p align="center">
-  <img src="docs/media/interface.png" width="960" alt="Mouse Pressure configuration interface">
-</p>
-
 | Pressure sensitive writing                                                                                         | Color control during a stroke                                                                                       |
 |:------------------------------------------------------------------------------------------------------------------:|:-------------------------------------------------------------------------------------------------------------------:|
 | [![Writing in Krita with mouse-button pressure](docs/media/pressure-writing.gif)](docs/media/pressure-writing.mp4) | [![Changing color in Krita with analog X-tilt](docs/media/pressure-coloring.gif)](docs/media/pressure-coloring.mp4) |
 | Button force controls pressure for drawing applications.                                                           | Left and right buttons can be used simultaneously. Here, right button controls hue.                                 |
 
-### Games and other applications
+
+
+<p align="center">
+  <img src="docs/media/interface.png" width="960" alt="Mouse Pressure configuration interface">
+</p>
+
+
+
+## Games and other applications
 
 [![Controlling a retractable chain game with analog mouse buttons](docs/media/pressure-game.gif)](docs/media/pressure-game.mp4)
 
