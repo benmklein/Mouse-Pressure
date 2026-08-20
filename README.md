@@ -16,9 +16,7 @@
   </p>
 </div>
 
-Mouse Pressure lets analog button mice (Logitech Superstrike) behave like
-a pressure sensitive tablet. It uses native Windows Ink and does not
-install a kernel driver.
+Mice like the Logitech Superstrike have sensors that allow for reading mouse pressure, but their drivers don't allow you to use it for anything other than actuation point adjustments. Mouse Pressure lets these mice behave like a pressure sensitive tablet. 
 
 <p align="center">
   <img src="docs/media/interface.png" width="960" alt="Mouse Pressure configuration interface">
