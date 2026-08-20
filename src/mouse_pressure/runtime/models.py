@@ -131,5 +131,3 @@ def validate_channel_config(ch: dict) -> list[str]:
         errors.append("clean_stroke_endings must be a boolean")
 
     return errors
-
-
