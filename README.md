@@ -1,98 +1,137 @@
 <div align="center">
   <img src="src/mouse_pressure/assets/lucide_mouse.png" width="96" alt="Mouse Pressure icon">
   <h1>Mouse Pressure</h1>
-  <p>Turn analog mouse button force into Windows Ink pressure and tilt.</p>
-  <p></p>Mice like the Logitech Superstrike have sensors that allow for reading mouse pressure, but their drivers don't allow you to use it for anything other than actuation point adjustments. Mouse Pressure lets these mice behave like a pressure sensitive tablet. </p>
+  <p>Use analog mouse-button force as Windows Ink pressure and tilt.</p>
 
-<p>
+  <p>
     <a href="docs/compatibility.md"><img src="https://img.shields.io/badge/Windows-10%20tested-0078D4?logo=windows" alt="Windows 10 tested; Windows 11 unverified"></a>
     <a href="docs/compatibility.md"><img src="https://img.shields.io/badge/output-Windows%20Ink-7B61FF" alt="Windows Ink output"></a>
     <a href="LICENSE"><img src="https://img.shields.io/badge/license-MIT-green.svg" alt="MIT License"></a>
     <a href="docs/releasing.md"><img src="https://img.shields.io/badge/status-alpha-orange.svg" alt="Alpha status"></a>
   </p>
 
-<p>
-    <strong><a href="https://github.com/benmklein/analog_mouse_pressure/releases">Download for Windows</a></strong>
+  <p>
+    <strong><a href="https://github.com/benmklein/Mouse-Pressure/releases">Download for Windows</a></strong>
     · <a href="docs/compatibility.md">Compatibility</a>
   </p>
 </div>
 
-| Pressure sensitive writing                                                                                         | Color control during a stroke                                                                                       |
-|:------------------------------------------------------------------------------------------------------------------:|:-------------------------------------------------------------------------------------------------------------------:|
+The Logitech Superstrike has analog sensors in its left and right buttons.
+Logitech's software uses those sensors to adjust click actuation. Mouse Pressure
+uses them as continuous input.
+
+Press lightly for low pen pressure. Press harder for more. Either button can
+also control X-tilt, giving drawing applications a second analog value.
+
+Mouse Pressure sends standard Windows Ink input and does not install a kernel
+driver.
+
+| Pressure-sensitive writing | Color control during a stroke |
+|:---:|:---:|
 | [![Writing in Krita with mouse-button pressure](docs/media/pressure-writing.gif)](docs/media/pressure-writing.mp4) | [![Changing color in Krita with analog X-tilt](docs/media/pressure-coloring.gif)](docs/media/pressure-coloring.mp4) |
-| Button force controls pressure for drawing applications.                                                           | Left and right buttons can be used simultaneously. Here, right button controls hue.                                 |
+| Button force controls brush pressure. | Left pressure controls the stroke while right pressure controls hue. |
 
+## What it does
 
+- Reads both analog mouse buttons independently
+- Sends pressure, X-tilt, Y-tilt, or rotation through Windows Ink
+- Calibrates light and full presses for each button
+- Applies adjustable response curves
+- Includes a small physics sandbox for testing analog input
 
-<p align="center">
+<p>
   <img src="docs/media/interface.png" width="960" alt="Mouse Pressure configuration interface">
 </p>
 
+## Using both buttons
 
+Both buttons can be mapped to different outputs, allowing you to control different continuous values at the same time.
 
-## Games and other applications
+Leave the left button mapped to **Pressure** and map the right button to
+**X-tilt**, **Y-tilt**, or **Rotation**. In Krita, those pen sensors can control
+hue, size, opacity, or rotation while the left button controls the stroke.
+
+To configure it in Krita:
+
+1. Open the Brush Editor with `F5`.
+2. Select the brush property you want to control.
+3. Choose the matching tilt or rotation sensor.
+
+Other Windows Ink applications may expose similar controls.
+
+## Games and experiments
 
 [![Controlling a retractable chain game with analog mouse buttons](docs/media/pressure-game.gif)](docs/media/pressure-game.mp4)
 
-The driver includes a test sandbox demonstrating analog input outside a drawing application. The pressure signal controls a length of a chain, in a simple test game. The sandbox is located in the mouse tab in the driver menu.
+Analog button force can control more than brushes. The driver includes a sandbox game (under the Mouse tab) that uses
+pressure to extend and retract a chain.
 
-## Features
-
-- Native, driverless Windows Ink output
-- Independent left and right button mappings
-- Pressure, X-tilt, Y-tilt, or rotation output from either button
-- Live calibration and response curve preview
-- Included analog input physics sandbox
-
-### Using pen properties
-
-X-tilt, Y-tilt, and rotation provide a second analog control alongside
-pressure. For example, leave the left button mapped to **Pressure**, map the
-right button to **X-tilt**, **Y-tilt**, or **Rotation**, and use right-button
-force to change another brush property while you draw. In Krita, open the Brush
-Editor (`F5`), choose a property such as **Hue**, **Size**, **Opacity**, or
-**Rotation**, and select the matching pen sensor. Other Windows Ink drawing
-applications may offer similar mappings under their brush or tablet settings.
+Developers can use the Windows Ink inputs in their own pressure-sensitive mouse
+games. A Godot plugin is planned to make those signals easier to use.
 
 ## Install
 
 1. Download `MousePressure-<version>-Setup.exe` from
-   [Releases](https://github.com/benmklein/analog_mouse_pressure/releases).
-2. Run the installer, connect a compatible mouse, and select **Start**.
-3. Choose a pressure sensitive brush in your drawing application.
+   [Releases](https://github.com/benmklein/Mouse-Pressure/releases).
+2. Run the installer.
+3. Connect a compatible mouse.
+4. Open Mouse Pressure and select **Start**.
+5. Choose a pressure-sensitive brush in your drawing application.
 
-Photoshop uses Windows Ink by default. In Krita, select **Windows 8+ Pointer
-Input** under **Settings → Configure Krita → Tablet Settings**, then restart
-Krita.
+Photoshop uses Windows Ink by default.
 
-Use `Ctrl+F12` to start and `Ctrl+Shift+F12` to stop. See the
-[compatibility notes](docs/compatibility.md) for supported hardware and
+For Krita:
+
+1. Open **Settings → Configure Krita → Tablet Settings**.
+2. Select **Windows 8+ Pointer Input**.
+3. Restart Krita.
+
+Use `Ctrl+F12` to start output. Use `Ctrl+Shift+F12` to force-stop it.
+
+See [compatibility](docs/compatibility.md) for supported hardware and
 applications.
 
-> **Alpha note:** This build is tested on Windows 10. Windows 11 is expected to
-> work but remains unverified. The unsigned installer may trigger a Microsoft
-> Defender SmartScreen warning, and the first stroke after pressing Start can
-> occasionally register as a dot. See [compatibility](docs/compatibility.md)
-> for the current support scope.
+## Alpha limitations
+
+This is alpha software.
+
+- Tested on Windows 10
+- Windows 11 expected to work but not yet verified on physical hardware
+- Unsigned installer may trigger Microsoft Defender SmartScreen
+- First stroke after starting can occasionally appear as a dot
+- Pressure behavior varies between applications and brush presets
+
+See [compatibility](docs/compatibility.md) for the full support scope.
 
 <details>
 <summary><strong>Run from source</strong></summary>
 
 ```powershell
-git clone https://github.com/benmklein/analog_mouse_pressure.git
-Set-Location analog_mouse_pressure
+git clone https://github.com/benmklein/Mouse-Pressure.git
+Set-Location Mouse-Pressure
 py -m venv .venv
 .\.venv\Scripts\python.exe -m pip install -e ".[dev,sandbox]"
 .\.venv\Scripts\python.exe -m mouse_pressure.pyside_ui
 ```
 
-Run tests with `.\.venv\Scripts\python.exe -m pytest` or build the Windows
-installer with `.\scripts\build_windows.ps1`.
+Run the tests:
+
+```powershell
+.\.venv\Scripts\python.exe -m pytest
+```
+
+Build the Windows installer:
+
+```powershell
+.\scripts\build_windows.ps1
+```
 
 </details>
 
 ## License
 
-Mouse Pressure is available under the [MIT License](LICENSE). See
-[third-party notices](THIRD_PARTY_NOTICES.md), [privacy](PRIVACY.md),
-[security](SECURITY.md), and [recovery instructions](docs/recovery.md).
+Mouse Pressure is available under the [MIT License](LICENSE).
+
+Also see [third-party notices](THIRD_PARTY_NOTICES.md),
+[privacy](PRIVACY.md), [security](SECURITY.md), and
+[recovery instructions](docs/recovery.md).
