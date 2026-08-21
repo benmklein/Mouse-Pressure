@@ -112,3 +112,26 @@ Set-Location Mouse-Pressure
 py -m venv .venv
 .\.venv\Scripts\python.exe -m pip install -e ".[dev,sandbox]"
 .\.venv\Scripts\python.exe -m mouse_pressure.pyside_ui
+```
+
+Run the tests:
+
+```powershell
+.\.venv\Scripts\python.exe -m pytest
+```
+
+Build the Windows installer:
+
+```powershell
+.\scripts\build_windows.ps1
+```
+
+</details>
+
+## License
+
+Mouse Pressure is available under the [MIT License](LICENSE).
+
+Also see [third-party notices](THIRD_PARTY_NOTICES.md),
+[privacy](PRIVACY.md), [security](SECURITY.md), and
+[recovery instructions](docs/recovery.md).
