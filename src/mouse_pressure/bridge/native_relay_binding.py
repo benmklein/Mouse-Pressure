@@ -10,7 +10,7 @@ from pathlib import Path
 from typing import Any
 
 NATIVE_RELAY_FILENAME = "mouse_pressure_synthetic_relay.dll"
-NATIVE_RELAY_API_VERSION = 3
+NATIVE_RELAY_API_VERSION = 4
 
 
 class NativeRelayStats(ctypes.Structure):
@@ -40,8 +40,10 @@ class NativeRelayInput(ctypes.Structure):
         ("x", ctypes.c_int32),
         ("y", ctypes.c_int32),
         ("pressure", ctypes.c_uint32),
+        ("rotation", ctypes.c_uint32),
         ("tilt_x", ctypes.c_int32),
-        ("tilt_enabled", ctypes.c_uint32),
+        ("tilt_y", ctypes.c_int32),
+        ("pen_mask", ctypes.c_uint32),
         ("token", ctypes.c_uint64),
     ]
 
@@ -196,8 +198,10 @@ class NativeSyntheticRelayHandle:
         x: int,
         y: int,
         pressure: int,
+        rotation: int,
         tilt_x: int,
-        tilt_enabled: bool,
+        tilt_y: int,
+        pen_mask: int,
         token: int,
     ) -> tuple[bool, int]:
         if not self._handle:
@@ -210,8 +214,10 @@ class NativeSyntheticRelayHandle:
                 x,
                 y,
                 pressure,
+                rotation,
                 tilt_x,
-                int(tilt_enabled),
+                tilt_y,
+                pen_mask,
                 token,
             )
         )
@@ -357,6 +363,8 @@ def _declare_functions(dll: Any) -> None:
         ctypes.c_int32,
         ctypes.c_int32,
         ctypes.c_uint32,
+        ctypes.c_uint32,
+        ctypes.c_int32,
         ctypes.c_int32,
         ctypes.c_uint32,
         ctypes.c_uint64,

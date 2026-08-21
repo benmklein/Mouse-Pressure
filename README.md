@@ -40,17 +40,19 @@ The driver includes a test sandbox demonstrating analog input outside a drawing 
 
 - Native, driverless Windows Ink output
 - Independent left and right button mappings
-- Pressure or X-tilt output from either button
+- Pressure, X-tilt, Y-tilt, or rotation output from either button
 - Live calibration and response curve preview
 - Included analog input physics sandbox
 
-### Using X-tilt
+### Using pen properties
 
-X-tilt gives you a second analog control alongside pressure. For example,
-leave the left button mapped to **Pressure**, map the right button to
-**X-tilt**, and use right-button force to change another brush property while
-you draw. In Krita, open the Brush Editor (`F5`), choose a property such as
-**Hue**, **Size**, **Opacity**, or **Rotation**, and select **X-tilt** as its sensor. Other Windows Ink drawing applications may offer similar tilt mappings under their brush or tablet settings.
+X-tilt, Y-tilt, and rotation provide a second analog control alongside
+pressure. For example, leave the left button mapped to **Pressure**, map the
+right button to **X-tilt**, **Y-tilt**, or **Rotation**, and use right-button
+force to change another brush property while you draw. In Krita, open the Brush
+Editor (`F5`), choose a property such as **Hue**, **Size**, **Opacity**, or
+**Rotation**, and select the matching pen sensor. Other Windows Ink drawing
+applications may offer similar mappings under their brush or tablet settings.
 
 ## Install
 

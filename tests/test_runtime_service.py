@@ -470,8 +470,6 @@ class RuntimeServiceTests(unittest.IsolatedAsyncioTestCase):
                     "pressure_influence": 70,
                     "onset_buffer": True,
                     "stationary_pressure_updates": True,
-                    "immediate_button_wake": True,
-                    "clean_stroke_endings": True,
                 },
             }
         )
@@ -507,6 +505,46 @@ class RuntimeServiceTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(updated.right.output_target, "x_tilt")
         self.assertEqual(store.current.right.output_target, "x_tilt")
         self.assertEqual(holder["emitter"].config.right_output_target, "x_tilt")
+        self.assertTrue(holder["emitter"].config.suppress_rmb)
+
+        await service.stop_stream()
+
+    async def test_auxiliary_right_y_tilt_mode_is_applied_on_next_start(self) -> None:
+        session = _FakeSession([])
+        service, store, holder = self._service(session)
+
+        updated = service.apply_config(
+            {
+                "left_enabled": True,
+                "right_enabled": True,
+                "right": {"output_target": "y_tilt"},
+            }
+        )
+        await service.start_stream()
+
+        self.assertEqual(updated.right.output_target, "y_tilt")
+        self.assertEqual(store.current.right.output_target, "y_tilt")
+        self.assertEqual(holder["emitter"].config.right_output_target, "y_tilt")
+        self.assertTrue(holder["emitter"].config.suppress_rmb)
+
+        await service.stop_stream()
+
+    async def test_auxiliary_right_rotation_mode_is_applied_on_next_start(self) -> None:
+        session = _FakeSession([])
+        service, store, holder = self._service(session)
+
+        updated = service.apply_config(
+            {
+                "left_enabled": True,
+                "right_enabled": True,
+                "right": {"output_target": "rotation"},
+            }
+        )
+        await service.start_stream()
+
+        self.assertEqual(updated.right.output_target, "rotation")
+        self.assertEqual(store.current.right.output_target, "rotation")
+        self.assertEqual(holder["emitter"].config.right_output_target, "rotation")
         self.assertTrue(holder["emitter"].config.suppress_rmb)
 
         await service.stop_stream()

@@ -31,7 +31,7 @@ def test_native_synthetic_open_is_idempotent(
         pass
 
     class _Library:
-        api_version = 3
+        api_version = 4
         path = Path("relay.dll")
 
         def __init__(self) -> None:
@@ -53,6 +53,37 @@ def test_native_synthetic_open_is_idempotent(
     injector.open()
 
     assert library.created == 1
+
+
+def test_native_injector_marks_rotation_and_y_tilt_without_x_tilt() -> None:
+    class _Relay:
+        def __init__(self) -> None:
+            self.submissions: list[dict[str, int]] = []
+
+        def submit(self, **values: int) -> tuple[bool, int]:
+            self.submissions.append(values)
+            return True, 0
+
+    injector = NativeSyntheticPenInjector(log=lambda _line: None)
+    relay = _Relay()
+    injector._relay = relay  # type: ignore[assignment]  # noqa: SLF001
+
+    ok, error = injector.inject(
+        flags=POINTER_FLAG_PRIMARY,
+        x=10,
+        y=20,
+        pressure_1024=500,
+        tag="test_y_tilt",
+        rotation=180,
+        tilt_y=30,
+    )
+
+    assert ok
+    assert error == 0
+    assert relay.submissions[-1]["tilt_x"] == 0
+    assert relay.submissions[-1]["tilt_y"] == 30
+    assert relay.submissions[-1]["rotation"] == 180
+    assert relay.submissions[-1]["pen_mask"] == 10
 
 
 @pytest.mark.skipif(os.name != "nt", reason="Windows pointer injection only")
@@ -94,7 +125,9 @@ def test_native_relay_batches_and_reports_delivery() -> None:
                     "x": x + offset,
                     "y": y,
                     "pressure_1024": 0,
+                    "rotation": 180,
                     "tilt_x": None,
+                    "tilt_y": 30,
                 }
                 for offset in range(3)
             ]

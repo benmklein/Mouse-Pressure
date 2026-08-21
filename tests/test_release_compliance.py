@@ -2,7 +2,11 @@ from __future__ import annotations
 
 import importlib.util
 import json
+import tomllib
 from pathlib import Path
+
+from mouse_pressure import __version__
+from mouse_pressure_sandbox import __version__ as sandbox_version
 
 ROOT = Path(__file__).resolve().parents[1]
 
@@ -116,3 +120,26 @@ def test_windows_packages_include_release_legal_material() -> None:
     assert "Components: application" not in installer
     assert "packaging\" / \"legal" in spec
     assert "release-metadata" in spec
+
+
+def test_package_and_application_versions_match() -> None:
+    project = tomllib.loads((ROOT / "pyproject.toml").read_text(encoding="utf-8"))
+    assert __version__ == project["project"]["version"]
+    assert sandbox_version == __version__
+    for name in (
+        "mouse_pressure_version_info.txt",
+        "mouse_pressure_sandbox_version_info.txt",
+    ):
+        assert __version__ in (
+            ROOT / "packaging" / "windows" / name
+        ).read_text(encoding="utf-8")
+
+
+def test_windows_installer_has_stable_upgrade_policy() -> None:
+    installer = (ROOT / "packaging" / "windows" / "mouse_pressure.iss").read_text(
+        encoding="utf-8"
+    )
+    assert "AppId={{B63841C7-3B13-47CC-A80A-85D44708AF35}" in installer
+    assert "UsePreviousAppDir=yes" in installer
+    assert 'Name: "{app}\\_internal"' in installer
+    assert 'Name: "{app}\\sandbox"' in installer

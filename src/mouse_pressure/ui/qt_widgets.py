@@ -21,6 +21,7 @@ from PySide6.QtWidgets import (
     QSizePolicy,
     QSlider,
     QSpinBox,
+    QStyle,
     QVBoxLayout,
     QWidget,
 )
@@ -149,6 +150,48 @@ class LabeledSwitch(QWidget):
         self.switch.set_theme(theme)
 
 
+class AtomicSlider(QSlider):
+    """Set values without retaining Qt's implicit pointer drag."""
+
+    def _set_value_from_x(self, x: float) -> None:
+        handle = self.style().pixelMetric(QStyle.PixelMetric.PM_SliderLength)
+        span = max(1, self.width() - handle)
+        position = max(0, min(span, round(x - handle / 2)))
+        self.setValue(
+            QStyle.sliderValueFromPosition(
+                self.minimum(),
+                self.maximum(),
+                position,
+                span,
+                self.invertedAppearance(),
+            )
+        )
+
+    def mousePressEvent(self, event: Any) -> None:  # noqa: N802
+        if event.button() != Qt.MouseButton.LeftButton:
+            super().mousePressEvent(event)
+            return
+        self._set_value_from_x(event.position().x())
+        self.setSliderDown(False)
+        self.releaseMouse()
+        event.accept()
+
+    def mouseMoveEvent(self, event: Any) -> None:  # noqa: N802
+        if (
+            event.buttons() & Qt.MouseButton.LeftButton
+            and self.rect().contains(event.position().toPoint())
+        ):
+            self._set_value_from_x(event.position().x())
+            event.accept()
+            return
+        event.ignore()
+
+    def mouseReleaseEvent(self, event: Any) -> None:  # noqa: N802
+        self.setSliderDown(False)
+        self.releaseMouse()
+        event.accept()
+
+
 class SliderField(QWidget):
     valueChanged = Signal(int)
 
@@ -178,7 +221,7 @@ class SliderField(QWidget):
         root.addLayout(header)
         row = QHBoxLayout()
         row.setSpacing(10)
-        self.slider = QSlider(Qt.Orientation.Horizontal)
+        self.slider = AtomicSlider(Qt.Orientation.Horizontal)
         self.slider.setRange(minimum, maximum)
         self.slider.setValue(value)
         self.spin = QSpinBox()

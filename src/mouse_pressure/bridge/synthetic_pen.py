@@ -43,7 +43,9 @@ MK_LBUTTON = 0x0001
 
 PEN_FLAG_NONE = 0x00000000
 PEN_MASK_PRESSURE = 0x00000001
+PEN_MASK_ROTATION = 0x00000002
 PEN_MASK_TILT_X = 0x00000004
+PEN_MASK_TILT_Y = 0x00000008
 
 WH_MOUSE_LL = 14
 HC_ACTION = 0
@@ -147,8 +149,8 @@ class SyntheticPenConfig:
     # mouse coordinates, preserving the user's normal pointer speed/DPI feel.
     allow_raw_direct_motion: bool = True
     stationary_pressure_updates: bool = False
-    immediate_button_wake: bool = False
-    clean_stroke_endings: bool = False
+    immediate_button_wake: bool = True
+    clean_stroke_endings: bool = True
     suppress_lmb: bool = False
     suppress_rmb: bool = False
     left_output_target: str = "pressure"
@@ -452,7 +454,9 @@ class _SyntheticPenInjector:
         y: int,
         pressure_1024: int,
         tag: str,
+        rotation: int | None = None,
         tilt_x: int | None = None,
+        tilt_y: int | None = None,
     ) -> tuple[bool, int]:
         pi = self.pti.penInfo.pointerInfo
         pi.pointerType = PT_PEN
@@ -482,11 +486,15 @@ class _SyntheticPenInjector:
         self.pti.penInfo.penFlags = PEN_FLAG_NONE
         self.pti.penInfo.penMask = PEN_MASK_PRESSURE
         self.pti.penInfo.pressure = clamp_i(pressure_1024, 0, 1024)
-        self.pti.penInfo.rotation = 0
+        if rotation is not None:
+            self.pti.penInfo.penMask |= PEN_MASK_ROTATION
+        self.pti.penInfo.rotation = clamp_i(int(rotation or 0), 0, 359)
         if tilt_x is not None:
             self.pti.penInfo.penMask |= PEN_MASK_TILT_X
+        if tilt_y is not None:
+            self.pti.penInfo.penMask |= PEN_MASK_TILT_Y
         self.pti.penInfo.tiltX = clamp_i(int(tilt_x or 0), -90, 90)
-        self.pti.penInfo.tiltY = 0
+        self.pti.penInfo.tiltY = clamp_i(int(tilt_y or 0), -90, 90)
 
         ctypes.set_last_error(0)
         ok = bool(self.user32.InjectSyntheticPointerInput(self.device, ctypes.byref(self.pti), 1))
@@ -494,7 +502,9 @@ class _SyntheticPenInjector:
         if not ok:
             self.log(
                 f"INJECT {tag} failed err={err} flags=0x{flags:08X} x={x} y={y} "
-                f"pressure={self.pti.penInfo.pressure} xtilt={self.pti.penInfo.tiltX}"
+                f"pressure={self.pti.penInfo.pressure} rotation={self.pti.penInfo.rotation} "
+                f"xtilt={self.pti.penInfo.tiltX} "
+                f"ytilt={self.pti.penInfo.tiltY}"
             )
         return ok, err
 
@@ -1409,7 +1419,7 @@ class _MouseLmbSuppressor:
                         int(dy),
                     )
                 )
-        # Auxiliary buttons (for example pressure-to-X-tilt) are held alongside
+        # Auxiliary buttons (for example pressure-to-tilt) are held alongside
         # the contact owner. Track their state without letting them keep the
         # Raw Input contact session alive across separate strokes.
         if not self._left_button_owns_contact:
@@ -2152,8 +2162,12 @@ class _StrokePlanner:
         self._last_update_at = 0.0
         self._update_interval_ema = 1.0 / 240.0
         self._last_motion_diag: dict[str, float | int] = {}
+        self._aux_rotation = 0
         self._aux_tilt_x = 0
+        self._aux_tilt_y = 0
+        self._last_sent_rotation = 0
         self._last_sent_tilt_x = 0
+        self._last_sent_tilt_y = 0
         self._stationary_anchor_started_at = 0.0
         self._stationary_dab_emitted = False
         self._startup_contact_prime_pending = True
@@ -2187,6 +2201,18 @@ class _StrokePlanner:
         return bool(
             self.config.left_output_target == "x_tilt"
             or self.config.right_output_target == "x_tilt"
+        )
+
+    def _has_aux_ytilt(self) -> bool:
+        return bool(
+            self.config.left_output_target == "y_tilt"
+            or self.config.right_output_target == "y_tilt"
+        )
+
+    def _has_aux_rotation(self) -> bool:
+        return bool(
+            self.config.left_output_target == "rotation"
+            or self.config.right_output_target == "rotation"
         )
 
     def _observe_native_timing(
@@ -2913,7 +2939,9 @@ class _StrokePlanner:
                 y=y,
                 pressure_1024=pressure_1024,
                 tag=tag,
+                rotation=(self._aux_rotation if self._has_aux_rotation() else None),
                 tilt_x=(self._aux_tilt_x if self._has_aux_xtilt() else None),
+                tilt_y=(self._aux_tilt_y if self._has_aux_ytilt() else None),
             )
             completed_at = time.perf_counter()
             self._last_pointer_injection_at = completed_at
@@ -2927,7 +2955,11 @@ class _StrokePlanner:
                     x=int(x),
                     y=int(y),
                     pressure=int(pressure_1024),
+                    rotation=int(
+                        self._aux_rotation if self._has_aux_rotation() else 0
+                    ),
                     tilt_x=int(self._aux_tilt_x if self._has_aux_xtilt() else 0),
+                    tilt_y=int(self._aux_tilt_y if self._has_aux_ytilt() else 0),
                     flags=int(flags),
                     tag=str(tag),
                     attempt=attempt + 1,
@@ -2979,7 +3011,9 @@ class _StrokePlanner:
                     x=int(report["x"]),
                     y=int(report["y"]),
                     pressure=int(report["pressure_1024"]),
+                    rotation=int(report.get("rotation") or 0),
                     tilt_x=int(report.get("tilt_x") or 0),
+                    tilt_y=int(report.get("tilt_y") or 0),
                     flags=int(report["flags"]),
                     tag=str(report["tag"]),
                     attempt=1,
@@ -3015,7 +3049,9 @@ class _StrokePlanner:
                 "y": int(y),
                 "pressure_1024": 0,
                 "tag": "startup_contact_prime_down",
+                "rotation": None,
                 "tilt_x": None,
+                "tilt_y": None,
             },
             {
                 "flags": POINTER_FLAG_UP | POINTER_FLAG_PRIMARY,
@@ -3023,7 +3059,9 @@ class _StrokePlanner:
                 "y": int(y),
                 "pressure_1024": 0,
                 "tag": "startup_contact_prime_up",
+                "rotation": None,
                 "tilt_x": None,
+                "tilt_y": None,
             },
         ]
         ok, error = self._inject_pen_batch(prime_reports)
@@ -3135,7 +3173,7 @@ class _StrokePlanner:
                     "left",
                     raw=int(left_raw),
                     activation_raw=int(
-                        380 if left_activation_raw is None else left_activation_raw
+                        325 if left_activation_raw is None else left_activation_raw
                     ),
                     button_down=bool(left_down),
                     observed_at=update_at,
@@ -3146,7 +3184,7 @@ class _StrokePlanner:
                     "right",
                     raw=int(right_raw),
                     activation_raw=int(
-                        380
+                        325
                         if right_activation_raw is None
                         and self.config.trace_raw_min is None
                         else self.config.trace_raw_min
@@ -3173,7 +3211,7 @@ class _StrokePlanner:
                     and not anchor_ready("right")
                 ):
                     right_down = False
-        auxiliary_mapped = (
+        auxiliary_x_mapped = (
             left_mapped
             if self.config.left_output_target == "x_tilt"
             else right_mapped
@@ -3181,7 +3219,27 @@ class _StrokePlanner:
             else 0
         )
         self._aux_tilt_x = round(
-            clamp_i(int(auxiliary_mapped), 0, 1023) * 60 / 1023
+            clamp_i(int(auxiliary_x_mapped), 0, 1023) * 60 / 1023
+        )
+        auxiliary_y_mapped = (
+            left_mapped
+            if self.config.left_output_target == "y_tilt"
+            else right_mapped
+            if self.config.right_output_target == "y_tilt"
+            else 0
+        )
+        self._aux_tilt_y = round(
+            clamp_i(int(auxiliary_y_mapped), 0, 1023) * 60 / 1023
+        )
+        auxiliary_rotation_mapped = (
+            left_mapped
+            if self.config.left_output_target == "rotation"
+            else right_mapped
+            if self.config.right_output_target == "rotation"
+            else 0
+        )
+        self._aux_rotation = round(
+            clamp_i(int(auxiliary_rotation_mapped), 0, 1023) * 359 / 1023
         )
         if self.active_button is None:
             if left_down and self.config.left_output_target == "pressure":
@@ -3225,11 +3283,11 @@ class _StrokePlanner:
         )
         auxiliary_stationary_updates = bool(
             (
-                self.config.left_output_target == "x_tilt"
+                self.config.left_output_target in {"x_tilt", "y_tilt", "rotation"}
                 and self.config.stationary_pressure_updates
             )
             or (
-                self.config.right_output_target == "x_tilt"
+                self.config.right_output_target in {"x_tilt", "y_tilt", "rotation"}
                 and self.config.right_stationary_pressure_updates
             )
         )
@@ -3801,6 +3859,11 @@ class _StrokePlanner:
                 )
                 tilt_changed_enough = (
                     abs(int(self._aux_tilt_x) - int(self._last_sent_tilt_x)) >= 2
+                    or abs(int(self._aux_tilt_y) - int(self._last_sent_tilt_y))
+                    >= 2
+                )
+                rotation_changed_enough = (
+                    abs(int(self._aux_rotation) - int(self._last_sent_rotation)) >= 2
                 )
                 legacy_stationary_update = (
                     inject_pressure != pressure_before_update
@@ -3826,7 +3889,10 @@ class _StrokePlanner:
                                 )
                                 or (
                                     auxiliary_stationary_updates
-                                    and tilt_changed_enough
+                                    and (
+                                        tilt_changed_enough
+                                        or rotation_changed_enough
+                                    )
                                 )
                             )
                         )
@@ -3887,8 +3953,16 @@ class _StrokePlanner:
                             if stationary_dab_update
                             else next_state
                         ),
+                        "rotation": (
+                            self._aux_rotation
+                            if self._has_aux_rotation()
+                            else None
+                        ),
                         "tilt_x": (
                             self._aux_tilt_x if self._has_aux_xtilt() else None
+                        ),
+                        "tilt_y": (
+                            self._aux_tilt_y if self._has_aux_ytilt() else None
                         ),
                     }
                 )
@@ -3909,7 +3983,9 @@ class _StrokePlanner:
                 if ok and (inject_flags & POINTER_FLAG_INCONTACT):
                     self._last_contact_position = points[-1]
                     last_sent_pressure = point_pressures[-1]
+                    self._last_sent_rotation = self._aux_rotation
                     self._last_sent_tilt_x = self._aux_tilt_x
+                    self._last_sent_tilt_y = self._aux_tilt_y
             else:
                 for report, point_pressure in zip(
                     scheduled_reports,
@@ -3930,7 +4006,9 @@ class _StrokePlanner:
                             int(report["y"]),
                         )
                         last_sent_pressure = point_pressure
+                        self._last_sent_rotation = self._aux_rotation
                         self._last_sent_tilt_x = self._aux_tilt_x
+                        self._last_sent_tilt_y = self._aux_tilt_y
             if stationary_dab_update and all_ok:
                 self._stationary_dab_emitted = True
             if inject_flags & POINTER_FLAG_INCONTACT:
@@ -3973,7 +4051,9 @@ class _StrokePlanner:
                 f"CONTACT frame={self.contact_frame_no} mapped={mapped} actual={actual_pen_pressure} "
                 f"sent={inject_pressure} moved={moved_from_contact} warmup={int(self.contact_warmup_done)} "
                 f"button={selected_button} down={int(lmb_down)} phys={int(lmb_physical)} "
-                f"xtilt={self._aux_tilt_x} points={len(points) if inject_flags else 0}"
+                f"rotation={self._aux_rotation} xtilt={self._aux_tilt_x} "
+                f"ytilt={self._aux_tilt_y} "
+                f"points={len(points) if inject_flags else 0}"
             )
 
         suppress_selected = (

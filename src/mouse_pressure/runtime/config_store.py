@@ -65,14 +65,6 @@ def _channel_from_dict(raw: Any, defaults: ChannelConfig) -> ChannelConfig:
             "stationary_pressure_updates",
             defaults.stationary_pressure_updates,
         ),
-        immediate_button_wake=raw.get(
-            "immediate_button_wake",
-            defaults.immediate_button_wake,
-        ),
-        clean_stroke_endings=raw.get(
-            "clean_stroke_endings",
-            defaults.clean_stroke_endings,
-        ),
     )
     errors = validate_channel_config(asdict(channel))
     if errors:

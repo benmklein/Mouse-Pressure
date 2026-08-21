@@ -15,14 +15,15 @@ pressure output. It delegates stroke behavior to the stroke planner.
 
 ### Pen report
 
-One synthetic Windows pen update with position, pressure, optional tilt, pointer
-flags, and a diagnostic tag. Report order is observable behavior.
+One synthetic Windows pen update with position, pressure, optional tilt or
+rotation, pointer flags, and a diagnostic tag. Report order is observable
+behavior.
 
 ### Managed button
 
-A mouse button configured to produce pressure or X-tilt output. A stroke has at
-most one pressure-owning managed button, while another managed button may
-simultaneously provide X-tilt.
+A mouse button configured to produce pressure, X-tilt, Y-tilt, or rotation
+output. A stroke has at most one pressure-owning managed button, while another
+managed button may simultaneously modify a pen property.
 
 ### Device-settings lease
 

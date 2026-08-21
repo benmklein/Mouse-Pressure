@@ -590,7 +590,7 @@ class RuntimeService:
             stationary_pressure_updates=(
                 self._config.left.stationary_pressure_updates
             ),
-            immediate_button_wake=self._config.left.immediate_button_wake,
+            immediate_button_wake=True,
             right_contact_threshold=right_thresholds["contact_threshold"],
             right_release_threshold=right_thresholds["release_threshold"],
             right_min_contact_pressure=round(
@@ -603,15 +603,16 @@ class RuntimeService:
             right_stationary_pressure_updates=(
                 effective_right.stationary_pressure_updates
             ),
-            right_immediate_button_wake=(
-                effective_right.immediate_button_wake
-            ),
-            clean_stroke_endings=self._config.left.clean_stroke_endings,
-            right_clean_stroke_endings=effective_right.clean_stroke_endings,
+            right_immediate_button_wake=True,
+            clean_stroke_endings=True,
+            right_clean_stroke_endings=True,
             pressure_interp_steps=max(1, int(round(self.launch_config.hz / 60.0))),
             suppress_lmb=(
                 self._config.left_enabled
-                and (self._config.suppress_lmb or left_target == "x_tilt")
+                and (
+                    self._config.suppress_lmb
+                    or left_target in {"x_tilt", "y_tilt", "rotation"}
+                )
             ),
             suppress_rmb=(
                 self._config.right_enabled
@@ -621,7 +622,7 @@ class RuntimeService:
                         if self._config.linked
                         else self._config.suppress_rmb
                     )
-                    or right_target == "x_tilt"
+                    or right_target in {"x_tilt", "y_tilt", "rotation"}
                 )
             ),
             left_output_target=left_target,

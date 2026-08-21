@@ -162,7 +162,9 @@ class NativeSyntheticPenInjector:
         y: int,
         pressure_1024: int,
         tag: str,
+        rotation: int | None = None,
         tilt_x: int | None = None,
+        tilt_y: int | None = None,
     ) -> tuple[bool, int]:
         if self._relay is None:
             return False, 6  # ERROR_INVALID_HANDLE
@@ -174,8 +176,14 @@ class NativeSyntheticPenInjector:
             x=int(x),
             y=int(y),
             pressure=max(0, min(1024, int(pressure_1024))),
+            rotation=max(0, min(359, int(rotation or 0))),
             tilt_x=max(-90, min(90, int(tilt_x or 0))),
-            tilt_enabled=tilt_x is not None,
+            tilt_y=max(-90, min(90, int(tilt_y or 0))),
+            pen_mask=(
+                (2 if rotation is not None else 0)
+                | (4 if tilt_x is not None else 0)
+                | (8 if tilt_y is not None else 0)
+            ),
             token=token,
         )
         if not ok:
@@ -199,14 +207,20 @@ class NativeSyntheticPenInjector:
         self.last_submission_token = tokens[-1]
         native_reports = (NativeRelayInput * len(reports))()
         for index, (report, token) in enumerate(zip(reports, tokens, strict=True)):
+            rotation = report.get("rotation")
             tilt_x = report.get("tilt_x")
+            tilt_y = report.get("tilt_y")
             native_reports[index] = NativeRelayInput(
                 int(report["flags"]),
                 int(report["x"]),
                 int(report["y"]),
                 max(0, min(1024, int(report["pressure_1024"]))),
+                max(0, min(359, int(rotation or 0))),
                 max(-90, min(90, int(tilt_x or 0))),
-                int(tilt_x is not None),
+                max(-90, min(90, int(tilt_y or 0))),
+                (2 if rotation is not None else 0)
+                | (4 if tilt_x is not None else 0)
+                | (8 if tilt_y is not None else 0),
                 token,
             )
         ok, error = self._relay.submit_batch(native_reports, len(reports))

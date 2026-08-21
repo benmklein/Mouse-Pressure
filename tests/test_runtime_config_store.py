@@ -37,7 +37,6 @@ def _sample_runtime_config() -> RuntimeConfig:
             curve="soft",
             contact_preset="light",
             stationary_pressure_updates=True,
-            clean_stroke_endings=True,
         ),
         right=ChannelConfig(
             output_target="x_tilt",
@@ -69,7 +68,8 @@ class ConfigStoreTests(unittest.TestCase):
             self.assertFalse(loaded.linked)
             self.assertTrue(loaded.left_enabled)
             self.assertTrue(loaded.right_enabled)
-            self.assertEqual(loaded.left.raw_min, 380)
+            self.assertEqual(loaded.left.raw_min, 325)
+            self.assertEqual(loaded.right.raw_min, 325)
             self.assertEqual(loaded.right.raw_max, 700)
             self.assertEqual(loaded.left.pressure_floor, 15)
             self.assertEqual(loaded.left.path_stabilization, 0)
@@ -79,8 +79,6 @@ class ConfigStoreTests(unittest.TestCase):
             self.assertEqual(loaded.left.curve, "linear")
             self.assertEqual(loaded.left.curve_strength, 1.0)
             self.assertEqual(loaded.right.curve_strength, 1.0)
-            self.assertTrue(loaded.left.immediate_button_wake)
-            self.assertFalse(loaded.left.clean_stroke_endings)
             self.assertFalse(loaded.debug_mode)
             self.assertTrue(loaded.minimize_to_tray)
             self.assertTrue(loaded.session_device_settings_follow_normal)
@@ -127,7 +125,6 @@ class ConfigStoreTests(unittest.TestCase):
             self.assertEqual(loaded.left.curve, "soft")
             self.assertEqual(loaded.right.curve, "hard")
             self.assertTrue(loaded.left.stationary_pressure_updates)
-            self.assertTrue(loaded.left.clean_stroke_endings)
             self.assertFalse(loaded.right.stationary_pressure_updates)
 
     def test_load_rejects_schema_mismatch(self) -> None:
@@ -166,8 +163,32 @@ class ConfigStoreTests(unittest.TestCase):
             self.assertTrue(loaded.session_device_settings_follow_normal)
             self.assertFalse(loaded.left.stationary_pressure_updates)
             self.assertFalse(loaded.right.stationary_pressure_updates)
-            self.assertTrue(loaded.left.immediate_button_wake)
-            self.assertFalse(loaded.left.clean_stroke_endings)
+
+    def test_load_ignores_removed_stroke_timing_options(self) -> None:
+        with tempfile.TemporaryDirectory() as td:
+            store = ConfigStore(td)
+            store.path.parent.mkdir(parents=True, exist_ok=True)
+            store.path.write_text(
+                json.dumps(
+                    {
+                        "schema_version": 1,
+                        "left": {
+                            "immediate_button_wake": False,
+                            "clean_stroke_endings": False,
+                        },
+                        "right": {
+                            "immediate_button_wake": "invalid legacy value",
+                            "clean_stroke_endings": "invalid legacy value",
+                        },
+                    }
+                ),
+                encoding="utf-8",
+            )
+
+            loaded = store.load()
+
+            self.assertFalse(hasattr(loaded.left, "immediate_button_wake"))
+            self.assertFalse(hasattr(loaded.left, "clean_stroke_endings"))
 
     def test_load_ignores_removed_legacy_right_xtilt_toggle(self) -> None:
         with tempfile.TemporaryDirectory() as td:

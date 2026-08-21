@@ -22,6 +22,11 @@ The build must:
 5. package the application and sandbox; and
 6. produce the installer and SHA-256 file under `dist/installer`.
 
+The installer lifecycle smoke test performs an install-over-install pass using
+the stable application ID. It verifies that stale packaged runtime files are
+removed while unrelated files remain intact. Pass the previous release through
+`-PreviousInstallerPath` to test a real version upgrade before publishing.
+
 ## Manual test matrix
 
 - Clean install, upgrade, and uninstall on Windows 10 x64.
@@ -29,8 +34,9 @@ The build must:
   build beyond alpha.
 - Wired and supported wireless mouse connections.
 - Start, draw, Stop, crash recovery, tray restore, and both global shortcuts.
-- Left Pressure / right Pressure, left Pressure / right X-tilt, and left X-tilt
-  / right Pressure.
+- Left Pressure / right Pressure, left Pressure / right X-tilt, left Pressure /
+  right Y-tilt, left Pressure / right Rotation, left X-tilt / right Pressure,
+  left Y-tilt / right Pressure, and left Rotation / right Pressure.
 - Sandbox pickup, release, and chain-length control.
 - At least one Windows Ink drawing application and Microsoft Paint.
 - DPI and haptics restored after Stop and after forced termination recovery.

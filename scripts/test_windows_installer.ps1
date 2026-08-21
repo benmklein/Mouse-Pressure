@@ -1,6 +1,7 @@
 [CmdletBinding()]
 param(
-    [string]$InstallerPath = ''
+    [string]$InstallerPath = '',
+    [string]$PreviousInstallerPath = ''
 )
 
 $ErrorActionPreference = 'Stop'
@@ -15,9 +16,14 @@ if (-not $InstallerPath) {
     throw 'No Mouse Pressure installer was found.'
 }
 $InstallerPath = (Resolve-Path -LiteralPath $InstallerPath).Path
+$initialInstallerPath = $InstallerPath
+if ($PreviousInstallerPath) {
+    $initialInstallerPath = (Resolve-Path -LiteralPath $PreviousInstallerPath).Path
+}
 $smokeRoot = Join-Path $repoRoot ('work\installer-smoke\' + [guid]::NewGuid().ToString('N'))
 $installRoot = Join-Path $smokeRoot 'Mouse Pressure'
 $installLog = Join-Path $smokeRoot 'install.log'
+$upgradeLog = Join-Path $smokeRoot 'upgrade.log'
 $uninstallLog = Join-Path $smokeRoot 'uninstall.log'
 [void](New-Item -ItemType Directory -Path $smokeRoot -Force)
 
@@ -82,7 +88,7 @@ function Wait-FileUnlocked {
     throw "File remained locked after ${TimeoutSeconds}s: $Path"
 }
 
-[void](Invoke-CheckedProcess -FilePath $InstallerPath -Arguments @(
+[void](Invoke-CheckedProcess -FilePath $initialInstallerPath -Arguments @(
     '/CURRENTUSER',
     '/VERYSILENT',
     '/SUPPRESSMSGBOXES',
@@ -91,7 +97,7 @@ function Wait-FileUnlocked {
     '/TASKS=',
     "/LOG=$installLog",
     "/DIR=$installRoot"
-) -Phase 'Silent install')
+) -Phase 'Silent initial install')
 
 $application = Join-Path $installRoot 'MousePressure.exe'
 $sandbox = Join-Path $installRoot 'sandbox\MousePressureSandbox.exe'
@@ -104,6 +110,41 @@ if (-not (Test-Path -LiteralPath $sandbox -PathType Leaf)) {
 }
 if (-not (Test-Path -LiteralPath $uninstaller -PathType Leaf)) {
     throw "Installed uninstaller is missing: $uninstaller"
+}
+
+# Exercise the same-AppId install-over-install path used by version upgrades.
+# Generated payload files removed by a newer build must not survive, while
+# unrelated user-owned files in the installation directory remain untouched.
+$obsoletePayload = Join-Path $installRoot '_internal\obsolete-upgrade-test.txt'
+$userOwnedFile = Join-Path $installRoot 'user-owned-upgrade-test.txt'
+Set-Content -LiteralPath $obsoletePayload -Value 'obsolete payload'
+Set-Content -LiteralPath $userOwnedFile -Value 'preserve me'
+
+[void](Invoke-CheckedProcess -FilePath $InstallerPath -Arguments @(
+    '/CURRENTUSER',
+    '/VERYSILENT',
+    '/SUPPRESSMSGBOXES',
+    '/NORESTART',
+    '/SP-',
+    '/TASKS=',
+    "/LOG=$upgradeLog",
+    "/DIR=$installRoot"
+) -Phase 'Silent install-over-install upgrade')
+
+if (Test-Path -LiteralPath $obsoletePayload) {
+    throw "Upgrade left an obsolete packaged file behind: $obsoletePayload"
+}
+if (-not (Test-Path -LiteralPath $userOwnedFile -PathType Leaf)) {
+    throw "Upgrade removed a user-owned file: $userOwnedFile"
+}
+if (-not (Test-Path -LiteralPath $application -PathType Leaf)) {
+    throw "Upgrade removed the installed application: $application"
+}
+if (-not (Test-Path -LiteralPath $sandbox -PathType Leaf)) {
+    throw "Upgrade removed the installed sandbox: $sandbox"
+}
+if (-not (Test-Path -LiteralPath $uninstaller -PathType Leaf)) {
+    throw "Upgrade removed the uninstaller: $uninstaller"
 }
 
 # A missing recovery state is an expected failure, but proves the installed

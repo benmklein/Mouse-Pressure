@@ -41,6 +41,26 @@ def test_x_tilt_requires_an_enabled_pressure_channel() -> None:
         _draft(config).validate()
 
 
+def test_y_tilt_requires_an_enabled_pressure_channel() -> None:
+    config = RuntimeConfig(
+        left=ChannelConfig(output_target="y_tilt"),
+        right=ChannelConfig(output_target="y_tilt"),
+    )
+
+    with pytest.raises(ValueError, match="At least one enabled button"):
+        _draft(config).validate()
+
+
+def test_rotation_requires_an_enabled_pressure_channel() -> None:
+    config = RuntimeConfig(
+        left=ChannelConfig(output_target="rotation"),
+        right=ChannelConfig(output_target="rotation"),
+    )
+
+    with pytest.raises(ValueError, match="At least one enabled button"):
+        _draft(config).validate()
+
+
 def test_runtime_patch_detects_when_session_settings_follow_normal() -> None:
     draft = _draft(
         RuntimeConfig(

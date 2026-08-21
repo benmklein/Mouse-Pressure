@@ -59,7 +59,7 @@ class SettingsDraft:
         if targets and "pressure" not in targets:
             errors.append(
                 "At least one enabled button must map to Pressure; "
-                "X-tilt modifies an active pressure stroke"
+                "tilt and rotation modify an active pressure stroke"
             )
         if errors:
             raise ValueError(". ".join(errors) + ".")

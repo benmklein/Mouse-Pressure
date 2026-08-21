@@ -20,7 +20,7 @@ class StreamNotActiveError(RuntimeError):
 
 _PROTOCOL_CURVES = {"linear", "soft", "hard", "scurve"}
 _CONTACT_PRESETS = {"light", "medium", "firm"}
-_OUTPUT_TARGETS = {"pressure", "x_tilt"}
+_OUTPUT_TARGETS = {"pressure", "x_tilt", "y_tilt", "rotation"}
 CURVE_STRENGTH_MIN = 0.5
 CURVE_STRENGTH_MAX = 4.0
 
@@ -48,13 +48,13 @@ def validate_channel_config(ch: dict) -> list[str]:
     # Optional for backward-compatible validation of version-1 channel payloads.
     true_low_latency = ch.get("true_low_latency", False)
     stationary_pressure_updates = ch.get("stationary_pressure_updates", False)
-    immediate_button_wake = ch.get("immediate_button_wake", False)
-    clean_stroke_endings = ch.get("clean_stroke_endings", False)
 
     if not isinstance(output_target, str):
         errors.append("output_target must be a string")
     elif output_target not in _OUTPUT_TARGETS:
-        errors.append("output_target must be one of: pressure, x_tilt")
+        errors.append(
+            "output_target must be one of: pressure, x_tilt, y_tilt, rotation"
+        )
 
     if not isinstance(raw_min, int):
         errors.append("raw_min must be an integer")
@@ -123,11 +123,5 @@ def validate_channel_config(ch: dict) -> list[str]:
 
     if not isinstance(stationary_pressure_updates, bool):
         errors.append("stationary_pressure_updates must be a boolean")
-
-    if not isinstance(immediate_button_wake, bool):
-        errors.append("immediate_button_wake must be a boolean")
-
-    if not isinstance(clean_stroke_endings, bool):
-        errors.append("clean_stroke_endings must be a boolean")
 
     return errors

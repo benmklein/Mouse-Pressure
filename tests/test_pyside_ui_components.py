@@ -5,6 +5,8 @@ from types import SimpleNamespace
 
 os.environ.setdefault("QT_QPA_PLATFORM", "offscreen")
 
+from PySide6.QtCore import QPoint, Qt  # noqa: E402
+from PySide6.QtTest import QTest  # noqa: E402
 from PySide6.QtWidgets import QApplication, QLabel  # noqa: E402
 
 from mouse_pressure.bridge.config import ChannelConfig, RuntimeConfig  # noqa: E402
@@ -13,7 +15,7 @@ from mouse_pressure.pyside_ui import (  # noqa: E402
     ConfirmationDialog,
     MainWindow,
 )
-from mouse_pressure.ui.qt_widgets import MappingGraph  # noqa: E402
+from mouse_pressure.ui.qt_widgets import MappingGraph, SliderField  # noqa: E402
 from mouse_pressure.ui.settings_model import SettingsDraft  # noqa: E402
 
 
@@ -35,7 +37,7 @@ def test_channel_editor_uses_outcome_labels_and_exposes_raw_values() -> None:
     assert [
         editor.output_target.itemText(index)
         for index in range(editor.output_target.count())
-    ] == ["Pressure", "X-tilt"]
+    ] == ["Pressure", "X-tilt", "Y-tilt", "Rotation"]
     assert editor.output_target.currentData() == "pressure"
     assert editor.calibrate_button.text() == "Calibrate pressure range…"
     assert curve_options == [
@@ -56,10 +58,8 @@ def test_channel_editor_uses_outcome_labels_and_exposes_raw_values() -> None:
     assert editor.curve_strength.slider.minimum() == 11
     assert editor.curve_strength.slider.maximum() == 40
     assert editor.reset_button.text() == "Reset right-click settings"
-    assert editor.immediate_button_wake.isChecked() is True
-    assert "Immediate stroke start (experimental)" in labels
-    assert editor.clean_stroke_endings.isChecked() is False
-    assert "Clean stroke endings" in labels
+    assert "Immediate stroke start (experimental)" not in labels
+    assert "Clean stroke endings" not in labels
 
     editor.curve.setCurrentIndex(editor.curve.findData("linear"))
     assert editor.curve_strength.isHidden()
@@ -67,6 +67,60 @@ def test_channel_editor_uses_outcome_labels_and_exposes_raw_values() -> None:
 
     editor.curve.setCurrentIndex(editor.curve.findData("soft"))
     assert not editor.curve_strength.isHidden()
+
+
+def test_debug_mode_controls_diagnostic_navigation() -> None:
+    class _Button:
+        def __init__(self) -> None:
+            self.visible = True
+            self.checked = False
+
+        def setVisible(self, visible: bool) -> None:  # noqa: N802
+            self.visible = visible
+
+        def setChecked(self, checked: bool) -> None:  # noqa: N802
+            self.checked = checked
+
+    buttons = [_Button() for _ in range(4)]
+    selected: list[int] = []
+    window = SimpleNamespace(
+        nav_buttons=buttons,
+        pages=SimpleNamespace(currentIndex=lambda: 2),
+        _select_page=selected.append,
+    )
+
+    MainWindow._set_debug_navigation(window, False)
+
+    assert buttons[2].visible is False
+    assert buttons[3].visible is False
+    assert buttons[1].checked is True
+    assert selected == [1]
+
+    MainWindow._set_debug_navigation(window, True)
+    assert buttons[2].visible is True
+    assert buttons[3].visible is True
+
+
+def test_slider_press_cannot_retain_a_pointer_drag() -> None:
+    _app()
+    field = SliderField("Haptics", 0, 100, 50)
+    field.resize(400, 80)
+    field.show()
+    _app().processEvents()
+
+    slider = field.slider
+    QTest.mousePress(
+        slider,
+        Qt.MouseButton.LeftButton,
+        pos=QPoint(slider.width() // 2, slider.height() // 2),
+    )
+    _app().processEvents()
+    pressed_value = slider.value()
+    QTest.mouseMove(slider, QPoint(slider.width() + 300, slider.height() // 2))
+    _app().processEvents()
+
+    assert slider.isSliderDown() is False
+    assert slider.value() == pressed_value
 
 
 def test_mapping_graph_uses_observed_raw_pressure_domain() -> None:

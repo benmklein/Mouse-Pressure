@@ -113,7 +113,7 @@ def test_load_native_relay_reports_every_discovery_location(
 
 def test_native_relay_structure_layout_sizes_match_the_cpp_abi() -> None:
     assert ctypes.sizeof(NativeRelayStats) == 96
-    assert ctypes.sizeof(NativeRelayInput) == 32
+    assert ctypes.sizeof(NativeRelayInput) == 40
     assert ctypes.sizeof(NativeRelayCompletion) == 72
     assert ctypes.sizeof(NativeInputMove) == 32
     assert ctypes.sizeof(NativeInputStats) == 48

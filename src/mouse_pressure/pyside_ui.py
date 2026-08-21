@@ -41,6 +41,7 @@ from PySide6.QtWidgets import (
     QWidget,
 )
 
+from mouse_pressure import __version__
 from mouse_pressure.bridge.config import ChannelConfig, LaunchConfig, RuntimeConfig
 from mouse_pressure.dev_ui import (
     BridgeController,
@@ -244,6 +245,8 @@ class ChannelEditor(QWidget):
         self.output_target = QComboBox()
         self.output_target.addItem("Pressure", "pressure")
         self.output_target.addItem("X-tilt", "x_tilt")
+        self.output_target.addItem("Y-tilt", "y_tilt")
+        self.output_target.addItem("Rotation", "rotation")
         self.output_target.setCurrentIndex(
             max(0, self.output_target.findData(config.output_target))
         )
@@ -340,23 +343,11 @@ class ChannelEditor(QWidget):
             config.pressure_influence,
             suffix="%",
         )
-        self.immediate_button_wake = LabeledSwitch(
-            "Immediate stroke start (experimental)",
-            "Wake output as soon as the exact button-down position is known. Removes up to about 17 ms of intermittent delay; a Raw-Input-first press may wait up to 4 ms for its position.",
-            checked=config.immediate_button_wake,
-        )
-        self.clean_stroke_endings = LabeledSwitch(
-            "Clean stroke endings",
-            "Holds pressure decreases for 25 ms so a release can end before a thin tail is emitted. Cursor movement and pressure increases remain immediate.",
-            checked=config.clean_stroke_endings,
-        )
         for widget in (
             self.deadzone,
             self.pressure_floor,
             self.path_stabilization,
             self.pressure_influence,
-            self.immediate_button_wake,
-            self.clean_stroke_endings,
         ):
             advanced.addWidget(widget)
         self.advanced.setVisible(False)
@@ -398,8 +389,6 @@ class ChannelEditor(QWidget):
             self.pressure_floor,
             self.path_stabilization,
             self.pressure_influence,
-            self.immediate_button_wake,
-            self.clean_stroke_endings,
         ]
         return widgets
 
@@ -528,6 +517,9 @@ class MainWindow(QMainWindow):
         )
         appearance_row.addWidget(self.theme_selector, 1)
         side.addLayout(appearance_row)
+        self.version_label = _label(f"Version {__version__}", muted=True)
+        self.version_label.setObjectName("versionLabel")
+        side.addWidget(self.version_label)
         layout.addWidget(sidebar)
 
         content = QVBoxLayout()
@@ -562,6 +554,7 @@ class MainWindow(QMainWindow):
         self.logs_page = self._build_logs_page()
         for page in (self.pressure_page, self.mouse_page, self.analysis_page, self.logs_page):
             self.pages.addWidget(page)
+        self._set_debug_navigation(config.debug_mode)
         content.addWidget(self.pages, 1)
         layout.addLayout(content, 1)
         self._connect_non_mapping_controls()
@@ -749,7 +742,7 @@ class MainWindow(QMainWindow):
         sandbox_copy.addWidget(QLabel("Pressure sandbox"))
         sandbox_copy.addWidget(
             _label(
-                "Test processed left- and right-click pressure in a physics toy.",
+                "Test left and right click pressure in a sandbox toy.",
                 muted=True,
                 wrap=True,
             )
@@ -890,14 +883,7 @@ class MainWindow(QMainWindow):
             self.release_teardown,
         ]
         for editor in self.editors.values():
-            switches.extend(
-                (
-                    editor.enabled,
-                    editor.suppress,
-                    editor.immediate_button_wake,
-                    editor.clean_stroke_endings,
-                )
-            )
+            switches.extend((editor.enabled, editor.suppress))
         for widget in switches:
             widget.set_theme(self.theme)
         self.mapping_graph.set_theme(self.theme)
@@ -908,6 +894,13 @@ class MainWindow(QMainWindow):
         self.page_title.setText(("Pressure", "Mouse", "Stroke analysis", "Logs")[index])
         if index == 2:
             self._refresh_strokes(select_latest=False)
+
+    def _set_debug_navigation(self, enabled: bool) -> None:
+        for index in (2, 3):
+            self.nav_buttons[index].setVisible(enabled)
+        if not enabled and self.pages.currentIndex() in {2, 3}:
+            self.nav_buttons[1].setChecked(True)
+            self._select_page(1)
 
     # ---------- settings ----------
     def _connect_mapping_controls(self) -> None:
@@ -925,12 +918,6 @@ class MainWindow(QMainWindow):
                 editor.pressure_influence.valueChanged,
             ):
                 signal.connect(lambda *_args, channel=name: self._mapping_control_changed(channel))
-            editor.immediate_button_wake.toggled.connect(
-                lambda *_args, channel=name: self._mapping_control_changed(channel)
-            )
-            editor.clean_stroke_endings.toggled.connect(
-                lambda *_args, channel=name: self._mapping_control_changed(channel)
-            )
             editor.suppress.toggled.connect(
                 lambda *_args, channel=name: self._mapping_control_changed(channel)
             )
@@ -946,6 +933,7 @@ class MainWindow(QMainWindow):
             self.release_teardown.toggled,
         ):
             signal.connect(self._mark_dirty)
+        self.debug_mode.toggled.connect(self._set_debug_navigation)
 
     def _mapping_control_changed(self, channel: str) -> None:
         if self._loading:
@@ -1019,8 +1007,6 @@ class MainWindow(QMainWindow):
             pressure_floor=int(editor.pressure_floor.value()),
             path_stabilization=int(editor.path_stabilization.value()),
             pressure_influence=int(editor.pressure_influence.value()),
-            immediate_button_wake=editor.immediate_button_wake.isChecked(),
-            clean_stroke_endings=editor.clean_stroke_endings.isChecked(),
         )
 
     def _settings_draft(self) -> SettingsDraft:
@@ -1065,8 +1051,9 @@ class MainWindow(QMainWindow):
             self.service.launch_config.backend = "native_synthetic"
         except Exception as exc:
             self.write_system(f"Settings error: {exc}", level="ERROR")
-            self._select_page(3)
-            self.nav_buttons[3].setChecked(True)
+            if self.debug_mode.isChecked():
+                self._select_page(3)
+                self.nav_buttons[3].setChecked(True)
             return False
         self.sidebar_backend.setText(
             "Connected"
@@ -1125,8 +1112,6 @@ class MainWindow(QMainWindow):
             editor.pressure_floor.setValue(source.pressure_floor)
             editor.path_stabilization.setValue(source.path_stabilization)
             editor.pressure_influence.setValue(source.pressure_influence)
-            editor.immediate_button_wake.setChecked(source.immediate_button_wake)
-            editor.clean_stroke_endings.setChecked(source.clean_stroke_endings)
             editor.suppress.setChecked(
                 reset.suppress_lmb if channel == "left" else reset.suppress_rmb
             )
@@ -1156,8 +1141,6 @@ class MainWindow(QMainWindow):
                 editor.pressure_floor.setValue(ch.pressure_floor)
                 editor.path_stabilization.setValue(ch.path_stabilization)
                 editor.pressure_influence.setValue(ch.pressure_influence)
-                editor.immediate_button_wake.setChecked(ch.immediate_button_wake)
-                editor.clean_stroke_endings.setChecked(ch.clean_stroke_endings)
             self.editors["left"].suppress.setChecked(config.suppress_lmb)
             self.editors["right"].suppress.setChecked(config.suppress_rmb)
             self.debug_mode.setChecked(config.debug_mode)
@@ -1314,7 +1297,11 @@ class MainWindow(QMainWindow):
         selected = "left" if self.channel_tabs.currentIndex() == 0 else "right"
         editor = self.editors[selected]
         output_target = str(editor.output_target.currentData())
-        output_label = "Output X-tilt" if output_target == "x_tilt" else "Output Pressure"
+        output_label = {
+            "x_tilt": "Output X-tilt",
+            "y_tilt": "Output Y-tilt",
+            "rotation": "Output Rotation",
+        }.get(output_target, "Output Pressure")
         self.graph_title.setText(output_label)
         if isinstance(self.output_metric_caption, QLabel):
             self.output_metric_caption.setText(output_label)
@@ -1590,8 +1577,8 @@ class MainWindow(QMainWindow):
             else "pressure"
         )
         self.output_metric.setText(
-            f"{round(effective * 60 / 1023)}°"
-            if output_target == "x_tilt"
+            f"{round(effective * (359 if output_target == 'rotation' else 60) / 1023)}°"
+            if output_target in {"x_tilt", "y_tilt", "rotation"}
             else f"{effective / 1024:.0%}"
         )
         self.raw_metric.setText(str(raw))

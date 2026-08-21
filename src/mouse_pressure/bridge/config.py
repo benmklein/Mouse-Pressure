@@ -9,7 +9,7 @@ from dataclasses import dataclass, field
 class ChannelConfig:
     # Pen property controlled by this physical button's analog sensor.
     output_target: str = "pressure"
-    raw_min: int = 380
+    raw_min: int = 325
     raw_max: int = 700
     deadzone_low: int = 0
     deadzone_high: int = 0
@@ -33,12 +33,6 @@ class ChannelConfig:
     # Re-emit a held contact point when a fresh hardware pressure sample
     # changes meaningfully, allowing pressure-sensitive stationary dabs.
     stationary_pressure_updates: bool = False
-    # Wake event-driven pen output as soon as a device-scoped button-down is
-    # accepted, even when that Raw Input packet contains no movement.
-    immediate_button_wake: bool = True
-    # Hold pressure decreases briefly so a nearby release can discard the
-    # involuntary low-pressure taper without delaying pointer motion.
-    clean_stroke_endings: bool = False
 
 
 @dataclass

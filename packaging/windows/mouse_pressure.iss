@@ -1,5 +1,5 @@
 #ifndef MyAppVersion
-  #define MyAppVersion "0.1.1-dev"
+  #define MyAppVersion "0.2.0-dev"
 #endif
 
 #define MyAppName "Mouse Pressure"
@@ -31,6 +31,12 @@ ArchitecturesAllowed=x64compatible
 ArchitecturesInstallIn64BitMode=x64compatible
 CloseApplications=yes
 RestartApplications=no
+UsePreviousAppDir=yes
+
+[InstallDelete]
+; Replace generated payload directories so removed files do not survive upgrades.
+Type: filesandordirs; Name: "{app}\_internal"
+Type: filesandordirs; Name: "{app}\sandbox"
 
 [Languages]
 Name: "english"; MessagesFile: "compiler:Default.isl"

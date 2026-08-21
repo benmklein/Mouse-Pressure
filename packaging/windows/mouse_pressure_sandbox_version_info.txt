@@ -16,11 +16,11 @@ VSVersionInfo(
         [
           StringStruct('CompanyName', 'Mouse Pressure'),
           StringStruct('FileDescription', 'Mouse Pressure Sandbox'),
-          StringStruct('FileVersion', '0.1.1'),
+          StringStruct('FileVersion', '0.2.0'),
           StringStruct('InternalName', 'MousePressureSandbox'),
           StringStruct('OriginalFilename', 'MousePressureSandbox.exe'),
           StringStruct('ProductName', 'Mouse Pressure'),
-          StringStruct('ProductVersion', '0.1.1')
+          StringStruct('ProductVersion', '0.2.0')
         ]
       )
     ]),

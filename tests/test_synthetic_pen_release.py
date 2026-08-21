@@ -72,7 +72,9 @@ class _FakePen:
         y: int,
         pressure_1024: int,
         tag: str,
+        rotation: int | None = None,
         tilt_x: int | None = None,
+        tilt_y: int | None = None,
     ) -> tuple[bool, int]:
         self.call_times.append(time.perf_counter())
         self.calls.append(
@@ -81,7 +83,9 @@ class _FakePen:
                 "x": int(x),
                 "y": int(y),
                 "pressure": int(pressure_1024),
+                "rotation": int(rotation or 0),
                 "tilt_x": int(tilt_x or 0),
+                "tilt_y": int(tilt_y or 0),
                 "tag": str(tag),
             }
         )
@@ -822,6 +826,74 @@ class SyntheticPenReleaseTests(unittest.TestCase):
         self.assertEqual(emitter._planner.active_button, "right")
         self.assertEqual(fake.calls[-1]["tilt_x"], 30)
         self.assertGreater(fake.calls[-1]["pressure"], 0)
+
+    def test_auxiliary_right_pressure_modifies_ytilt_without_own_stroke(self) -> None:
+        config = SyntheticPenConfig(
+            contact_threshold=12,
+            release_threshold=4,
+            onset_buffer=False,
+            right_output_target="y_tilt",
+        )
+        emitter = SyntheticPenEmitter(config, log=lambda _line: None)
+        self.assertIsNotNone(emitter._suppressor)  # noqa: SLF001
+        self.assertFalse(  # noqa: SLF001
+            emitter._suppressor._right_button_owns_contact  # type: ignore[union-attr]
+        )
+        emitter._suppressor = None  # type: ignore[assignment]  # noqa: SLF001
+        fake = _FakePen()
+        emitter.pen = fake  # type: ignore[assignment]
+
+        fake._rmb = True
+        no_stroke = emitter.update(
+            left_mapped=0,
+            right_mapped=1023,
+            pressure_fresh=True,
+        )
+        self.assertEqual(no_stroke.state, "idle")
+        self.assertIsNone(emitter._planner.active_button)
+        self.assertEqual(fake.calls, [])
+
+        fake._lmb = True
+        stroke = emitter.update(
+            left_mapped=400,
+            right_mapped=512,
+            pressure_fresh=True,
+        )
+        self.assertEqual(stroke.state, "contact")
+        self.assertEqual(emitter._planner.active_button, "left")
+        self.assertEqual(fake.calls[-1]["tilt_x"], 0)
+        self.assertEqual(fake.calls[-1]["tilt_y"], 30)
+        self.assertGreater(fake.calls[-1]["pressure"], 0)
+
+    def test_auxiliary_right_pressure_modifies_rotation_without_own_stroke(self) -> None:
+        config = SyntheticPenConfig(
+            contact_threshold=12,
+            release_threshold=4,
+            onset_buffer=False,
+            right_output_target="rotation",
+        )
+        emitter = SyntheticPenEmitter(config, log=lambda _line: None)
+        self.assertIsNotNone(emitter._suppressor)  # noqa: SLF001
+        self.assertFalse(  # noqa: SLF001
+            emitter._suppressor._right_button_owns_contact  # type: ignore[union-attr]
+        )
+        emitter._suppressor = None  # type: ignore[assignment]  # noqa: SLF001
+        fake = _FakePen()
+        emitter.pen = fake  # type: ignore[assignment]
+
+        fake._lmb = True
+        fake._rmb = True
+        stroke = emitter.update(
+            left_mapped=400,
+            right_mapped=512,
+            pressure_fresh=True,
+        )
+
+        self.assertEqual(stroke.state, "contact")
+        self.assertEqual(emitter._planner.active_button, "left")
+        self.assertEqual(fake.calls[-1]["rotation"], 180)
+        self.assertEqual(fake.calls[-1]["tilt_x"], 0)
+        self.assertEqual(fake.calls[-1]["tilt_y"], 0)
 
     def test_recent_synthetic_position_is_not_recaptured_as_hardware(self) -> None:
         suppressor = _MouseLmbSuppressor(log=lambda _line: None)
@@ -1884,6 +1956,7 @@ class SyntheticPenReleaseTests(unittest.TestCase):
 
     def test_midstroke_pressure_changes_are_distributed_over_four_ticks(self) -> None:
         emitter, fake = self._mk_emitter(release_teardown=False)
+        emitter.config.clean_stroke_endings = False
         fake._lmb = True
         emitter._planner.state = "contact"
         emitter._planner.contact_warmup_done = True

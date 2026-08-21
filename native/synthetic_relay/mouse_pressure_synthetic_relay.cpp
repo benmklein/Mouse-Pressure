@@ -6,7 +6,7 @@
 
 namespace {
 
-constexpr uint32_t kApiVersion = 3;
+constexpr uint32_t kApiVersion = 4;
 constexpr uint32_t kQueueCapacity = 1024;
 constexpr uint32_t kCompletionCapacity = 4096;
 constexpr uint32_t kInputMoveCapacity = 8192;
@@ -16,8 +16,10 @@ struct RelayInputReport {
     int32_t x;
     int32_t y;
     uint32_t pressure;
+    uint32_t rotation;
     int32_t tilt_x;
-    uint32_t tilt_enabled;
+    int32_t tilt_y;
+    uint32_t pen_mask;
     uint64_t token;
 };
 
@@ -26,8 +28,10 @@ struct RelayReport {
     int32_t x;
     int32_t y;
     uint32_t pressure;
+    uint32_t rotation;
     int32_t tilt_x;
-    uint32_t tilt_enabled;
+    int32_t tilt_y;
+    uint32_t pen_mask;
     uint64_t token;
     int64_t submitted_qpc;
 };
@@ -189,10 +193,13 @@ void fill_pointer_info(Relay* relay, const RelayReport& report, POINTER_TYPE_INF
     } else {
         pointer.ButtonChangeType = POINTER_CHANGE_NONE;
     }
-    pen.penMask = PEN_MASK_PRESSURE;
+    pen.penMask = PEN_MASK_PRESSURE | (
+        report.pen_mask & (PEN_MASK_ROTATION | PEN_MASK_TILT_X | PEN_MASK_TILT_Y)
+    );
     pen.pressure = clamp_u32(report.pressure, 0, 1024);
-    if (report.tilt_enabled != 0) pen.penMask |= PEN_MASK_TILT_X;
+    pen.rotation = clamp_u32(report.rotation, 0, 359);
     pen.tiltX = clamp_i32(report.tilt_x, -90, 90);
+    pen.tiltY = clamp_i32(report.tilt_y, -90, 90);
 }
 
 bool pop_report(Relay* relay, RelayReport* report) {
@@ -565,8 +572,10 @@ extern "C" __declspec(dllexport) int __cdecl mp_synth_submit(
     int32_t x,
     int32_t y,
     uint32_t pressure,
+    uint32_t rotation,
     int32_t tilt_x,
-    uint32_t tilt_enabled,
+    int32_t tilt_y,
+    uint32_t pen_mask,
     uint64_t token
 ) {
     if (raw_relay == nullptr) {
@@ -601,8 +610,10 @@ extern "C" __declspec(dllexport) int __cdecl mp_synth_submit(
         x,
         y,
         pressure,
+        rotation,
         tilt_x,
-        tilt_enabled,
+        tilt_y,
+        pen_mask,
         token,
         submitted.QuadPart,
     };
@@ -660,8 +671,10 @@ extern "C" __declspec(dllexport) int __cdecl mp_synth_submit_batch(
             input.x,
             input.y,
             input.pressure,
+            input.rotation,
             input.tilt_x,
-            input.tilt_enabled,
+            input.tilt_y,
+            input.pen_mask,
             input.token,
             submitted.QuadPart,
         };

@@ -25,8 +25,6 @@ def _valid_channel() -> dict:
         "path_stabilization": 0,
         "pressure_influence": 85,
         "onset_buffer": False,
-        "immediate_button_wake": False,
-        "clean_stroke_endings": False,
     }
 
 
@@ -67,28 +65,6 @@ class ValidationModelTests(unittest.TestCase):
 
         self.assertTrue(
             any("onset_buffer" in error for error in validate_channel_config(ch))
-        )
-
-    def test_immediate_button_wake_requires_boolean(self) -> None:
-        ch = _valid_channel()
-        ch["immediate_button_wake"] = "true"
-
-        self.assertTrue(
-            any(
-                "immediate_button_wake" in error
-                for error in validate_channel_config(ch)
-            )
-        )
-
-    def test_clean_stroke_endings_requires_boolean(self) -> None:
-        ch = _valid_channel()
-        ch["clean_stroke_endings"] = "true"
-
-        self.assertTrue(
-            any(
-                "clean_stroke_endings" in error
-                for error in validate_channel_config(ch)
-            )
         )
 
     def test_deadzone_pct_conversion(self) -> None:
