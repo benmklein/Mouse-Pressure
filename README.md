@@ -63,9 +63,8 @@ Other Windows Ink applications may expose similar controls.
 
 [![Controlling a retractable chain game with analog mouse buttons](docs/media/pressure-game.gif)](docs/media/pressure-game.mp4)
 
-Analog button force can control more than brushes. The included sandbox uses
-pressure to extend and retract a chain. Open it from the mouse tab in Mouse
-Pressure.
+Analog button force can control more than brushes. The driver includes a sandbox game (under the Mouse tab) that uses
+pressure to extend and retract a chain.
 
 Developers can use inputs from windows to make their own pressure sensitive mouse games. A godot plugin will be released shortly to make these signals a bit easier to work with.
 
