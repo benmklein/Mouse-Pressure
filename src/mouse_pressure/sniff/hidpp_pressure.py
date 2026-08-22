@@ -504,6 +504,44 @@ class PressureHidppSession:
         )
         return int(levels[0]), int(levels[1])
 
+    def get_actuation_levels(self) -> tuple[int, int]:
+        """Read the current 1..10 hardware actuation level per main button."""
+        current = self._read_button_settings()
+        levels = tuple(
+            max(1, min(10, round(current[button][1] / 4.0))) for button in (0, 1)
+        )
+        return int(levels[0]), int(levels[1])
+
+    def set_actuation_levels(self, *, left: int, right: int) -> tuple[int, int]:
+        """Set hardware actuation 1..10 while preserving rapid trigger/haptics."""
+        if not 1 <= left <= 10 or not 1 <= right <= 10:
+            raise ValueError("Actuation levels must be in 1..10")
+
+        current = self._read_button_settings()
+        self.request_long(
+            feature_index=CONFIG_WRAPPER_FEATURE_INDEX,
+            address=0x00,
+            payload=[0x00, 0x01, 0x00],
+            label="ACTUATION.unlock",
+        )
+        try:
+            for button, level in ((0, left), (1, right)):
+                values = current[button]
+                self.request_long(
+                    feature_index=self.pressure_feature_index,
+                    address=(1 << 4) | DEVICE_CONFIG_SW_ID,
+                    payload=[button, level * 4, values[2], values[3]],
+                    label=f"ACTUATION.write[{button}]={level}",
+                )
+        finally:
+            self.request_long(
+                feature_index=CONFIG_WRAPPER_FEATURE_INDEX,
+                address=0x00,
+                payload=[0x00, 0x00, 0x00],
+                label="ACTUATION.commit_lock",
+            )
+        return left, right
+
     def set_haptic_levels(self, *, left: int, right: int) -> tuple[int, int]:
         """Set click haptics 0..5 while preserving actuation/rapid-trigger."""
         if not 0 <= left <= 5 or not 0 <= right <= 5:

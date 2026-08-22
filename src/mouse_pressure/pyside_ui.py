@@ -13,8 +13,8 @@ from concurrent.futures import Future
 from pathlib import Path
 from typing import Any, Callable
 
-from PySide6.QtCore import QEvent, QObject, QSettings, QSize, Qt, QTimer
-from PySide6.QtGui import QAction, QCloseEvent, QIcon
+from PySide6.QtCore import QEvent, QObject, QSettings, QSize, Qt, QTimer, Signal
+from PySide6.QtGui import QAction, QCloseEvent, QFocusEvent, QIcon, QKeySequence
 from PySide6.QtWidgets import (
     QApplication,
     QButtonGroup,
@@ -24,7 +24,9 @@ from PySide6.QtWidgets import (
     QFrame,
     QGridLayout,
     QHBoxLayout,
+    QKeySequenceEdit,
     QLabel,
+    QLineEdit,
     QMainWindow,
     QMenu,
     QMessageBox,
@@ -51,6 +53,7 @@ from mouse_pressure.runtime.config_store import ConfigStore
 from mouse_pressure.runtime.device_settings import SessionDeviceSettings
 from mouse_pressure.runtime.log_bus import LogBus, LogEntry
 from mouse_pressure.runtime.runtime_service import RuntimeService
+from mouse_pressure.ui.hotkeys import parse_global_hotkey, parse_hold_hotkey
 from mouse_pressure.ui.qt_theme import Theme, stylesheet, theme_for
 from mouse_pressure.ui.qt_widgets import (
     Card,
@@ -60,7 +63,7 @@ from mouse_pressure.ui.qt_widgets import (
     StrokeGraph,
     metric_card,
 )
-from mouse_pressure.ui.settings_model import SettingsDraft
+from mouse_pressure.ui.settings_model import SettingsDraft, actuation_raw_estimate
 from mouse_pressure.ui.windows_shell import (
     SingleInstanceGuard,
     StartHotkeyListener,
@@ -69,6 +72,10 @@ from mouse_pressure.ui.windows_shell import (
 )
 
 CHANNEL_COLORS = {"left": "#378ADD", "right": "#EF9F27"}
+MOUSE_PAGE_MAX_WIDTH = 720
+FORM_LABEL_MIN_WIDTH = 112
+FORM_HOTKEY_WIDTH = 240
+FORM_COMPACT_WIDTH = 180
 
 
 def _label(text: str, *, muted: bool = False, wrap: bool = False) -> QLabel:
@@ -87,6 +94,113 @@ def _page_container() -> tuple[QWidget, QVBoxLayout]:
     return widget, layout
 
 
+def _settings_form() -> QGridLayout:
+    layout = QGridLayout()
+    layout.setHorizontalSpacing(16)
+    layout.setVerticalSpacing(10)
+    layout.setColumnMinimumWidth(0, FORM_LABEL_MIN_WIDTH)
+    layout.setColumnStretch(1, 1)
+    return layout
+
+
+class HotkeySequenceEdit(QKeySequenceEdit):
+    """Release global shortcut registration while recording a replacement."""
+
+    def __init__(
+        self,
+        binding: str,
+        *,
+        capture_started: Callable[[], None],
+        capture_finished: Callable[[], None],
+    ) -> None:
+        super().__init__(QKeySequence(binding))
+        self._capture_started = capture_started
+        self._capture_finished = capture_finished
+        self.setMaximumSequenceLength(1)
+        self.setClearButtonEnabled(True)
+
+    def focusInEvent(self, event: QFocusEvent) -> None:  # noqa: N802
+        self._capture_started()
+        super().focusInEvent(event)
+
+    def focusOutEvent(self, event: QFocusEvent) -> None:  # noqa: N802
+        super().focusOutEvent(event)
+        self._capture_finished()
+
+
+class HoldShortcutEdit(QLineEdit):
+    """Capture a keyboard chord or mouse side button for hold-to-remap."""
+
+    bindingChanged = Signal(str)
+
+    def __init__(
+        self,
+        binding: str,
+        *,
+        capture_started: Callable[[], None],
+        capture_finished: Callable[[], None],
+    ) -> None:
+        super().__init__()
+        self._capture_started = capture_started
+        self._capture_finished = capture_finished
+        self._binding = ""
+        self.setReadOnly(True)
+        self.setAlignment(Qt.AlignmentFlag.AlignLeft)
+        self.set_binding(binding)
+
+    def binding(self) -> str:
+        return self._binding
+
+    def set_binding(self, binding: str) -> None:
+        normalized = parse_hold_hotkey(binding).label
+        changed = normalized != self._binding
+        self._binding = normalized
+        self.setText(normalized)
+        if changed:
+            self.bindingChanged.emit(normalized)
+
+    def focusInEvent(self, event: QFocusEvent) -> None:  # noqa: N802
+        self._capture_started()
+        super().focusInEvent(event)
+        self.selectAll()
+
+    def focusOutEvent(self, event: QFocusEvent) -> None:  # noqa: N802
+        super().focusOutEvent(event)
+        self._capture_finished()
+
+    def keyPressEvent(self, event: Any) -> None:  # noqa: N802
+        if event.key() in (
+            Qt.Key.Key_Control,
+            Qt.Key.Key_Alt,
+            Qt.Key.Key_Shift,
+            Qt.Key.Key_Meta,
+        ):
+            event.accept()
+            return
+        sequence = QKeySequence(event.keyCombination()).toString(
+            QKeySequence.SequenceFormat.PortableText
+        )
+        try:
+            self.set_binding(sequence)
+        except ValueError:
+            event.ignore()
+            return
+        event.accept()
+
+    def mousePressEvent(self, event: Any) -> None:  # noqa: N802
+        binding = {
+            Qt.MouseButton.MiddleButton: "Middle click",
+            Qt.MouseButton.XButton1: "Mouse 4",
+            Qt.MouseButton.XButton2: "Mouse 5",
+        }.get(event.button())
+        if binding is None:
+            super().mousePressEvent(event)
+            return
+        self.setFocus()
+        self.set_binding(binding)
+        event.accept()
+
+
 class ConfirmationDialog(QDialog):
     """Compact app-themed confirmation without the native message-box chrome."""
 
@@ -101,9 +215,7 @@ class ConfirmationDialog(QDialog):
         super().__init__(parent)
         self.setObjectName("confirmationDialog")
         self.setModal(True)
-        self.setWindowFlags(
-            Qt.WindowType.Dialog | Qt.WindowType.FramelessWindowHint
-        )
+        self.setWindowFlags(Qt.WindowType.Dialog | Qt.WindowType.FramelessWindowHint)
         self.setAttribute(Qt.WidgetAttribute.WA_TranslucentBackground)
         self.setFixedWidth(420)
 
@@ -166,8 +278,7 @@ class _WheelToScrollFilter(QObject):
                         distance = pixel_delta
                     elif angle_delta:
                         distance = round(
-                            (angle_delta / 120.0)
-                            * max(48, bar.pageStep() // 8)
+                            (angle_delta / 120.0) * max(48, bar.pageStep() // 8)
                         )
                     else:
                         distance = 0
@@ -216,14 +327,13 @@ class ChannelEditor(QWidget):
             QSizePolicy.Policy.Maximum,
         )
         self.channel = channel
-        channel_name = "Left" if channel == "left" else "Right"
         root = QVBoxLayout(self)
         root.setContentsMargins(0, 4, 0, 0)
         root.setSpacing(14)
 
         self.enabled = LabeledSwitch(
-            f"{channel_name}-click pressure",
-            f"Enable pressure output from the {channel.lower()} mouse button.",
+            f"Remap {channel.lower()} click",
+            "Remap mouse button pressure to another signal",
             checked=enabled,
         )
         root.addWidget(self.enabled)
@@ -241,35 +351,142 @@ class ChannelEditor(QWidget):
         settings.setContentsMargins(0, 0, 0, 0)
         settings.setSpacing(14)
 
-        settings.addWidget(_label("Map to", muted=True))
-        self.output_target = QComboBox()
-        self.output_target.addItem("Pressure", "pressure")
-        self.output_target.addItem("X-tilt", "x_tilt")
-        self.output_target.addItem("Y-tilt", "y_tilt")
-        self.output_target.addItem("Rotation", "rotation")
-        self.output_target.setCurrentIndex(
-            max(0, self.output_target.findData(config.output_target))
+        settings.addSpacing(8)
+        self.mapping_top_rule = QFrame()
+        self.mapping_top_rule.setFrameShape(QFrame.Shape.NoFrame)
+        self.mapping_top_rule.setObjectName("mappingRule")
+        self.mapping_top_rule.setFixedHeight(1)
+        self.mapping_top_rule.setSizePolicy(
+            QSizePolicy.Policy.Expanding,
+            QSizePolicy.Policy.Fixed,
         )
-        settings.addWidget(self.output_target)
+        settings.addWidget(self.mapping_top_rule)
 
-        raw_values = QGridLayout()
-        raw_values.setHorizontalSpacing(12)
-        raw_values.setVerticalSpacing(8)
-        raw_values.addWidget(_label("Raw activation value", muted=True), 0, 0)
-        raw_values.addWidget(_label("Raw full-pressure value", muted=True), 0, 1)
+        input_range = QGridLayout()
+        input_range.setHorizontalSpacing(12)
+        input_range.setVerticalSpacing(8)
+        input_range.addWidget(_label("Min Mouse Pressure", muted=True), 0, 0)
+        input_range.addWidget(_label("Max Mouse Pressure", muted=True), 0, 1)
         self.raw_min = QSpinBox()
         self.raw_min.setRange(0, 1022)
         self.raw_min.setValue(config.raw_min)
         self.raw_max = QSpinBox()
         self.raw_max.setRange(1, 1023)
         self.raw_max.setValue(config.raw_max)
-        raw_values.addWidget(self.raw_min, 1, 0)
-        raw_values.addWidget(self.raw_max, 1, 1)
-        settings.addLayout(raw_values)
+        input_range.addWidget(self.raw_min, 1, 0)
+        input_range.addWidget(self.raw_max, 1, 1)
+        settings.addLayout(input_range)
 
-        settings.addWidget(_label("Calibration", muted=True))
-        self.calibrate_button = QPushButton("Calibrate pressure range…")
+        self.calibrate_button = QPushButton("Calibrate input pressure range…")
         settings.addWidget(self.calibrate_button)
+
+        self.mapping_arrow = QLabel()
+        self.mapping_arrow.setPixmap(
+            QIcon(str(asset_path("arrow-down.svg"))).pixmap(QSize(20, 20))
+        )
+        self.mapping_arrow.setAlignment(Qt.AlignmentFlag.AlignCenter)
+        settings.addWidget(self.mapping_arrow)
+
+        self.map_to_label = _label("Map to", muted=True)
+        self.map_to_label.setAlignment(Qt.AlignmentFlag.AlignCenter)
+        settings.addWidget(self.map_to_label)
+        self.output_target = QComboBox()
+        self.output_target.addItem("Pressure (Simulated Tablet)", "pressure")
+        self.output_target.addItem("Mouse sensitivity", "mouse_sensitivity")
+        self.output_target.addItem("X-tilt (Simulated Tablet)", "x_tilt")
+        self.output_target.addItem("Y-tilt (Simulated Tablet)", "y_tilt")
+        self.output_target.addItem("Rotation (Simulated Tablet)", "rotation")
+        self.output_target.setCurrentIndex(
+            max(0, self.output_target.findData(config.output_target))
+        )
+        settings.addWidget(self.output_target)
+
+        self.output_range_widgets: dict[str, QWidget] = {}
+        self.output_range_fields: dict[str, tuple[QSpinBox, QSpinBox]] = {}
+
+        def add_output_range(
+            target: str,
+            minimum: int,
+            maximum: int,
+            light_value: int,
+            firm_value: int,
+            suffix: str,
+            output_name: str,
+        ) -> None:
+            widget = QWidget()
+            grid = QGridLayout(widget)
+            grid.setContentsMargins(0, 0, 0, 0)
+            grid.setHorizontalSpacing(12)
+            grid.setVerticalSpacing(8)
+            grid.addWidget(_label(f"Min Output {output_name}", muted=True), 0, 0)
+            grid.addWidget(_label(f"Max Output {output_name}", muted=True), 0, 1)
+            light = QSpinBox()
+            firm = QSpinBox()
+            for field, value in ((light, light_value), (firm, firm_value)):
+                field.setRange(minimum, maximum)
+                field.setSuffix(suffix)
+                field.setValue(value)
+            grid.addWidget(light, 1, 0)
+            grid.addWidget(firm, 1, 1)
+            settings.addWidget(widget)
+            self.output_range_widgets[target] = widget
+            self.output_range_fields[target] = (light, firm)
+
+        add_output_range(
+            "mouse_sensitivity",
+            0,
+            200,
+            config.sensitivity_light,
+            config.sensitivity_firm,
+            "%",
+            "Sensitivity",
+        )
+        add_output_range(
+            "x_tilt",
+            -60,
+            60,
+            config.x_tilt_light,
+            config.x_tilt_firm,
+            "°",
+            "X-Tilt",
+        )
+        add_output_range(
+            "y_tilt",
+            -60,
+            60,
+            config.y_tilt_light,
+            config.y_tilt_firm,
+            "°",
+            "Y-Tilt",
+        )
+        add_output_range(
+            "rotation",
+            0,
+            359,
+            config.rotation_light,
+            config.rotation_firm,
+            "°",
+            "Rotation",
+        )
+        self.sensitivity_light, self.sensitivity_firm = self.output_range_fields[
+            "mouse_sensitivity"
+        ]
+        self.sensitivity_options = self.output_range_widgets["mouse_sensitivity"]
+        self.output_target.currentIndexChanged.connect(
+            self._update_output_target_controls
+        )
+        self._update_output_target_controls()
+
+        self.mapping_bottom_rule = QFrame()
+        self.mapping_bottom_rule.setFrameShape(QFrame.Shape.NoFrame)
+        self.mapping_bottom_rule.setObjectName("mappingRule")
+        self.mapping_bottom_rule.setFixedHeight(1)
+        self.mapping_bottom_rule.setSizePolicy(
+            QSizePolicy.Policy.Expanding,
+            QSizePolicy.Policy.Fixed,
+        )
+        settings.addWidget(self.mapping_bottom_rule)
+        settings.addSpacing(8)
 
         settings.addWidget(_label("Pressure curve", muted=True))
         self.curve = QComboBox()
@@ -297,17 +514,6 @@ class ChannelEditor(QWidget):
         self.curve.currentIndexChanged.connect(self._update_curve_controls)
         self._update_curve_controls()
 
-        settings.addWidget(_label("Press/release behavior", muted=True))
-        self.contact = QComboBox()
-        for label, value in (
-            ("Activates early", "light"),
-            ("Balanced", "medium"),
-            ("Requires a firmer press", "firm"),
-        ):
-            self.contact.addItem(label, value)
-        self.contact.setCurrentIndex(max(0, self.contact.findData(config.contact_preset)))
-        settings.addWidget(self.contact)
-
         self.suppress = LabeledSwitch(
             "Block the normal mouse click",
         )
@@ -316,8 +522,14 @@ class ChannelEditor(QWidget):
         self.advanced_button = QToolButton()
         self.advanced_button.setText("Advanced settings")
         self.advanced_button.setCheckable(True)
-        self.advanced_button.setToolButtonStyle(Qt.ToolButtonStyle.ToolButtonTextBesideIcon)
-        self.advanced_button.setArrowType(Qt.ArrowType.RightArrow)
+        self.advanced_button.setToolButtonStyle(
+            Qt.ToolButtonStyle.ToolButtonTextBesideIcon
+        )
+        self.advanced_button.setArrowType(Qt.ArrowType.NoArrow)
+        self.advanced_button.setIcon(
+            QIcon(str(asset_path("chevron-right.svg")))
+        )
+        self.advanced_button.setIconSize(QSize(10, 10))
         settings.addWidget(self.advanced_button, 0, Qt.AlignmentFlag.AlignLeft)
 
         self.advanced = QWidget()
@@ -364,10 +576,23 @@ class ChannelEditor(QWidget):
 
     def _show_advanced(self, visible: bool) -> None:
         self.advanced.setVisible(visible)
-        self.advanced_button.setArrowType(
-            Qt.ArrowType.DownArrow if visible else Qt.ArrowType.RightArrow
+        self.advanced_button.setIcon(
+            QIcon(
+                str(
+                    asset_path(
+                        "chevron-down.svg" if visible else "chevron-right.svg"
+                    )
+                )
+            )
         )
         self.advanced.updateGeometry()
+        self.updateGeometry()
+
+    def _update_output_target_controls(self, *_args: Any) -> None:
+        selected = str(self.output_target.currentData())
+        for target, widget in self.output_range_widgets.items():
+            widget.setVisible(target == selected)
+            widget.updateGeometry()
         self.updateGeometry()
 
     def curve_strength_value(self) -> float:
@@ -383,13 +608,14 @@ class ChannelEditor(QWidget):
             self.raw_max,
             self.curve,
             self.curve_strength,
-            self.contact,
             self.suppress,
             self.deadzone,
             self.pressure_floor,
             self.path_stabilization,
             self.pressure_influence,
         ]
+        for fields in self.output_range_fields.values():
+            widgets.extend(fields)
         return widgets
 
 
@@ -423,8 +649,9 @@ class MainWindow(QMainWindow):
         self._latest_mapped = {"left": 0, "right": 0}
         self._normal_device: SessionDeviceSettings | None = None
         self._trace_paths: dict[str, Path] = {}
+        self._hotkey_capture_active = False
         self._qt_settings = QSettings("Mouse Pressure", "Mouse Pressure")
-        self.theme_name = str(self._qt_settings.value("theme", "light"))
+        self.theme_name = str(self._qt_settings.value("theme", "dark"))
         self.theme: Theme = theme_for(self.theme_name)
 
         self.setWindowTitle("Mouse Pressure")
@@ -440,15 +667,25 @@ class MainWindow(QMainWindow):
         self.apply_theme(self.theme_name)
 
         log_bus.subscribe(lambda entry: self.events.put(("log", entry)))
-        service.set_telemetry_callback(lambda sample: self.events.put(("telemetry", sample)))
-        service.set_failure_callback(lambda message: self.events.put(("runtime_error", message)))
-        service.set_force_stop_callback(lambda message: self.events.put(("force_stopped", message)))
+        service.set_telemetry_callback(
+            lambda sample: self.events.put(("telemetry", sample))
+        )
+        service.set_failure_callback(
+            lambda message: self.events.put(("runtime_error", message))
+        )
+        service.set_force_stop_callback(
+            lambda message: self.events.put(("force_stopped", message))
+        )
 
         self.start_hotkey = StartHotkeyListener(
-            lambda: self.events.put(("start_hotkey", None))
+            lambda: self.events.put(("start_hotkey", None)),
+            service.get_config().activation_hotkey,
         )
         if not self.start_hotkey.start():
-            self.write_system("Ctrl+F12 could not be registered.", level="WARN")
+            self.write_system(
+                f"{self.start_hotkey.hotkey.label} could not be registered.",
+                level="WARN",
+            )
 
         self.event_timer = QTimer(self)
         self.event_timer.timeout.connect(self._drain_events)
@@ -497,9 +734,18 @@ class MainWindow(QMainWindow):
         self.nav_buttons[0].setChecked(True)
         side.addStretch(1)
         side.addWidget(_label("Output device", muted=True))
-        self.sidebar_backend = QLabel("Connected")
+        backend_row = QHBoxLayout()
+        backend_row.setContentsMargins(0, 0, 0, 0)
+        backend_row.setSpacing(7)
+        self.sidebar_backend_dot = QFrame()
+        self.sidebar_backend_dot.setFixedSize(8, 8)
+        self.sidebar_backend_dot.setObjectName("connectionDotDisconnected")
+        backend_row.addWidget(self.sidebar_backend_dot)
+        self.sidebar_backend = QLabel("Disconnected")
         self.sidebar_backend.setToolTip("Native Windows Ink output")
-        side.addWidget(self.sidebar_backend)
+        backend_row.addWidget(self.sidebar_backend)
+        backend_row.addStretch(1)
+        side.addLayout(backend_row)
         footer_rule = QFrame()
         footer_rule.setFrameShape(QFrame.Shape.HLine)
         footer_rule.setObjectName("footerRule")
@@ -540,7 +786,8 @@ class MainWindow(QMainWindow):
         self.start_button = QPushButton("Start")
         self.start_button.setObjectName("primary")
         self.start_button.setToolTip(
-            "Apply the visible settings and start pressure output (Ctrl+F12)"
+            "Apply the visible settings and start pressure output "
+            f"({config.activation_hotkey})"
         )
         self.start_button.setEnabled(False)
         self.start_button.clicked.connect(self._toggle_bridge)
@@ -552,7 +799,12 @@ class MainWindow(QMainWindow):
         self.mouse_page = self._build_mouse_page(config)
         self.analysis_page = self._build_analysis_page()
         self.logs_page = self._build_logs_page()
-        for page in (self.pressure_page, self.mouse_page, self.analysis_page, self.logs_page):
+        for page in (
+            self.pressure_page,
+            self.mouse_page,
+            self.analysis_page,
+            self.logs_page,
+        ):
             self.pages.addWidget(page)
         self._set_debug_navigation(config.debug_mode)
         content.addWidget(self.pages, 1)
@@ -582,7 +834,9 @@ class MainWindow(QMainWindow):
             button.setObjectName("channelSegment")
             button.setCheckable(True)
             button.clicked.connect(
-                lambda _checked=False, selected=index: self.channel_tabs.setCurrentIndex(selected)
+                lambda _checked=False, selected=index: (
+                    self.channel_tabs.setCurrentIndex(selected)
+                )
             )
             self.channel_group.addButton(button, index)
             self.channel_buttons.append(button)
@@ -610,12 +864,8 @@ class MainWindow(QMainWindow):
             QSizePolicy.Policy.Maximum,
         )
         self.editors = {
-            "left": ChannelEditor(
-                "left", config.left, enabled=config.left_enabled
-            ),
-            "right": ChannelEditor(
-                "right", config.right, enabled=config.right_enabled
-            ),
+            "left": ChannelEditor("left", config.left, enabled=config.left_enabled),
+            "right": ChannelEditor("right", config.right, enabled=config.right_enabled),
         }
         self.left_enabled = self.editors["left"].enabled
         self.right_enabled = self.editors["right"].enabled
@@ -624,17 +874,22 @@ class MainWindow(QMainWindow):
         for channel in ("left", "right"):
             self.channel_tabs.addWidget(self.editors[channel])
             self.editors[channel].calibrate_button.clicked.connect(
-                lambda _checked=False, selected=channel: self._begin_calibration(selected)
-            )
-            self.editors[channel].reset_button.clicked.connect(
-                lambda _checked=False, selected=channel: self._reset_channel_settings(selected)
-            )
-            self.editors[channel].advanced_button.toggled.connect(
-                lambda _checked=False: QTimer.singleShot(
-                    0, self._resize_editor_card
+                lambda _checked=False, selected=channel: self._begin_calibration(
+                    selected
                 )
             )
+            self.editors[channel].reset_button.clicked.connect(
+                lambda _checked=False, selected=channel: self._reset_channel_settings(
+                    selected
+                )
+            )
+            self.editors[channel].advanced_button.toggled.connect(
+                lambda _checked=False: QTimer.singleShot(0, self._resize_editor_card)
+            )
             self.editors[channel].curve.currentIndexChanged.connect(
+                lambda _index: QTimer.singleShot(0, self._resize_editor_card)
+            )
+            self.editors[channel].output_target.currentIndexChanged.connect(
                 lambda _index: QTimer.singleShot(0, self._resize_editor_card)
             )
         editor_card.content.addWidget(self.channel_tabs)
@@ -656,7 +911,9 @@ class MainWindow(QMainWindow):
         for card in (raw_card, input_card, output_card):
             stats.addWidget(card, 1)
         graph_card.content.addLayout(stats)
-        graph_card.setSizePolicy(QSizePolicy.Policy.Expanding, QSizePolicy.Policy.Maximum)
+        graph_card.setSizePolicy(
+            QSizePolicy.Policy.Expanding, QSizePolicy.Policy.Maximum
+        )
         graph_column.addWidget(graph_card, 0, Qt.AlignmentFlag.AlignTop)
         body.addLayout(graph_column, 7)
         layout.addLayout(body)
@@ -672,48 +929,111 @@ class MainWindow(QMainWindow):
 
     def _build_mouse_page(self, config: RuntimeConfig) -> QScrollArea:
         content, layout = _page_container()
-        content.setMaximumWidth(720)
+        content.setMaximumWidth(MOUSE_PAGE_MAX_WIDTH)
         layout.setSpacing(16)
         hardware = Card()
-        title = QLabel("Hardware while mapping")
+        title = QLabel("Mouse Settings")
         title.setObjectName("sectionTitle")
         hardware.content.addWidget(title)
-        grid = QGridLayout()
-        grid.setHorizontalSpacing(16)
-        grid.setVerticalSpacing(10)
-        grid.addWidget(_label("Setting", muted=True), 0, 0)
-        grid.addWidget(_label("Mapping off", muted=True), 0, 1)
-        grid.addWidget(_label("Mapping on", muted=True), 0, 2)
+        grid = _settings_form()
+        grid.setColumnStretch(1, 0)
+        grid.setColumnStretch(2, 0)
+        grid.setColumnStretch(3, 0)
+        grid.setColumnStretch(4, 1)
+        grid.setColumnStretch(5, 0)
+        grid.setColumnMinimumWidth(2, 48)
+
+        self.mouse_settings_rules: list[QFrame] = []
+        for column in (1, 3):
+            rule = QFrame()
+            rule.setFrameShape(QFrame.Shape.NoFrame)
+            rule.setObjectName("settingsColumnRule")
+            rule.setFixedWidth(1)
+            rule.setSizePolicy(
+                QSizePolicy.Policy.Fixed,
+                QSizePolicy.Policy.Expanding,
+            )
+            grid.addWidget(rule, 0, column, 6, 1)
+            self.mouse_settings_rules.append(rule)
+        grid.addWidget(
+            _label("Off", muted=True),
+            0,
+            2,
+            alignment=Qt.AlignmentFlag.AlignCenter,
+        )
+        grid.addWidget(
+            _label("On", muted=True),
+            0,
+            4,
+            1,
+            2,
+            alignment=Qt.AlignmentFlag.AlignCenter,
+        )
         grid.addWidget(QLabel("DPI"), 1, 0)
         self.normal_dpi = _label("Detecting…", muted=True)
-        grid.addWidget(self.normal_dpi, 1, 1)
+        grid.addWidget(self.normal_dpi, 1, 2, alignment=Qt.AlignmentFlag.AlignCenter)
         self.dpi = QSpinBox()
         self.dpi.setRange(100, 32000)
         self.dpi.setSingleStep(50)
         self.dpi.setValue(config.session_dpi)
-        grid.addWidget(self.dpi, 1, 2)
+        self.dpi.setFixedWidth(FORM_COMPACT_WIDTH)
+        grid.addWidget(self.dpi, 1, 5, alignment=Qt.AlignmentFlag.AlignRight)
         self.haptics: dict[str, SliderField] = {}
         self.normal_haptics: dict[str, QLabel] = {}
-        for row, channel in enumerate(("left", "right"), start=2):
+        self.actuation: dict[str, SliderField] = {}
+        self.normal_actuation: dict[str, QLabel] = {}
+        for index, channel in enumerate(("left", "right")):
+            row = 2 + index * 2
             grid.addWidget(QLabel(f"{channel.title()} haptics"), row, 0)
             normal = _label("—", muted=True)
             self.normal_haptics[channel] = normal
-            grid.addWidget(normal, row, 1)
-            value = config.session_haptic_left if channel == "left" else config.session_haptic_right
+            grid.addWidget(normal, row, 2, alignment=Qt.AlignmentFlag.AlignCenter)
+            value = (
+                config.session_haptic_left
+                if channel == "left"
+                else config.session_haptic_right
+            )
             slider = SliderField("", 0, 5, value)
             slider.title.setVisible(False)
             slider.value_label.setVisible(False)
-            slider.description.setText("Haptics off")
-            slider.description.setVisible(value == 0)
-            slider.valueChanged.connect(
-                lambda level, field=slider: field.description.setVisible(level == 0)
+            slider.slider.setTickPosition(QSlider.TickPosition.TicksBelow)
+            slider.slider.setTickInterval(1)
+            slider.add_tick_marks(6)
+            slider.setSizePolicy(
+                QSizePolicy.Policy.Expanding,
+                QSizePolicy.Policy.Maximum,
             )
             self.haptics[channel] = slider
-            grid.addWidget(slider, row, 2)
+            grid.addWidget(slider, row, 4, 1, 2)
+
+            actuation_row = row + 1
+            grid.addWidget(QLabel(f"{channel.title()} actuation point"), actuation_row, 0)
+            normal_actuation = _label("—", muted=True)
+            self.normal_actuation[channel] = normal_actuation
+            grid.addWidget(
+                normal_actuation,
+                actuation_row,
+                2,
+                alignment=Qt.AlignmentFlag.AlignCenter,
+            )
+            channel_config = config.left if channel == "left" else config.right
+            actuation = SliderField("", 1, 10, channel_config.actuation_level)
+            actuation.title.setVisible(False)
+            actuation.value_label.setVisible(False)
+            actuation.slider.setTickPosition(QSlider.TickPosition.TicksBelow)
+            actuation.slider.setTickInterval(1)
+            actuation.add_tick_marks(10)
+            actuation.setSizePolicy(
+                QSizePolicy.Policy.Expanding,
+                QSizePolicy.Policy.Maximum,
+            )
+            self.actuation[channel] = actuation
+            grid.addWidget(actuation, actuation_row, 4, 1, 2)
         hardware.content.addLayout(grid)
         hardware.content.addWidget(
             _label(
-                "These values apply only while pressure mapping is active and are restored on Stop.",
+                "When deactivated, previous settings are restored. "
+                "0 haptics (off) is recommended for digital painting.",
                 muted=True,
                 wrap=True,
             )
@@ -724,6 +1044,52 @@ class MainWindow(QMainWindow):
         app_title = QLabel("Application")
         app_title.setObjectName("sectionTitle")
         app.content.addWidget(app_title)
+
+        shortcut_grid = _settings_form()
+        shortcut_grid.addWidget(QLabel("Mode"), 0, 0)
+        self.remap_mode = QComboBox()
+        self.remap_mode.addItem("Always remap", "always")
+        self.remap_mode.addItem("Hold to remap", "hold")
+        self.remap_mode.setCurrentIndex(
+            max(0, self.remap_mode.findData(config.remap_mode))
+        )
+        self.remap_mode.setFixedWidth(FORM_COMPACT_WIDTH)
+        shortcut_grid.addWidget(
+            self.remap_mode, 0, 2, alignment=Qt.AlignmentFlag.AlignRight
+        )
+
+        self.remap_hold_label = QLabel("Hold")
+        self.remap_hold_hotkey = HoldShortcutEdit(
+            config.remap_hold_hotkey,
+            capture_started=self._suspend_start_hotkey,
+            capture_finished=self._resume_start_hotkey,
+        )
+        self.remap_hold_hotkey.setFixedWidth(FORM_HOTKEY_WIDTH)
+        shortcut_grid.addWidget(self.remap_hold_label, 1, 0)
+        shortcut_grid.addWidget(
+            self.remap_hold_hotkey, 1, 2, alignment=Qt.AlignmentFlag.AlignRight
+        )
+        shortcut_grid.addWidget(QLabel("Start"), 2, 0)
+        self.activation_hotkey = HotkeySequenceEdit(
+            config.activation_hotkey,
+            capture_started=self._suspend_start_hotkey,
+            capture_finished=self._resume_start_hotkey,
+        )
+        self.activation_hotkey.setFixedWidth(FORM_HOTKEY_WIDTH)
+        shortcut_grid.addWidget(
+            self.activation_hotkey, 2, 2, alignment=Qt.AlignmentFlag.AlignRight
+        )
+        shortcut_grid.addWidget(QLabel("Stop"), 3, 0)
+        self.deactivation_hotkey = HotkeySequenceEdit(
+            config.deactivation_hotkey,
+            capture_started=self._suspend_start_hotkey,
+            capture_finished=self._resume_start_hotkey,
+        )
+        self.deactivation_hotkey.setFixedWidth(FORM_HOTKEY_WIDTH)
+        shortcut_grid.addWidget(
+            self.deactivation_hotkey, 3, 2, alignment=Qt.AlignmentFlag.AlignRight
+        )
+
         self.debug_mode = LabeledSwitch(
             "Debug mode",
             "Records stroke traces for analysis. Turn off for potentially reduced latency.",
@@ -731,52 +1097,45 @@ class MainWindow(QMainWindow):
         )
         self.minimize_to_tray = LabeledSwitch(
             "Minimize to tray",
-            "Keep pressure mapping available when this window is minimized.",
+            "",
             checked=config.minimize_to_tray,
         )
-        app.content.addWidget(self.debug_mode)
-        app.content.addWidget(self.minimize_to_tray)
+        shortcut_grid.addWidget(self.debug_mode, 4, 0, 1, 3)
+        shortcut_grid.addWidget(self.minimize_to_tray, 5, 0, 1, 3)
         sandbox_row = QHBoxLayout()
+        sandbox_row.setContentsMargins(0, 0, 0, 0)
         sandbox_copy = QVBoxLayout()
         sandbox_copy.setSpacing(2)
         sandbox_copy.addWidget(QLabel("Pressure sandbox"))
         sandbox_copy.addWidget(
             _label(
-                "Test left and right click pressure in a sandbox toy.",
+                "Test left and right button pressure in a small game.",
                 muted=True,
                 wrap=True,
             )
         )
         sandbox_row.addLayout(sandbox_copy, 1)
         self.sandbox_button = QPushButton("Open sandbox")
+        self.sandbox_button.setFixedWidth(FORM_COMPACT_WIDTH)
         self.sandbox_button.clicked.connect(self._launch_sandbox)
         sandbox_row.addWidget(self.sandbox_button)
-        app.content.addLayout(sandbox_row)
-        layout.addWidget(app)
-
-        advanced = Card()
-        advanced_title = QLabel("Advanced output")
-        advanced_title.setObjectName("sectionTitle")
-        advanced.content.addWidget(advanced_title)
-        hz_row = QHBoxLayout()
-        hz_row.addWidget(QLabel("Pen injection rate"))
-        hz_row.addStretch(1)
+        sandbox_widget = QWidget()
+        sandbox_widget.setLayout(sandbox_row)
+        shortcut_grid.addWidget(sandbox_widget, 6, 0, 1, 3)
+        shortcut_grid.addWidget(QLabel("Injection rate"), 7, 0)
         self.injection_hz = QComboBox()
         for value in (60, 120, 240, 360):
             self.injection_hz.addItem(f"{value} Hz", value)
         desired = round(self.service.launch_config.hz)
         self.injection_hz.setCurrentIndex(max(0, self.injection_hz.findData(desired)))
-        hz_row.addWidget(self.injection_hz)
-        advanced.content.addLayout(hz_row)
-        self.release_teardown = LabeledSwitch(
-            "Experimental release teardown",
-            "Compatibility sequence for apps that retain a hover pointer.",
-            checked=config.release_teardown,
+        self.injection_hz.setFixedWidth(FORM_COMPACT_WIDTH)
+        shortcut_grid.addWidget(
+            self.injection_hz, 7, 2, alignment=Qt.AlignmentFlag.AlignRight
         )
-        advanced.content.addWidget(self.release_teardown)
-        layout.addWidget(advanced)
+        app.content.addLayout(shortcut_grid)
+        self._update_remap_controls()
+        layout.addWidget(app)
         layout.addStretch(1)
-        self.release_teardown.setVisible(True)
         return self._scroll_page(content)
 
     def _build_analysis_page(self) -> QWidget:
@@ -804,7 +1163,9 @@ class MainWindow(QMainWindow):
         refresh.clicked.connect(lambda: self._refresh_strokes(select_latest=False))
         toolbar.addWidget(refresh)
         card.content.addLayout(toolbar)
-        self.stroke_summary = _label("Draw with Debug mode enabled, then select a stroke.", muted=True, wrap=True)
+        self.stroke_summary = _label(
+            "Draw with Debug mode enabled, then select a stroke.", muted=True, wrap=True
+        )
         card.content.addWidget(self.stroke_summary)
         self.stroke_graph = StrokeGraph()
         self.analysis_graph_mode.currentIndexChanged.connect(
@@ -815,7 +1176,6 @@ class MainWindow(QMainWindow):
         card.content.addWidget(self.stroke_graph, 1)
         metrics = QGridLayout()
         metric_specs = (
-            ("Backend", "backend_metric"),
             ("Stroke onset", "onset_metric"),
             ("Motion → output", "motion_output_metric"),
             ("Relay delivery", "delivery_metric"),
@@ -861,9 +1221,11 @@ class MainWindow(QMainWindow):
         menu.addAction(quit_action)
         self.tray.setContextMenu(menu)
         self.tray.activated.connect(
-            lambda reason: self._restore_window()
-            if reason == QSystemTrayIcon.ActivationReason.DoubleClick
-            else None
+            lambda reason: (
+                self._restore_window()
+                if reason == QSystemTrayIcon.ActivationReason.DoubleClick
+                else None
+            )
         )
 
     # ---------- theme and navigation ----------
@@ -873,14 +1235,11 @@ class MainWindow(QMainWindow):
         QApplication.instance().setStyleSheet(stylesheet(self.theme))
         self._qt_settings.setValue("theme", name)
         self.theme_selector.blockSignals(True)
-        self.theme_selector.setCurrentIndex(
-            max(0, self.theme_selector.findData(name))
-        )
+        self.theme_selector.setCurrentIndex(max(0, self.theme_selector.findData(name)))
         self.theme_selector.blockSignals(False)
         switches = [
             self.debug_mode,
             self.minimize_to_tray,
-            self.release_teardown,
         ]
         for editor in self.editors.values():
             switches.extend((editor.enabled, editor.suppress))
@@ -911,13 +1270,21 @@ class MainWindow(QMainWindow):
                 editor.output_target.currentIndexChanged,
                 editor.curve.currentIndexChanged,
                 editor.curve_strength.valueChanged,
-                editor.contact.currentIndexChanged,
                 editor.deadzone.valueChanged,
                 editor.pressure_floor.valueChanged,
                 editor.path_stabilization.valueChanged,
                 editor.pressure_influence.valueChanged,
             ):
-                signal.connect(lambda *_args, channel=name: self._mapping_control_changed(channel))
+                signal.connect(
+                    lambda *_args, channel=name: self._mapping_control_changed(channel)
+                )
+            for fields in editor.output_range_fields.values():
+                for field in fields:
+                    field.valueChanged.connect(
+                        lambda *_args, channel=name: self._mapping_control_changed(
+                            channel
+                        )
+                    )
             editor.suppress.toggled.connect(
                 lambda *_args, channel=name: self._mapping_control_changed(channel)
             )
@@ -930,9 +1297,17 @@ class MainWindow(QMainWindow):
             self.debug_mode.toggled,
             self.minimize_to_tray.toggled,
             self.injection_hz.currentIndexChanged,
-            self.release_teardown.toggled,
+            self.remap_mode.currentIndexChanged,
         ):
             signal.connect(self._mark_dirty)
+        self.remap_mode.currentIndexChanged.connect(self._update_remap_controls)
+        for channel in ("left", "right"):
+            self.actuation[channel].valueChanged.connect(
+                lambda *_args, name=channel: self._mapping_control_changed(name)
+            )
+        self.remap_hold_hotkey.bindingChanged.connect(self._mark_dirty)
+        self.activation_hotkey.keySequenceChanged.connect(self._mark_dirty)
+        self.deactivation_hotkey.keySequenceChanged.connect(self._mark_dirty)
         self.debug_mode.toggled.connect(self._set_debug_navigation)
 
     def _mapping_control_changed(self, channel: str) -> None:
@@ -941,9 +1316,12 @@ class MainWindow(QMainWindow):
         self._mark_dirty()
         self._redraw_mapping()
 
-    def _pressure_options_changed(
-        self, *_args: Any, mark_dirty: bool = True
-    ) -> None:
+    def _update_remap_controls(self, *_args: Any) -> None:
+        hold_mode = self.remap_mode.currentData() == "hold"
+        self.remap_hold_label.setVisible(hold_mode)
+        self.remap_hold_hotkey.setVisible(hold_mode)
+
+    def _pressure_options_changed(self, *_args: Any, mark_dirty: bool = True) -> None:
         self._update_channel_tabs()
         if mark_dirty:
             self._mark_dirty()
@@ -960,7 +1338,9 @@ class MainWindow(QMainWindow):
             self.left_enabled.isChecked(),
             self.right_enabled.isChecked(),
         )
-        for index, (name, enabled) in enumerate(zip(("Left click", "Right click"), states)):
+        for index, (name, enabled) in enumerate(
+            zip(("Left click", "Right click"), states)
+        ):
             state = "On" if enabled else "Off"
             suffix = f" · {state} · Linked" if linked else f" · {state}"
             self.channel_buttons[index].setText(name + suffix)
@@ -997,13 +1377,21 @@ class MainWindow(QMainWindow):
         deadzone = int(editor.deadzone.value())
         return ChannelConfig(
             output_target=str(editor.output_target.currentData()),
+            sensitivity_light=int(editor.sensitivity_light.value()),
+            sensitivity_firm=int(editor.sensitivity_firm.value()),
+            x_tilt_light=int(editor.output_range_fields["x_tilt"][0].value()),
+            x_tilt_firm=int(editor.output_range_fields["x_tilt"][1].value()),
+            y_tilt_light=int(editor.output_range_fields["y_tilt"][0].value()),
+            y_tilt_firm=int(editor.output_range_fields["y_tilt"][1].value()),
+            rotation_light=int(editor.output_range_fields["rotation"][0].value()),
+            rotation_firm=int(editor.output_range_fields["rotation"][1].value()),
             raw_min=int(editor.raw_min.value()),
             raw_max=int(editor.raw_max.value()),
             deadzone_low=deadzone,
             deadzone_high=deadzone,
             curve=str(editor.curve.currentData()),
             curve_strength=float(editor.curve_strength_value()),
-            contact_preset=str(editor.contact.currentData()),
+            actuation_level=int(self.actuation[channel].value()),
             pressure_floor=int(editor.pressure_floor.value()),
             path_stabilization=int(editor.path_stabilization.value()),
             pressure_influence=int(editor.pressure_influence.value()),
@@ -1020,13 +1408,16 @@ class MainWindow(QMainWindow):
             suppress_rmb=self.editors["right"].suppress.isChecked(),
             debug_mode=self.debug_mode.isChecked(),
             minimize_to_tray=self.minimize_to_tray.isChecked(),
-            release_teardown=self.release_teardown.isChecked(),
             session_dpi=self.dpi.value(),
             session_haptic_left=self.haptics["left"].value(),
             session_haptic_right=self.haptics["right"].value(),
             session_device_settings_follow_normal=(
                 current.session_device_settings_follow_normal
             ),
+            remap_mode=str(self.remap_mode.currentData()),
+            remap_hold_hotkey=self.remap_hold_hotkey.binding(),
+            activation_hotkey=self._hotkey_text(self.activation_hotkey),
+            deactivation_hotkey=self._hotkey_text(self.deactivation_hotkey),
             left=self._channel_config("left"),
             right=self._channel_config("right"),
         )
@@ -1036,40 +1427,97 @@ class MainWindow(QMainWindow):
             normal_device=self._normal_device,
         )
 
+    @staticmethod
+    def _hotkey_text(editor: QKeySequenceEdit) -> str:
+        return editor.keySequence().toString(QKeySequence.SequenceFormat.PortableText)
+
     def _device_settings(self) -> dict[str, int]:
         return {
             "dpi": self.dpi.value(),
             "haptic_left": self.haptics["left"].value(),
             "haptic_right": self.haptics["right"].value(),
+            "actuation_left": self.actuation["left"].value(),
+            "actuation_right": self.actuation["right"].value(),
         }
 
     def _apply_settings(self) -> bool:
+        previous_hotkey = self.start_hotkey.hotkey.label
         try:
             draft = self._settings_draft()
+            draft.validate()
+            if not self._replace_start_hotkey(draft.config.activation_hotkey):
+                return False
             self.service.apply_config(draft.runtime_patch())
             self.service.launch_config.hz = draft.injection_hz
             self.service.launch_config.backend = "native_synthetic"
         except Exception as exc:
+            self._replace_start_hotkey(previous_hotkey)
             self.write_system(f"Settings error: {exc}", level="ERROR")
             if self.debug_mode.isChecked():
                 self._select_page(3)
                 self.nav_buttons[3].setChecked(True)
             return False
-        self.sidebar_backend.setText(
-            "Connected"
-        )
-        self.sidebar_backend.setToolTip("Native Windows Ink output")
         self.settings_dirty = False
         self.save_button.setText("Applied")
         self.save_button.setEnabled(False)
         QTimer.singleShot(
             1200,
-            lambda: self.save_button.setText("Apply changes")
-            if not self.settings_dirty
-            else None,
+            lambda: (
+                self.save_button.setText("Apply changes")
+                if not self.settings_dirty
+                else None
+            ),
         )
         self.write_system("Settings saved.")
         return True
+
+    def _replace_start_hotkey(self, binding: str) -> bool:
+        requested = parse_global_hotkey(binding)
+        if requested.label == self.start_hotkey.hotkey.label:
+            return True
+        if self._hotkey_capture_active:
+            self.start_hotkey = StartHotkeyListener(
+                lambda: self.events.put(("start_hotkey", None)),
+                requested.label,
+            )
+            return True
+        candidate = StartHotkeyListener(
+            lambda: self.events.put(("start_hotkey", None)),
+            requested.label,
+        )
+        if not candidate.start():
+            candidate.close()
+            self.write_system(
+                f"Shortcut {requested.label} is already in use.",
+                level="ERROR",
+            )
+            return False
+        previous = self.start_hotkey
+        self.start_hotkey = candidate
+        previous.close()
+        return True
+
+    def _suspend_start_hotkey(self) -> None:
+        if self._hotkey_capture_active:
+            return
+        self._hotkey_capture_active = True
+        self.start_hotkey.close()
+
+    def _resume_start_hotkey(self) -> None:
+        if not self._hotkey_capture_active:
+            return
+        self._hotkey_capture_active = False
+        binding = self.start_hotkey.hotkey.label
+        listener = StartHotkeyListener(
+            lambda: self.events.put(("start_hotkey", None)),
+            binding,
+        )
+        self.start_hotkey = listener
+        if not listener.start():
+            self.write_system(
+                f"{binding} could not be registered.",
+                level="WARN",
+            )
 
     def _save_or_apply(self) -> None:
         if self.busy or not self.settings_dirty or not self._apply_settings():
@@ -1105,9 +1553,15 @@ class MainWindow(QMainWindow):
             editor.output_target.setCurrentIndex(
                 max(0, editor.output_target.findData(source.output_target))
             )
+            editor.sensitivity_light.setValue(source.sensitivity_light)
+            editor.sensitivity_firm.setValue(source.sensitivity_firm)
+            for target in ("x_tilt", "y_tilt", "rotation"):
+                fields = editor.output_range_fields[target]
+                fields[0].setValue(getattr(source, f"{target}_light"))
+                fields[1].setValue(getattr(source, f"{target}_firm"))
+            editor._update_output_target_controls()
             editor.curve.setCurrentIndex(editor.curve.findData(source.curve))
             editor.curve_strength.setValue(round(source.curve_strength * 10))
-            editor.contact.setCurrentIndex(editor.contact.findData(source.contact_preset))
             editor.deadzone.setValue(source.deadzone_low)
             editor.pressure_floor.setValue(source.pressure_floor)
             editor.path_stabilization.setValue(source.path_stabilization)
@@ -1119,7 +1573,9 @@ class MainWindow(QMainWindow):
             self._loading = False
         self._mark_dirty()
         self._redraw_mapping()
-        self.write_system(f"{channel_label.title()} settings reset. Apply changes to save them.")
+        self.write_system(
+            f"{channel_label.title()} settings reset. Apply changes to save them."
+        )
 
     def _load_config(self, config: RuntimeConfig) -> None:
         self._loading = True
@@ -1134,9 +1590,16 @@ class MainWindow(QMainWindow):
                 editor.output_target.setCurrentIndex(
                     max(0, editor.output_target.findData(ch.output_target))
                 )
+                editor.sensitivity_light.setValue(ch.sensitivity_light)
+                editor.sensitivity_firm.setValue(ch.sensitivity_firm)
+                for target in ("x_tilt", "y_tilt", "rotation"):
+                    fields = editor.output_range_fields[target]
+                    fields[0].setValue(getattr(ch, f"{target}_light"))
+                    fields[1].setValue(getattr(ch, f"{target}_firm"))
+                editor._update_output_target_controls()
                 editor.curve.setCurrentIndex(max(0, editor.curve.findData(ch.curve)))
                 editor.curve_strength.setValue(round(ch.curve_strength * 10))
-                editor.contact.setCurrentIndex(max(0, editor.contact.findData(ch.contact_preset)))
+                self.actuation[channel].setValue(ch.actuation_level)
                 editor.deadzone.setValue(ch.deadzone_low)
                 editor.pressure_floor.setValue(ch.pressure_floor)
                 editor.path_stabilization.setValue(ch.path_stabilization)
@@ -1145,7 +1608,17 @@ class MainWindow(QMainWindow):
             self.editors["right"].suppress.setChecked(config.suppress_rmb)
             self.debug_mode.setChecked(config.debug_mode)
             self.minimize_to_tray.setChecked(config.minimize_to_tray)
-            self.release_teardown.setChecked(config.release_teardown)
+            self.remap_mode.setCurrentIndex(
+                max(0, self.remap_mode.findData(config.remap_mode))
+            )
+            self.remap_hold_hotkey.set_binding(config.remap_hold_hotkey)
+            self._update_remap_controls()
+            self.activation_hotkey.setKeySequence(
+                QKeySequence(config.activation_hotkey)
+            )
+            self.deactivation_hotkey.setKeySequence(
+                QKeySequence(config.deactivation_hotkey)
+            )
             self.dpi.setValue(config.session_dpi)
             self.haptics["left"].setValue(config.session_haptic_left)
             self.haptics["right"].setValue(config.session_haptic_right)
@@ -1293,11 +1766,48 @@ class MainWindow(QMainWindow):
         selected = "left" if self.channel_tabs.currentIndex() == 0 else "right"
         return (selected,)
 
+    @staticmethod
+    def _mapped_output_value(settings: ChannelConfig, pressure: int) -> int:
+        target = settings.output_target
+        if target == "pressure":
+            return max(0, min(1024, int(pressure)))
+        fraction = max(0.0, min(1.0, int(pressure) / 1024.0))
+        if target == "mouse_sensitivity":
+            light, firm = settings.sensitivity_light, settings.sensitivity_firm
+        elif target == "x_tilt":
+            light, firm = settings.x_tilt_light, settings.x_tilt_firm
+        elif target == "y_tilt":
+            light, firm = settings.y_tilt_light, settings.y_tilt_firm
+        elif target == "rotation":
+            light, firm = settings.rotation_light, settings.rotation_firm
+        else:
+            return 0
+        return round(light + (firm - light) * fraction)
+
+    def _configure_mapping_axis(self, output_target: str) -> None:
+        if output_target == "mouse_sensitivity":
+            self.mapping_graph.set_y_axis(
+                0, 200, minimum_label="0%", maximum_label="200%"
+            )
+        elif output_target in {"x_tilt", "y_tilt"}:
+            self.mapping_graph.set_y_axis(
+                -60, 60, minimum_label="-60°", maximum_label="60°"
+            )
+        elif output_target == "rotation":
+            self.mapping_graph.set_y_axis(
+                0, 359, minimum_label="0°", maximum_label="359°"
+            )
+        else:
+            self.mapping_graph.set_y_axis(
+                0, 1024, minimum_label="0%", maximum_label="100%"
+            )
+
     def _redraw_mapping(self) -> None:
         selected = "left" if self.channel_tabs.currentIndex() == 0 else "right"
         editor = self.editors[selected]
         output_target = str(editor.output_target.currentData())
         output_label = {
+            "mouse_sensitivity": "Output Sensitivity",
             "x_tilt": "Output X-tilt",
             "y_tilt": "Output Y-tilt",
             "rotation": "Output Rotation",
@@ -1305,6 +1815,7 @@ class MainWindow(QMainWindow):
         self.graph_title.setText(output_label)
         if isinstance(self.output_metric_caption, QLabel):
             self.output_metric_caption.setText(output_label)
+        self._configure_mapping_axis(output_target)
         series: dict[str, list[tuple[int, int]]] = {}
         raw_ranges: dict[str, tuple[int, int]] = {}
         try:
@@ -1313,26 +1824,57 @@ class MainWindow(QMainWindow):
             return
         for channel in ("left", "right"):
             settings = draft.effective_channel(channel)
-            series[channel] = draft.mapping_points(
-                channel,
-                raw_start=MappingGraph.RAW_MIN,
-                raw_end=MappingGraph.RAW_MAX,
-                step=4,
-            )
+            if settings.output_target == "pressure":
+                pressure_points = draft.mapping_points(
+                    channel,
+                    raw_start=MappingGraph.RAW_MIN,
+                    raw_end=MappingGraph.RAW_MAX,
+                    step=4,
+                )
+            else:
+                pressure_points = [
+                    (raw, draft.mapped_pressure(channel, raw))
+                    for raw in range(
+                        MappingGraph.RAW_MIN,
+                        MappingGraph.RAW_MAX + 1,
+                        4,
+                    )
+                ]
+            series[channel] = [
+                (raw, self._mapped_output_value(settings, pressure))
+                for raw, pressure in pressure_points
+            ]
             raw_ranges[channel] = (settings.raw_min, settings.raw_max)
         self.mapping_graph.set_data(
             series,
             raw_ranges,
             channels=self._visible_mapping_channels(),
         )
+        self.mapping_graph.set_actuation_thresholds(
+            {
+                channel: actuation_raw_estimate(
+                    channel,
+                    self.actuation[channel].value(),
+                )
+                for channel in ("left", "right")
+            }
+        )
 
     def _trace_directory(self) -> Path:
         configured = self.service.launch_config.trace_dir
-        return Path(configured) if configured else self.config_store.config_dir / "stroke_traces"
+        return (
+            Path(configured)
+            if configured
+            else self.config_store.config_dir / "stroke_traces"
+        )
 
     def _refresh_strokes(self, *, select_latest: bool) -> None:
         directory = self._trace_directory()
-        paths = sorted(directory.glob("stroke-*.json"), key=lambda path: path.stat().st_mtime, reverse=True)[:100]
+        paths = sorted(
+            directory.glob("stroke-*.json"),
+            key=lambda path: path.stat().st_mtime,
+            reverse=True,
+        )[:100]
         current = self.stroke_selector.currentText()
         comparison = self.compare_selector.currentText()
         self._trace_paths = {path.name: path for path in paths}
@@ -1344,7 +1886,11 @@ class MainWindow(QMainWindow):
         self.compare_selector.addItem("No comparison")
         self.compare_selector.addItems(self._trace_paths)
         if paths:
-            target = paths[0].name if select_latest or current not in self._trace_paths else current
+            target = (
+                paths[0].name
+                if select_latest or current not in self._trace_paths
+                else current
+            )
             self.stroke_selector.setCurrentText(target)
             if comparison in self._trace_paths:
                 self.compare_selector.setCurrentText(comparison)
@@ -1358,7 +1904,9 @@ class MainWindow(QMainWindow):
             self.stroke_graph.set_analysis(None)
             return
         try:
-            analysis = stroke_analysis_data(json.loads(path.read_text(encoding="utf-8")))
+            analysis = stroke_analysis_data(
+                json.loads(path.read_text(encoding="utf-8"))
+            )
             comparison_path = self._trace_paths.get(self.compare_selector.currentText())
             comparison = (
                 stroke_analysis_data(
@@ -1371,21 +1919,16 @@ class MainWindow(QMainWindow):
             self.stroke_summary.setText(f"Could not read trace: {exc}")
             self.stroke_graph.set_analysis(None)
             return
-        analyses = [(f"A · {analysis['backend_label']}", analysis)]
+        analyses = [("A", analysis)]
         if comparison is not None:
-            analyses.append((f"B · {comparison['backend_label']}", comparison))
+            analyses.append(("B", comparison))
         self.stroke_graph.set_comparison(analyses)
         if comparison is None:
             self.stroke_summary.setText(
-                f"{analysis['backend_label']} · "
                 f"{analysis['stationary_dab_points']} stationary points removed"
             )
         else:
-            self.stroke_summary.setText(
-                f"A: {analysis['backend_label']}  ·  "
-                f"B: {comparison['backend_label']}  ·  "
-                "lower timing values are better"
-            )
+            self.stroke_summary.setText("A / B · lower timing values are better")
 
         def timing(value: float | None) -> str:
             return "—" if value is None else f"{value:.2f} ms"
@@ -1396,11 +1939,6 @@ class MainWindow(QMainWindow):
                 return first
             return f"{first} / {formatter(comparison.get(key))}"
 
-        self.backend_metric.setText(
-            analysis["backend_label"]
-            if comparison is None
-            else f"{analysis['backend_label']} / {comparison['backend_label']}"
-        )
         self.onset_metric.setText(compared("onset_ms"))
         self.motion_output_metric.setText(compared("motion_to_output_median_ms"))
         self.delivery_metric.setText(compared("delivery_latency_median_ms"))
@@ -1420,7 +1958,9 @@ class MainWindow(QMainWindow):
         self.busy = True
         self._set_status("Starting…", "busy")
         self.start_button.setEnabled(False)
-        self._watch_future("started", self.controller.start(device_settings=self._device_settings()))
+        self._watch_future(
+            "started", self.controller.start(device_settings=self._device_settings())
+        )
 
     def _begin_stop(self) -> None:
         self.busy = True
@@ -1431,7 +1971,9 @@ class MainWindow(QMainWindow):
     def _begin_device_detection(self) -> None:
         self.detecting = True
         self.start_button.setEnabled(False)
-        self._watch_future("device_settings_detected", self.controller.detect_device_settings())
+        self._watch_future(
+            "device_settings_detected", self.controller.detect_device_settings()
+        )
 
     def _watch_future(self, name: str, future: Future[Any]) -> None:
         def done(completed: Future[Any]) -> None:
@@ -1441,6 +1983,7 @@ class MainWindow(QMainWindow):
                 self.events.put((f"{name}_error", exc))
             else:
                 self.events.put((name, result))
+
         future.add_done_callback(done)
 
     def _set_running(self, running: bool) -> None:
@@ -1448,9 +1991,10 @@ class MainWindow(QMainWindow):
         self.busy = False
         self.start_button.setText("Stop" if running else "Start")
         self.start_button.setToolTip(
-            "Stop pressure output (Ctrl+Shift+F12)"
+            f"Stop pressure output ({self._hotkey_text(self.deactivation_hotkey)})"
             if running
-            else "Apply the visible settings and start pressure output (Ctrl+F12)"
+            else "Apply the visible settings and start pressure output "
+            f"({self._hotkey_text(self.activation_hotkey)})"
         )
         self.start_button.setEnabled(not self.detecting)
         self.save_button.setText("Apply changes")
@@ -1458,6 +2002,9 @@ class MainWindow(QMainWindow):
         for editor in self.editors.values():
             editor.calibrate_button.setEnabled(not self.calibrating)
         self.injection_hz.setEnabled(not running)
+        self.remap_hold_hotkey.setEnabled(not running)
+        self.activation_hotkey.setEnabled(not running)
+        self.deactivation_hotkey.setEnabled(not running)
         self.mapping_graph.set_live_preview(running)
         self._set_status(
             "Running" if running else "Stopped",
@@ -1474,6 +2021,15 @@ class MainWindow(QMainWindow):
         self.status_label.setText(text)
         self.status_label.style().unpolish(self.status_label)
         self.status_label.style().polish(self.status_label)
+
+    def _set_device_connected(self, connected: bool) -> None:
+        self.sidebar_backend.setText("Connected" if connected else "Disconnected")
+        self.sidebar_backend.setToolTip("Native Windows Ink output")
+        self.sidebar_backend_dot.setObjectName(
+            "connectionDotConnected" if connected else "connectionDotDisconnected"
+        )
+        self.sidebar_backend_dot.style().unpolish(self.sidebar_backend_dot)
+        self.sidebar_backend_dot.style().polish(self.sidebar_backend_dot)
 
     def _drain_events(self) -> None:
         while True:
@@ -1503,7 +2059,9 @@ class MainWindow(QMainWindow):
                 self.save_button.setText("Applied")
                 self.save_button.setEnabled(False)
                 self.write_system(
-                    f"Mouse settings applied: {payload['dpi']} DPI, haptics L{payload['haptic_left']}/R{payload['haptic_right']}."
+                    f"Mouse settings applied: {payload['dpi']} DPI, "
+                    f"haptics L{payload['haptic_left']}/R{payload['haptic_right']}, "
+                    f"actuation L{payload['actuation_left']}/R{payload['actuation_right']}."
                 )
             elif kind == "calibration_progress":
                 self._handle_calibration_progress(payload)
@@ -1513,14 +2071,21 @@ class MainWindow(QMainWindow):
                 self._finish_calibration(None, error=payload)
             elif kind in {"runtime_error", "force_stopped"}:
                 self._set_running(False)
-                self._set_status("Driver stopped", "error" if kind == "runtime_error" else "stopped")
-                self.write_system(str(payload), level="ERROR" if kind == "runtime_error" else "WARN")
+                self._set_status(
+                    "Driver stopped", "error" if kind == "runtime_error" else "stopped"
+                )
+                self.write_system(
+                    str(payload), level="ERROR" if kind == "runtime_error" else "WARN"
+                )
             elif kind.endswith("_error"):
                 if kind == "device_settings_detected_error":
                     self.detecting = False
                     self.start_button.setEnabled(True)
+                    self._set_device_connected(False)
                     self._set_status("Mouse not detected", "error")
-                    self.write_system(f"Could not detect mouse settings: {payload}", level="WARN")
+                    self.write_system(
+                        f"Could not detect mouse settings: {payload}", level="WARN"
+                    )
                 else:
                     self._set_running(self.service.stream_active)
                     self._set_status("Start failed", "error")
@@ -1528,19 +2093,26 @@ class MainWindow(QMainWindow):
 
     def _handle_device_detected(self, payload: dict[str, int]) -> None:
         self.detecting = False
+        MainWindow._set_device_connected(self, True)
         self._normal_device = SessionDeviceSettings.from_mapping(payload)
         self.normal_dpi.setText(str(payload["dpi"]))
         self.normal_haptics["left"].setText(str(payload["haptic_left"]))
         self.normal_haptics["right"].setText(str(payload["haptic_right"]))
+        self.normal_actuation["left"].setText(str(payload["actuation_left"]))
+        self.normal_actuation["right"].setText(str(payload["actuation_right"]))
         config = self.service.get_config()
         if config.session_device_settings_follow_normal:
             self.dpi.setValue(payload["dpi"])
             self.haptics["left"].setValue(payload["haptic_left"])
             self.haptics["right"].setValue(payload["haptic_right"])
+            self.actuation["left"].setValue(payload["actuation_left"])
+            self.actuation["right"].setValue(payload["actuation_right"])
         self.start_button.setEnabled(True)
         self._set_status("Stopped", "stopped")
         self.write_system(
-            f"Detected mouse: {payload['dpi']} DPI, haptics L{payload['haptic_left']}/R{payload['haptic_right']}."
+            f"Detected mouse: {payload['dpi']} DPI, "
+            f"haptics L{payload['haptic_left']}/R{payload['haptic_right']}, "
+            f"actuation L{payload['actuation_left']}/R{payload['actuation_right']}."
         )
 
     def _handle_telemetry(self, payload: dict[str, Any]) -> None:
@@ -1565,7 +2137,18 @@ class MainWindow(QMainWindow):
             effective_by_channel[channel] = effective
             # The plotted curve includes pressure influence and the configured
             # floor, so its live marker must represent that same output stage.
-            self.mapping_graph.set_current(channel, raw, effective)
+            settings = draft.effective_channel(channel) if draft is not None else None
+            output_input = (
+                effective
+                if settings is None or settings.output_target == "pressure"
+                else mapped
+            )
+            output_value = (
+                MainWindow._mapped_output_value(settings, output_input)
+                if settings is not None
+                else output_input
+            )
+            self.mapping_graph.set_current(channel, raw, output_value)
         selected = "left" if self.channel_tabs.currentIndex() == 0 else "right"
         raw = self._latest_raw[selected]
         mapped = self._latest_mapped[selected]
@@ -1576,11 +2159,22 @@ class MainWindow(QMainWindow):
             if draft is not None
             else "pressure"
         )
-        self.output_metric.setText(
-            f"{round(effective * (359 if output_target == 'rotation' else 60) / 1023)}°"
-            if output_target in {"x_tilt", "y_tilt", "rotation"}
-            else f"{effective / 1024:.0%}"
+        settings = draft.effective_channel(selected) if draft is not None else None
+        output_value = (
+            MainWindow._mapped_output_value(
+                settings,
+                effective if output_target == "pressure" else mapped,
+            )
+            if settings is not None
+            else effective
         )
+        if output_target == "mouse_sensitivity":
+            output_text = f"{output_value}%"
+        elif output_target in {"x_tilt", "y_tilt", "rotation"}:
+            output_text = f"{output_value}°"
+        else:
+            output_text = f"{effective / 1024:.0%}"
+        self.output_metric.setText(output_text)
         self.raw_metric.setText(str(raw))
         if self.running:
             self._set_status("Running", "running")
@@ -1589,7 +2183,10 @@ class MainWindow(QMainWindow):
     def _write_log(self, entry: LogEntry) -> None:
         stamp = dt.datetime.fromtimestamp(entry.ts / 1000).strftime("%H:%M:%S")
         self.terminal.appendPlainText(f"{stamp} {entry.level:<5} {entry.msg}")
-        if entry.msg.startswith("TRACE saved ") and self.pages.currentWidget() is self.analysis_page:
+        if (
+            entry.msg.startswith("TRACE saved ")
+            and self.pages.currentWidget() is self.analysis_page
+        ):
             self._refresh_strokes(select_latest=True)
 
     def write_system(self, message: str, *, level: str = "SYSTEM") -> None:
@@ -1649,7 +2246,9 @@ class MainWindow(QMainWindow):
                 QTimer.singleShot(50, poll_closed)
 
         self._close_deadline = time.monotonic() + 6.0
-        threading.Thread(target=close_runtime, name="mouse-pressure-qt-close", daemon=True).start()
+        threading.Thread(
+            target=close_runtime, name="mouse-pressure-qt-close", daemon=True
+        ).start()
         QTimer.singleShot(50, poll_closed)
 
 

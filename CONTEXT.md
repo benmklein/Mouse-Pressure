@@ -27,10 +27,11 @@ managed button may simultaneously modify a pen property.
 
 ### Device-settings lease
 
-The temporary ownership of a mouse's original DPI, haptic, and onboard-profile
-settings while pressure output is active. The lease applies session settings,
-keeps the original snapshot through live changes, restores it on Stop or startup
-failure, and disarms crash recovery only after restoration succeeds.
+The temporary ownership of a mouse's original DPI, haptic, actuation, and
+onboard-profile settings while pressure output is active. The lease applies
+session settings, keeps the original snapshot through live changes, restores it
+on Stop or startup failure, and disarms crash recovery only after restoration
+succeeds.
 
 ### Pen output
 

@@ -4,18 +4,31 @@ from __future__ import annotations
 
 from dataclasses import dataclass, field
 
+REMAP_MODES = ("always", "hold")
+
 
 @dataclass
 class ChannelConfig:
     # Pen property controlled by this physical button's analog sensor.
     output_target: str = "pressure"
+    # Software cursor-speed endpoints used when output_target is
+    # ``mouse_sensitivity``. Values are percentages of normal movement.
+    sensitivity_light: int = 100
+    sensitivity_firm: int = 35
+    x_tilt_light: int = 0
+    x_tilt_firm: int = 60
+    y_tilt_light: int = 0
+    y_tilt_firm: int = 60
+    rotation_light: int = 0
+    rotation_firm: int = 359
     raw_min: int = 325
     raw_max: int = 700
     deadzone_low: int = 0
     deadzone_high: int = 0
     curve: str = "linear"
     curve_strength: float = 1.0
-    contact_preset: str = "firm"
+    # Hardware actuation depth. 1 is shallowest; 10 requires the deepest press.
+    actuation_level: int = 5
     # Prevent very low pressure samples from stretching into a long hairline.
     # Zero still means pen-up; this floor applies only while contact is active.
     pressure_floor: int = 15
@@ -47,13 +60,16 @@ class RuntimeConfig:
     debug_mode: bool = False
     # Hide the desktop control panel in the notification area when minimized.
     minimize_to_tray: bool = True
-    release_teardown: bool = False
     session_dpi: int = 800
     session_haptic_left: int = 3
     session_haptic_right: int = 3
     # Until a Mapping-on hardware value is intentionally changed, mirror the
     # DPI and haptics detected in the Mapping-off state.
     session_device_settings_follow_normal: bool = True
+    remap_mode: str = "always"
+    remap_hold_hotkey: str = "Mouse 5"
+    activation_hotkey: str = "Ctrl+F12"
+    deactivation_hotkey: str = "Ctrl+Shift+F12"
     left: ChannelConfig = field(default_factory=ChannelConfig)
     right: ChannelConfig = field(default_factory=ChannelConfig)
 
@@ -69,11 +85,3 @@ class LaunchConfig:
     log_file: str | None = None
     config_dir: str | None = None
     trace_dir: str | None = None
-
-
-CONTACT_PRESETS = {
-    "light": {"contact_threshold": 6, "release_threshold": 4},
-    "medium": {"contact_threshold": 10, "release_threshold": 6},
-    "firm": {"contact_threshold": 18, "release_threshold": 12},
-}
-

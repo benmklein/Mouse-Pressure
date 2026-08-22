@@ -8,12 +8,17 @@ from dataclasses import asdict
 from pathlib import Path
 from typing import Any
 
-from mouse_pressure.bridge.config import ChannelConfig, RuntimeConfig
+from mouse_pressure.bridge.config import (
+    REMAP_MODES,
+    ChannelConfig,
+    RuntimeConfig,
+)
 from mouse_pressure.runtime.models import (
     SchemaMismatchError,
     ValidationError,
     validate_channel_config,
 )
+from mouse_pressure.ui.hotkeys import parse_global_hotkey, parse_hold_hotkey
 
 SCHEMA_VERSION = 1
 
@@ -43,13 +48,21 @@ def _channel_from_dict(raw: Any, defaults: ChannelConfig) -> ChannelConfig:
 
     channel = ChannelConfig(
         output_target=str(raw.get("output_target", defaults.output_target)),
+        sensitivity_light=int(raw.get("sensitivity_light", defaults.sensitivity_light)),
+        sensitivity_firm=int(raw.get("sensitivity_firm", defaults.sensitivity_firm)),
+        x_tilt_light=int(raw.get("x_tilt_light", defaults.x_tilt_light)),
+        x_tilt_firm=int(raw.get("x_tilt_firm", defaults.x_tilt_firm)),
+        y_tilt_light=int(raw.get("y_tilt_light", defaults.y_tilt_light)),
+        y_tilt_firm=int(raw.get("y_tilt_firm", defaults.y_tilt_firm)),
+        rotation_light=int(raw.get("rotation_light", defaults.rotation_light)),
+        rotation_firm=int(raw.get("rotation_firm", defaults.rotation_firm)),
         raw_min=raw_min,
         raw_max=raw_max,
         deadzone_low=int(raw.get("deadzone_low", defaults.deadzone_low)),
         deadzone_high=int(raw.get("deadzone_high", defaults.deadzone_high)),
         curve=str(raw.get("curve", defaults.curve)),
         curve_strength=float(raw.get("curve_strength", defaults.curve_strength)),
-        contact_preset=str(raw.get("contact_preset", defaults.contact_preset)),
+        actuation_level=int(raw.get("actuation_level", defaults.actuation_level)),
         pressure_floor=int(raw.get("pressure_floor", defaults.pressure_floor)),
         path_stabilization=int(
             raw.get("path_stabilization", defaults.path_stabilization)
@@ -58,9 +71,7 @@ def _channel_from_dict(raw: Any, defaults: ChannelConfig) -> ChannelConfig:
             raw.get("pressure_influence", defaults.pressure_influence)
         ),
         onset_buffer=raw.get("onset_buffer", defaults.onset_buffer),
-        true_low_latency=raw.get(
-            "true_low_latency", defaults.true_low_latency
-        ),
+        true_low_latency=raw.get("true_low_latency", defaults.true_low_latency),
         stationary_pressure_updates=raw.get(
             "stationary_pressure_updates",
             defaults.stationary_pressure_updates,
@@ -106,15 +117,9 @@ def runtime_config_from_dict(raw: Any) -> RuntimeConfig:
     if not isinstance(debug_mode, bool):
         raise ValidationError("debug_mode must be a boolean")
 
-    minimize_to_tray = raw.get(
-        "minimize_to_tray", RuntimeConfig.minimize_to_tray
-    )
+    minimize_to_tray = raw.get("minimize_to_tray", RuntimeConfig.minimize_to_tray)
     if not isinstance(minimize_to_tray, bool):
         raise ValidationError("minimize_to_tray must be a boolean")
-
-    release_teardown = raw.get("release_teardown", RuntimeConfig.release_teardown)
-    if not isinstance(release_teardown, bool):
-        raise ValidationError("release_teardown must be a boolean")
 
     session_dpi = int(raw.get("session_dpi", RuntimeConfig.session_dpi))
     session_haptic_left = int(
@@ -135,6 +140,26 @@ def runtime_config_from_dict(raw: Any) -> RuntimeConfig:
     if not isinstance(follow_normal, bool):
         raise ValidationError("session_device_settings_follow_normal must be a boolean")
 
+    remap_mode = raw.get("remap_mode", RuntimeConfig.remap_mode)
+    if not isinstance(remap_mode, str) or remap_mode not in REMAP_MODES:
+        raise ValidationError("remap_mode must be always or hold")
+    try:
+        remap_hold_hotkey = parse_hold_hotkey(
+            raw.get("remap_hold_hotkey", RuntimeConfig.remap_hold_hotkey)
+        ).label
+        activation_hotkey = parse_global_hotkey(
+            raw.get("activation_hotkey", RuntimeConfig.activation_hotkey)
+        ).label
+        deactivation_hotkey = parse_global_hotkey(
+            raw.get("deactivation_hotkey", RuntimeConfig.deactivation_hotkey)
+        ).label
+    except (TypeError, ValueError) as exc:
+        raise ValidationError(f"Invalid global shortcut: {exc}") from exc
+    if activation_hotkey == deactivation_hotkey:
+        raise ValidationError("Activation and deactivation shortcuts must be different")
+    if remap_hold_hotkey in {activation_hotkey, deactivation_hotkey}:
+        raise ValidationError("Hold shortcut must differ from Start and Stop")
+
     defaults = RuntimeConfig()
 
     return RuntimeConfig(
@@ -146,11 +171,14 @@ def runtime_config_from_dict(raw: Any) -> RuntimeConfig:
         suppress_rmb=suppress_rmb,
         debug_mode=debug_mode,
         minimize_to_tray=minimize_to_tray,
-        release_teardown=release_teardown,
         session_dpi=session_dpi,
         session_haptic_left=session_haptic_left,
         session_haptic_right=session_haptic_right,
         session_device_settings_follow_normal=follow_normal,
+        remap_mode=remap_mode,
+        remap_hold_hotkey=remap_hold_hotkey,
+        activation_hotkey=activation_hotkey,
+        deactivation_hotkey=deactivation_hotkey,
         left=_channel_from_dict(raw.get("left", {}), defaults.left),
         right=_channel_from_dict(raw.get("right", {}), defaults.right),
     )
@@ -167,13 +195,16 @@ def runtime_config_to_dict(config: RuntimeConfig) -> dict[str, Any]:
         "suppress_rmb": config.suppress_rmb,
         "debug_mode": config.debug_mode,
         "minimize_to_tray": config.minimize_to_tray,
-        "release_teardown": config.release_teardown,
         "session_dpi": config.session_dpi,
         "session_haptic_left": config.session_haptic_left,
         "session_haptic_right": config.session_haptic_right,
         "session_device_settings_follow_normal": (
             config.session_device_settings_follow_normal
         ),
+        "remap_mode": config.remap_mode,
+        "remap_hold_hotkey": config.remap_hold_hotkey,
+        "activation_hotkey": config.activation_hotkey,
+        "deactivation_hotkey": config.deactivation_hotkey,
         "left": asdict(config.left),
         "right": asdict(config.right),
     }

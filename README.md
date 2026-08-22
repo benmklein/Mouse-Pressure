@@ -7,7 +7,7 @@
     <a href="docs/compatibility.md"><img src="https://img.shields.io/badge/Windows-10%20tested-0078D4?logo=windows" alt="Windows 10 tested; Windows 11 unverified"></a>
     <a href="docs/compatibility.md"><img src="https://img.shields.io/badge/output-Windows%20Ink-7B61FF" alt="Windows Ink output"></a>
     <a href="LICENSE"><img src="https://img.shields.io/badge/license-MIT-green.svg" alt="MIT License"></a>
-    <a href="docs/releasing.md"><img src="https://img.shields.io/badge/status-alpha-orange.svg" alt="Alpha status"></a>
+    <a href="docs/releasing.md"><img src="https://img.shields.io/badge/status-beta-blue.svg" alt="Beta status"></a>
   </p>
 
   <p>
@@ -87,19 +87,25 @@ For Krita:
 3. Restart Krita.
 
 Use `Ctrl+F12` to start output. Use `Ctrl+Shift+F12` to force-stop it.
+Change either shortcut in the **Mouse** tab.
 
 See [compatibility](docs/compatibility.md) for supported hardware and
 applications.
 
-## Alpha limitations
+## Beta limitations
 
-This is alpha software.
+This is beta software.
 
 - Tested on Windows 10
 - Windows 11 expected to work but not yet verified on physical hardware
 - Unsigned installer may trigger Microsoft Defender SmartScreen
 - First stroke after starting can occasionally appear as a dot
 - Pressure behavior varies between applications and brush presets
+
+Do not run Mouse Pressure while playing games protected by anti-cheat software.
+Mouse Pressure does not install a kernel driver, but it uses a low-level mouse
+hook and synthetic Windows pointer input. Anti-cheat compatibility has not been
+tested. Stop Mouse Pressure before launching an anti-cheat-protected game.
 
 See [compatibility](docs/compatibility.md) for the full support scope.
 

@@ -61,8 +61,10 @@ class _FakeSession:
         self.refresh_calls = 0
         self.dpi_calls: list[int] = []
         self.haptic_calls: list[tuple[int, int]] = []
+        self.actuation_calls: list[tuple[int, int]] = []
         self.current_dpi = 800
         self.current_haptics = (5, 5)
+        self.current_actuation = (5, 5)
         self.current_profile_enabled = False
         self.current_profile_sector: int | None = None
         self.device_events: list[str] = []
@@ -106,6 +108,14 @@ class _FakeSession:
     def get_haptic_levels(self) -> tuple[int, int]:
         return self.current_haptics
 
+    def set_actuation_levels(self, *, left: int, right: int) -> tuple[int, int]:
+        self.actuation_calls.append((left, right))
+        self.current_actuation = (left, right)
+        return left, right
+
+    def get_actuation_levels(self) -> tuple[int, int]:
+        return self.current_actuation
+
     def get_onboard_profile_state(self) -> tuple[bool, int | None]:
         return self.current_profile_enabled, self.current_profile_sector
 
@@ -116,7 +126,9 @@ class _FakeSession:
         active_sector: int | None = None,
     ) -> tuple[bool, int | None]:
         self.current_profile_enabled = bool(enabled)
-        self.current_profile_sector = int(active_sector) if enabled and active_sector is not None else None
+        self.current_profile_sector = (
+            int(active_sector) if enabled and active_sector is not None else None
+        )
         self.device_events.append(
             f"profile={self.current_profile_sector}" if enabled else "profile=host"
         )
@@ -221,8 +233,8 @@ class RuntimeServiceTests(unittest.IsolatedAsyncioTestCase):
     def _service(self, session: _FakeSession, *, backend: str = "native_synthetic"):
         config = RuntimeConfig(
             linked=False,
-            left=ChannelConfig(curve="linear", contact_preset="medium"),
-            right=ChannelConfig(curve="linear", contact_preset="medium"),
+            left=ChannelConfig(curve="linear", actuation_level=5),
+            right=ChannelConfig(curve="linear", actuation_level=5),
         )
         store = _MemoryConfigStore(config)
         emitter_holder: dict[str, _FakeEmitter] = {}
@@ -323,7 +335,10 @@ class RuntimeServiceTests(unittest.IsolatedAsyncioTestCase):
         self.assertIn("right_mapped", received[0])
         self.assertGreater(len(holder["emitter"].updates), 0)
         self.assertTrue(
-            any(pair in {(90, 95), (120, 130), (140, 150)} for pair in holder["emitter"].raw_updates)
+            any(
+                pair in {(90, 95), (120, 130), (140, 150)}
+                for pair in holder["emitter"].raw_updates
+            )
         )
         self.assertEqual(session.open_calls, 1)
         self.assertEqual(session.enable_calls, 1)
@@ -348,6 +363,31 @@ class RuntimeServiceTests(unittest.IsolatedAsyncioTestCase):
         native_config = service._emitter_config_from_runtime()  # noqa: SLF001
         self.assertFalse(native_config.allow_raw_direct_motion)
         self.assertEqual(native_config.output_backend, "native_synthetic")
+        self.assertEqual(native_config.remap_mode, "always")
+        self.assertEqual(native_config.remap_hold_hotkey, "Mouse 5")
+        self.assertEqual(native_config.deactivation_hotkey, "Ctrl+Shift+F12")
+        self.assertEqual(native_config.left_output_target, "pressure")
+        self.assertEqual(native_config.sensitivity_light, 100)
+        self.assertEqual(native_config.sensitivity_firm, 35)
+
+    def test_pressure_sensitivity_updates_native_output_config(self) -> None:
+        service, _, _ = self._service(_FakeSession([]))
+
+        updated = service.apply_config(
+            {
+                "left": {
+                    "output_target": "mouse_sensitivity",
+                    "sensitivity_light": 130,
+                    "sensitivity_firm": 25,
+                },
+            }
+        )
+        native_config = service._emitter_config_from_runtime()  # noqa: SLF001
+
+        self.assertEqual(updated.left.output_target, "mouse_sensitivity")
+        self.assertEqual(native_config.left_output_target, "mouse_sensitivity")
+        self.assertEqual(native_config.sensitivity_light, 130)
+        self.assertEqual(native_config.sensitivity_firm, 25)
 
     def test_restore_defaults_replaces_saved_configuration(self) -> None:
         service, store, _ = self._service(_FakeSession([]))
@@ -394,9 +434,13 @@ class RuntimeServiceTests(unittest.IsolatedAsyncioTestCase):
         self.assertIsNotNone(service._latest_emission_sample)
         await service.stop_stream()
 
-    async def test_apply_config_updates_emitter_thresholds_without_restart(self) -> None:
+    async def test_apply_config_updates_emitter_thresholds_without_restart(
+        self,
+    ) -> None:
         base = time.perf_counter()
-        session = _FakeSession([(base + 0.01, _frame(100, 100)), (base + 0.02, _frame(110, 112))])
+        session = _FakeSession(
+            [(base + 0.01, _frame(100, 100)), (base + 0.02, _frame(110, 112))]
+        )
         service, store, holder = self._service(session)
         await service.start_stream()
         await asyncio.sleep(0.02)
@@ -404,12 +448,11 @@ class RuntimeServiceTests(unittest.IsolatedAsyncioTestCase):
         updated = service.apply_config(
             {
                 "linked": True,
-                "release_teardown": True,
                 "left": {
                     "curve": "soft",
                     "deadzone_low": 4,
                     "deadzone_high": 15,
-                    "contact_preset": "firm",
+                    "actuation_level": 8,
                     "pressure_floor": 18,
                 },
             }
@@ -419,12 +462,11 @@ class RuntimeServiceTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(updated.left.curve, "soft")
         self.assertEqual(updated.right.curve, "linear")
         self.assertEqual(store.current.right.curve, "linear")
-        self.assertEqual(store.current.left.contact_preset, "firm")
-        self.assertEqual(holder["emitter"].config.contact_threshold, 18)
-        self.assertEqual(holder["emitter"].config.release_threshold, 12)
+        self.assertEqual(store.current.left.actuation_level, 8)
+        self.assertEqual(holder["emitter"].config.contact_threshold, 10)
+        self.assertEqual(holder["emitter"].config.release_threshold, 6)
         self.assertEqual(holder["emitter"].config.min_contact_pressure, 184)
-        self.assertEqual(holder["emitter"].config.right_contact_threshold, 18)
-        self.assertTrue(holder["emitter"].config.release_teardown)
+        self.assertEqual(holder["emitter"].config.right_contact_threshold, 10)
         self.assertEqual(session.open_calls, 1)
         self.assertEqual(session.enable_calls, 1)
 
@@ -464,7 +506,7 @@ class RuntimeServiceTests(unittest.IsolatedAsyncioTestCase):
                     "raw_min": 330,
                     "raw_max": 690,
                     "curve": "hard",
-                    "contact_preset": "firm",
+                    "actuation_level": 8,
                     "pressure_floor": 25,
                     "path_stabilization": 40,
                     "pressure_influence": 70,
@@ -478,7 +520,8 @@ class RuntimeServiceTests(unittest.IsolatedAsyncioTestCase):
         self.assertFalse(updated.linked)
         self.assertTrue(updated.suppress_rmb)
         self.assertEqual(store.current.right.curve, "hard")
-        self.assertEqual(emitter_config.right_contact_threshold, 18)
+        self.assertEqual(updated.right.actuation_level, 8)
+        self.assertEqual(emitter_config.right_contact_threshold, 10)
         self.assertEqual(emitter_config.right_min_contact_pressure, 256)
         self.assertEqual(emitter_config.right_path_stabilization, 40)
         self.assertEqual(emitter_config.right_pressure_influence, 70)
@@ -549,7 +592,9 @@ class RuntimeServiceTests(unittest.IsolatedAsyncioTestCase):
 
         await service.stop_stream()
 
-    async def test_disabled_pressure_channel_emits_zero_and_does_not_suppress(self) -> None:
+    async def test_disabled_pressure_channel_emits_zero_and_does_not_suppress(
+        self,
+    ) -> None:
         base = time.perf_counter()
         session = _FakeSession([(base + 0.01, _frame(600, 620))])
         service, store, holder = self._service(session)
@@ -641,7 +686,9 @@ class RuntimeServiceTests(unittest.IsolatedAsyncioTestCase):
         self.assertGreaterEqual(len(holder["emitter"].updates), 3)
         await service.stop_stream()
 
-    async def test_physical_movement_signal_injects_without_waiting_for_timer(self) -> None:
+    async def test_physical_movement_signal_injects_without_waiting_for_timer(
+        self,
+    ) -> None:
         base = time.perf_counter()
         session = _FakeSession([(base, _frame(120, 121))])
         service, _, holder = self._service(session)
@@ -674,11 +721,23 @@ class RuntimeServiceTests(unittest.IsolatedAsyncioTestCase):
             dpi=1600,
             haptic_left=0,
             haptic_right=3,
+            actuation_left=3,
+            actuation_right=8,
         )
 
-        self.assertEqual(result, {"dpi": 1600, "haptic_left": 0, "haptic_right": 3})
+        self.assertEqual(
+            result,
+            {
+                "dpi": 1600,
+                "haptic_left": 0,
+                "haptic_right": 3,
+                "actuation_left": 3,
+                "actuation_right": 8,
+            },
+        )
         self.assertEqual(session.dpi_calls, [1600])
         self.assertEqual(session.haptic_calls, [(0, 3)])
+        self.assertEqual(session.actuation_calls, [(3, 8)])
         self.assertTrue(service.stream_active)
         await service.stop_stream()
 
@@ -751,7 +810,13 @@ class RuntimeServiceTests(unittest.IsolatedAsyncioTestCase):
 
         self.assertEqual(
             detected,
-            {"dpi": 2400, "haptic_left": 1, "haptic_right": 4},
+            {
+                "dpi": 2400,
+                "haptic_left": 1,
+                "haptic_right": 4,
+                "actuation_left": 5,
+                "actuation_right": 5,
+            },
         )
         self.assertEqual(session.open_calls, 1)
         self.assertEqual(session.close_calls, 1)
@@ -789,7 +854,9 @@ class RuntimeServiceTests(unittest.IsolatedAsyncioTestCase):
         service.set_failure_callback(failures.append)
 
         await service.start_stream()
-        await asyncio.sleep(0.6)
+        deadline = asyncio.get_running_loop().time() + 1.5
+        while service.stream_active and asyncio.get_running_loop().time() < deadline:
+            await asyncio.sleep(0.05)
 
         self.assertFalse(service.stream_active)
         self.assertEqual(len(failures), 1)

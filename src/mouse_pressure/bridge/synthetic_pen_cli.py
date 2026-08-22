@@ -132,11 +132,6 @@ def build_parser() -> argparse.ArgumentParser:
         help="Minimum pen pressure while in contact (0..1024, default: 0).",
     )
     parser.add_argument(
-        "--release-teardown",
-        action="store_true",
-        help="After pen UP, also emit hover+end-hover frames to end the in-range session.",
-    )
-    parser.add_argument(
         "--log-file",
         default="mouse-pressure.log",
         help="Log file path (default: mouse-pressure.log).",
@@ -179,7 +174,6 @@ def main(argv: Sequence[str] | None = None) -> int:
         click_max_ms=args.click_max_ms,
         click_move_px=args.click_move_px,
         click_pressure_max=args.click_pressure_max,
-        release_teardown=args.release_teardown,
         trace_dir=args.trace_dir,
     )
     return run_synthetic_pen_bridge(

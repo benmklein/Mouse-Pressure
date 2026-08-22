@@ -69,12 +69,16 @@ class BridgeController:
         dpi: int,
         haptic_left: int,
         haptic_right: int,
+        actuation_left: int = 5,
+        actuation_right: int = 5,
     ) -> Future[dict[str, int]]:
         return asyncio.run_coroutine_threadsafe(
             self.service.apply_device_settings(
                 dpi=dpi,
                 haptic_left=haptic_left,
                 haptic_right=haptic_right,
+                actuation_left=actuation_left,
+                actuation_right=actuation_right,
             ),
             self._loop,
         )

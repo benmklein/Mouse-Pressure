@@ -35,6 +35,39 @@ def test_haptics_can_be_detected_without_writing() -> None:
     assert all(row[3] == 0x2F for row in fake.writes)
 
 
+def test_actuation_levels_can_be_read() -> None:
+    fake = _FakeDevice(
+        [
+            _reply(0x0C, 0x2F, [0x00, 0x0C, 0x09, 0x08]),
+            _reply(0x0C, 0x2F, [0x01, 0x20, 0x09, 0x14]),
+        ]
+    )
+    session = PressureHidppSession(log=lambda _line: None)
+    session.dev = fake  # type: ignore[assignment]
+
+    assert session.get_actuation_levels() == (3, 8)
+
+
+def test_actuation_write_preserves_rapid_trigger_and_haptics() -> None:
+    replies = [
+        _reply(0x0C, 0x2F, [0x00, 0x0C, 0x09, 0x08]),
+        _reply(0x0C, 0x2F, [0x01, 0x20, 0x11, 0x14]),
+        _reply(0x0F, 0x00, [0x00, 0x01, 0x00]),
+        _reply(0x0C, 0x1F, [0x00, 0x1C, 0x09, 0x08]),
+        _reply(0x0C, 0x1F, [0x01, 0x10, 0x11, 0x14]),
+        _reply(0x0F, 0x00, [0x00, 0x00, 0x00]),
+    ]
+    fake = _FakeDevice(replies)
+    session = PressureHidppSession(log=lambda _line: None)
+    session.dev = fake  # type: ignore[assignment]
+
+    assert session.set_actuation_levels(left=7, right=4) == (7, 4)
+
+    writes = [row for row in fake.writes if row[2] == 0x0C and row[3] == 0x1F]
+    assert writes[0][4:8] == [0x00, 0x1C, 0x09, 0x08]
+    assert writes[1][4:8] == [0x01, 0x10, 0x11, 0x14]
+
+
 def test_dpi_can_be_detected_without_writing() -> None:
     current = [0x00, 0x06, 0x40, 0x06, 0x40, 0x06, 0x40, 0x06, 0x40, 0x02]
     fake = _FakeDevice([_reply(0x09, 0x5F, current)])

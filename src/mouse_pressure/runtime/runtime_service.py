@@ -8,12 +8,7 @@ import threading
 import time
 from typing import Callable, TypeAlias
 
-from mouse_pressure.bridge.config import (
-    CONTACT_PRESETS,
-    ChannelConfig,
-    LaunchConfig,
-    RuntimeConfig,
-)
+from mouse_pressure.bridge.config import ChannelConfig, LaunchConfig, RuntimeConfig
 from mouse_pressure.bridge.curves import (
     map_normalized_pressure,
     normalize_curve_name,
@@ -63,8 +58,12 @@ class RuntimeService:
         config_store: ConfigStore,
         *,
         log_bus: LogBus | None = None,
-        session_factory: Callable[[Callable[[str], None]], PressureHidppSession] = PressureHidppSession,
-        emitter_factory: Callable[[SyntheticPenConfig, Callable[[str], None]], SyntheticPenEmitter] = SyntheticPenEmitter,
+        session_factory: Callable[
+            [Callable[[str], None]], PressureHidppSession
+        ] = PressureHidppSession,
+        emitter_factory: Callable[
+            [SyntheticPenConfig, Callable[[str], None]], SyntheticPenEmitter
+        ] = SyntheticPenEmitter,
         stream_stall_timeout_s: float = 4.0,
         stream_recovery_after_s: float = 0.5,
         stream_keepalive_interval_s: float = 2.0,
@@ -144,8 +143,12 @@ class RuntimeService:
         # behind the cursor and replay after the physical button is released.
         self._sample_queue = asyncio.Queue(maxsize=1)
         self._raw_sample_queue = asyncio.Queue(maxsize=256)
-        self._movement_queue = None if backend == "telemetry" else asyncio.Queue(maxsize=512)
-        self._telemetry_ready_event = asyncio.Event() if backend == "telemetry" else None
+        self._movement_queue = (
+            None if backend == "telemetry" else asyncio.Queue(maxsize=512)
+        )
+        self._telemetry_ready_event = (
+            asyncio.Event() if backend == "telemetry" else None
+        )
         self._latest_emission_sample = None
         self._last_sample_t = None
         self._last_inject_monotonic = None
@@ -207,7 +210,8 @@ class RuntimeService:
                 )
                 self.log_bus.info(
                     f"Session mouse settings applied: DPI {applied.dpi}, "
-                    f"haptics L{applied.haptic_left}/R{applied.haptic_right}"
+                    f"haptics L{applied.haptic_left}/R{applied.haptic_right}, "
+                    f"actuation L{applied.actuation_left}/R{applied.actuation_right}"
                 )
             except Exception:
                 try:
@@ -248,7 +252,9 @@ class RuntimeService:
         self._emitter = emitter
         self._device_settings_lease = device_settings_lease
         self._stream_active = True
-        self._reader_thread = threading.Thread(target=self._reader_loop, name="mouse-pressure-reader", daemon=True)
+        self._reader_thread = threading.Thread(
+            target=self._reader_loop, name="mouse-pressure-reader", daemon=True
+        )
         self._reader_thread.start()
         self._processor_task = asyncio.create_task(self._process_samples())
         self._movement_task = (
@@ -278,9 +284,13 @@ class RuntimeService:
                     ) from exc
                 raise
             if emitter is not None:
-                self.log_bus.info("Pressure input primed; mouse button suppression armed")
+                self.log_bus.info(
+                    "Pressure input primed; mouse button suppression armed"
+                )
         if backend == "telemetry":
-            self.log_bus.info("Telemetry-only pressure stream started; native mouse input unchanged.")
+            self.log_bus.info(
+                "Telemetry-only pressure stream started; native mouse input unchanged."
+            )
         else:
             self.log_bus.info(
                 f"Stream started (pressure ~60 Hz, raw mouse event-driven, "
@@ -364,7 +374,9 @@ class RuntimeService:
         self._latest_emission_sample = None
         self.log_bus.info("Stream stopped")
 
-    def apply_config(self, patch: dict, *, replace_existing: bool = False) -> RuntimeConfig:
+    def apply_config(
+        self, patch: dict, *, replace_existing: bool = False
+    ) -> RuntimeConfig:
         if not isinstance(patch, dict):
             raise ValidationError("config patch must be an object")
 
@@ -443,20 +455,28 @@ class RuntimeService:
         dpi: int,
         haptic_left: int,
         haptic_right: int,
+        actuation_left: int = 5,
+        actuation_right: int = 5,
     ) -> dict[str, int]:
         """Apply mouse hardware settings on the HID reader thread."""
         if not self._stream_active or self._session is None:
-            raise StreamNotActiveError("Start the driver before applying device settings")
+            raise StreamNotActiveError(
+                "Start the driver before applying device settings"
+            )
         if not 100 <= dpi <= 32000 or dpi % 50 != 0:
             raise ValidationError("DPI must be 100..32000 in 50-DPI increments")
         if not 0 <= haptic_left <= 5 or not 0 <= haptic_right <= 5:
             raise ValidationError("Haptic levels must be in 0..5")
+        if not 1 <= actuation_left <= 10 or not 1 <= actuation_right <= 10:
+            raise ValidationError("Actuation levels must be in 1..10")
 
         requested = validate_device_settings(
             {
                 "dpi": int(dpi),
                 "haptic_left": int(haptic_left),
                 "haptic_right": int(haptic_right),
+                "actuation_left": int(actuation_left),
+                "actuation_right": int(actuation_right),
             }
         )
         loop = asyncio.get_running_loop()
@@ -490,7 +510,8 @@ class RuntimeService:
         settings = detected.to_dict()
         self.log_bus.info(
             f"Mouse settings detected: DPI {settings['dpi']}, "
-            f"haptics L{settings['haptic_left']}/R{settings['haptic_right']}"
+            f"haptics L{settings['haptic_left']}/R{settings['haptic_right']}, "
+            f"actuation L{settings['actuation_left']}/R{settings['actuation_right']}"
         )
         return settings
 
@@ -500,8 +521,10 @@ class RuntimeService:
     ) -> None:
         self.log_bus.info(
             f"Original mouse settings restored: DPI {restored.dpi}, "
-            f"haptics L{restored.haptic_left}/R{restored.haptic_right}"
+            f"haptics L{restored.haptic_left}/R{restored.haptic_right}, "
+            f"actuation L{restored.actuation_left}/R{restored.actuation_right}"
         )
+
     @property
     def stream_active(self) -> bool:
         return self._stream_active
@@ -524,7 +547,6 @@ class RuntimeService:
             "suppress_rmb",
             "debug_mode",
             "minimize_to_tray",
-            "release_teardown",
             "session_device_settings_follow_normal",
         ):
             if boolean_name in patch:
@@ -532,6 +554,20 @@ class RuntimeService:
                 if not isinstance(value, bool):
                     raise ValidationError(f"{boolean_name} must be a boolean")
                 merged[boolean_name] = value
+
+        for hotkey_name in ("activation_hotkey", "deactivation_hotkey"):
+            if hotkey_name in patch:
+                hotkey = patch[hotkey_name]
+                if not isinstance(hotkey, str):
+                    raise ValidationError(f"{hotkey_name} must be a string")
+                merged[hotkey_name] = hotkey
+
+        for remap_name in ("remap_mode", "remap_hold_hotkey"):
+            if remap_name in patch:
+                value = patch[remap_name]
+                if not isinstance(value, str):
+                    raise ValidationError(f"{remap_name} must be a string")
+                merged[remap_name] = value
 
         for integer_name in (
             "session_dpi",
@@ -562,24 +598,16 @@ class RuntimeService:
 
     def _emitter_config_from_runtime(self) -> SyntheticPenConfig:
         effective_right = self._effective_right_channel(self._config)
-        left_thresholds = CONTACT_PRESETS[self._config.left.contact_preset]
-        right_thresholds = CONTACT_PRESETS[effective_right.contact_preset]
         left_target = (
-            self._config.left.output_target
-            if self._config.left_enabled
-            else "disabled"
+            self._config.left.output_target if self._config.left_enabled else "disabled"
         )
         right_target = (
-            effective_right.output_target
-            if self._config.right_enabled
-            else "disabled"
+            effective_right.output_target if self._config.right_enabled else "disabled"
         )
         return SyntheticPenConfig(
-            contact_threshold=left_thresholds["contact_threshold"],
-            release_threshold=left_thresholds["release_threshold"],
-            min_contact_pressure=round(
-                self._config.left.pressure_floor * 1024 / 100
-            ),
+            contact_threshold=10,
+            release_threshold=6,
+            min_contact_pressure=round(self._config.left.pressure_floor * 1024 / 100),
             path_stabilization=self._config.left.path_stabilization,
             pressure_influence=self._config.left.pressure_influence,
             onset_buffer=self._config.left.onset_buffer,
@@ -587,12 +615,10 @@ class RuntimeService:
             # Preserve the user's Windows pointer transform. The native relay
             # correlates device-scoped Raw Input with transformed coordinates.
             allow_raw_direct_motion=False,
-            stationary_pressure_updates=(
-                self._config.left.stationary_pressure_updates
-            ),
+            stationary_pressure_updates=(self._config.left.stationary_pressure_updates),
             immediate_button_wake=True,
-            right_contact_threshold=right_thresholds["contact_threshold"],
-            right_release_threshold=right_thresholds["release_threshold"],
+            right_contact_threshold=10,
+            right_release_threshold=6,
             right_min_contact_pressure=round(
                 effective_right.pressure_floor * 1024 / 100
             ),
@@ -611,7 +637,8 @@ class RuntimeService:
                 self._config.left_enabled
                 and (
                     self._config.suppress_lmb
-                    or left_target in {"x_tilt", "y_tilt", "rotation"}
+                    or left_target
+                    in {"mouse_sensitivity", "x_tilt", "y_tilt", "rotation"}
                 )
             ),
             suppress_rmb=(
@@ -622,14 +649,33 @@ class RuntimeService:
                         if self._config.linked
                         else self._config.suppress_rmb
                     )
-                    or right_target in {"x_tilt", "y_tilt", "rotation"}
+                    or right_target
+                    in {"mouse_sensitivity", "x_tilt", "y_tilt", "rotation"}
                 )
             ),
             left_output_target=left_target,
             right_output_target=right_target,
+            remap_mode=self._config.remap_mode,
+            remap_hold_hotkey=self._config.remap_hold_hotkey,
+            sensitivity_light=self._config.left.sensitivity_light,
+            sensitivity_firm=self._config.left.sensitivity_firm,
+            right_sensitivity_light=effective_right.sensitivity_light,
+            right_sensitivity_firm=effective_right.sensitivity_firm,
+            x_tilt_light=self._config.left.x_tilt_light,
+            x_tilt_firm=self._config.left.x_tilt_firm,
+            right_x_tilt_light=effective_right.x_tilt_light,
+            right_x_tilt_firm=effective_right.x_tilt_firm,
+            y_tilt_light=self._config.left.y_tilt_light,
+            y_tilt_firm=self._config.left.y_tilt_firm,
+            right_y_tilt_light=effective_right.y_tilt_light,
+            right_y_tilt_firm=effective_right.y_tilt_firm,
+            rotation_light=self._config.left.rotation_light,
+            rotation_firm=self._config.left.rotation_firm,
+            right_rotation_light=effective_right.rotation_light,
+            right_rotation_firm=effective_right.rotation_firm,
+            deactivation_hotkey=self._config.deactivation_hotkey,
             debug_mode=self._config.debug_mode,
             output_backend=str(self.launch_config.backend).strip().lower(),
-            release_teardown=self._config.release_teardown,
             trace_dir=self.launch_config.trace_dir,
             trace_raw_min=self._config.left.raw_min,
             trace_raw_max=self._config.left.raw_max,
@@ -680,7 +726,9 @@ class RuntimeService:
                             )
                             recovery_attempt = 0
                         self._last_sample_monotonic = now
-                        loop.call_soon_threadsafe(self._enqueue_sample, (ts, left_raw, right_raw))
+                        loop.call_soon_threadsafe(
+                            self._enqueue_sample, (ts, left_raw, right_raw)
+                        )
 
             now = time.perf_counter()
             if (
@@ -696,7 +744,9 @@ class RuntimeService:
                         self._refresh_pressure_stream(session)
                 except Exception as exc:
                     self.log_bus.warn(f"Pressure stream keepalive failed: {exc}")
-                next_keepalive_at = time.perf_counter() + self._stream_keepalive_interval_s
+                next_keepalive_at = (
+                    time.perf_counter() + self._stream_keepalive_interval_s
+                )
 
             if not self._reader_stop.is_set() and now >= next_recovery_at:
                 recovery_attempt += 1
@@ -718,7 +768,9 @@ class RuntimeService:
                         f"Pressure stream re-enable attempt {recovery_attempt} failed: {exc}"
                     )
                 next_recovery_at = time.perf_counter() + self._stream_recovery_after_s
-                next_keepalive_at = time.perf_counter() + self._stream_keepalive_interval_s
+                next_keepalive_at = (
+                    time.perf_counter() + self._stream_keepalive_interval_s
+                )
 
         loop.call_soon_threadsafe(self._enqueue_sample, None)
 
@@ -766,13 +818,18 @@ class RuntimeService:
                         current_settings=current,
                     )
             except Exception as exc:
-                loop.call_soon_threadsafe(self._finish_device_command, future, None, exc)
+                loop.call_soon_threadsafe(
+                    self._finish_device_command, future, None, exc
+                )
             else:
                 self.log_bus.info(
                     f"Device settings applied: DPI {result.dpi}, "
-                    f"haptics L{result.haptic_left}/R{result.haptic_right}"
+                    f"haptics L{result.haptic_left}/R{result.haptic_right}, "
+                    f"actuation L{result.actuation_left}/R{result.actuation_right}"
                 )
-                loop.call_soon_threadsafe(self._finish_device_command, future, result, None)
+                loop.call_soon_threadsafe(
+                    self._finish_device_command, future, result, None
+                )
             finally:
                 if stream_paused:
                     try:
@@ -990,7 +1047,9 @@ class RuntimeService:
             emitter = self._emitter
 
         left_norm = normalize_raw_pressure(left_raw, left_cfg.raw_min, left_cfg.raw_max)
-        right_norm = normalize_raw_pressure(right_raw, right_cfg.raw_min, right_cfg.raw_max)
+        right_norm = normalize_raw_pressure(
+            right_raw, right_cfg.raw_min, right_cfg.raw_max
+        )
         left_mapped = map_normalized_pressure(left_norm, left_cfg)
         right_mapped = map_normalized_pressure(right_norm, right_cfg)
         if not self._config.left_enabled:
@@ -1012,12 +1071,17 @@ class RuntimeService:
 
         if emitter is not None:
             injected_at = time.perf_counter()
-            if self._last_inject_monotonic is not None and injected_at > self._last_inject_monotonic:
+            if (
+                self._last_inject_monotonic is not None
+                and injected_at > self._last_inject_monotonic
+            ):
                 instant_inject_hz = 1.0 / (injected_at - self._last_inject_monotonic)
                 if self._inject_hz <= 0.0:
                     self._inject_hz = instant_inject_hz
                 else:
-                    self._inject_hz = (self._inject_hz * 0.9) + (instant_inject_hz * 0.1)
+                    self._inject_hz = (self._inject_hz * 0.9) + (
+                        instant_inject_hz * 0.1
+                    )
             self._last_inject_monotonic = injected_at
 
         # Companion apps need a heartbeat even while pressure is held steady.

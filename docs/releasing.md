@@ -30,8 +30,8 @@ removed while unrelated files remain intact. Pass the previous release through
 ## Manual test matrix
 
 - Clean install, upgrade, and uninstall on Windows 10 x64.
-- Clean install, upgrade, and uninstall on Windows 11 x64 before promoting a
-  build beyond alpha.
+- Clean install, upgrade, and uninstall on Windows 11 x64 before describing
+  Windows 11 as supported.
 - Wired and supported wireless mouse connections.
 - Start, draw, Stop, crash recovery, tray restore, and both global shortcuts.
 - Left Pressure / right Pressure, left Pressure / right X-tilt, left Pressure /

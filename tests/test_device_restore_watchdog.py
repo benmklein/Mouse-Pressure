@@ -20,6 +20,7 @@ class _FakeSession:
     def __init__(self, _log) -> None:
         self.dpi = 400
         self.haptics = (0, 0)
+        self.actuation = (1, 2)
         self.profile = (True, 1)
         self.profile_writes: list[tuple[bool, int | None]] = []
         self.closed = False
@@ -46,6 +47,13 @@ class _FakeSession:
     def set_haptic_levels(self, *, left: int, right: int) -> tuple[int, int]:
         self.haptics = (left, right)
         return self.haptics
+
+    def get_actuation_levels(self) -> tuple[int, int]:
+        return self.actuation
+
+    def set_actuation_levels(self, *, left: int, right: int) -> tuple[int, int]:
+        self.actuation = (left, right)
+        return self.actuation
 
     def get_onboard_profile_state(self) -> tuple[bool, int]:
         return self.profile
@@ -76,6 +84,7 @@ def test_restore_device_settings_restores_dpi_haptics_and_profile() -> None:
     assert restored == SessionDeviceSettings(dpi=800, haptic_left=3, haptic_right=4)
     assert session.dpi == 800
     assert session.haptics == (3, 4)
+    assert session.actuation == (5, 5)
     assert session.profile_writes == [(False, None), (True, 2)]
 
 

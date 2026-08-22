@@ -177,9 +177,8 @@ class AtomicSlider(QSlider):
         event.accept()
 
     def mouseMoveEvent(self, event: Any) -> None:  # noqa: N802
-        if (
-            event.buttons() & Qt.MouseButton.LeftButton
-            and self.rect().contains(event.position().toPoint())
+        if event.buttons() & Qt.MouseButton.LeftButton and self.rect().contains(
+            event.position().toPoint()
         ):
             self._set_value_from_x(event.position().x())
             event.accept()
@@ -209,6 +208,7 @@ class SliderField(QWidget):
         super().__init__(parent)
         self.suffix = suffix
         root = QVBoxLayout(self)
+        self._root = root
         root.setContentsMargins(0, 0, 0, 0)
         root.setSpacing(7)
         header = QHBoxLayout()
@@ -240,6 +240,33 @@ class SliderField(QWidget):
         self.slider.valueChanged.connect(self._slider_changed)
         self.spin.valueChanged.connect(self._spin_changed)
         self._set_label(value)
+
+    def add_tick_marks(self, count: int) -> None:
+        """Add evenly spaced marks below the slider without changing its style."""
+        if count < 2:
+            return
+        row = QHBoxLayout()
+        row.setContentsMargins(0, 0, 0, 0)
+        row.setSpacing(10)
+        ticks = QWidget()
+        ticks.setObjectName("sliderTicks")
+        tick_layout = QHBoxLayout(ticks)
+        tick_layout.setContentsMargins(7, 0, 7, 0)
+        tick_layout.setSpacing(0)
+        for index in range(count):
+            mark = QFrame()
+            mark.setObjectName("sliderTick")
+            mark.setFixedSize(1, 4)
+            tick_layout.addWidget(mark)
+            if index < count - 1:
+                tick_layout.addStretch(1)
+        row.addWidget(ticks, 1)
+        spin_space = QWidget()
+        spin_space.setFixedWidth(self.spin.width())
+        row.addWidget(spin_space)
+        holder = QWidget()
+        holder.setLayout(row)
+        self._root.insertWidget(self._root.indexOf(self.description), holder)
 
     def _set_label(self, value: int) -> None:
         self.value_label.setText(f"{value}{self.suffix}")
@@ -278,7 +305,12 @@ class MappingGraph(QWidget):
         self._series: dict[str, list[tuple[int, int]]] = {}
         self._current: dict[str, tuple[int, int] | None] = {"left": None, "right": None}
         self._visible_channels = ("left",)
+        self._actuation_thresholds: dict[str, int] = {}
         self._live_preview = False
+        self._y_min = 0.0
+        self._y_max = 1024.0
+        self._y_min_label = "0%"
+        self._y_max_label = "100%"
 
     def set_theme(self, theme: Theme) -> None:
         self._theme = theme
@@ -303,6 +335,32 @@ class MappingGraph(QWidget):
         self._current[channel] = (int(raw), int(pressure))
         self.update()
 
+    def set_actuation_thresholds(self, thresholds: dict[str, int]) -> None:
+        self._actuation_thresholds = {
+            str(channel): int(raw) for channel, raw in thresholds.items()
+        }
+        self.update()
+
+    def set_y_axis(
+        self,
+        minimum: float,
+        maximum: float,
+        *,
+        minimum_label: str,
+        maximum_label: str,
+    ) -> None:
+        self._y_min = float(minimum)
+        self._y_max = float(maximum)
+        self._y_min_label = minimum_label
+        self._y_max_label = maximum_label
+        self.update()
+
+    def _y_fraction(self, value: int | float) -> float:
+        span = self._y_max - self._y_min
+        if span <= 0:
+            return 0.0
+        return max(0.0, min(1.0, (float(value) - self._y_min) / span))
+
     def set_live_preview(self, live: bool) -> None:
         self._live_preview = bool(live)
         self.update()
@@ -326,8 +384,16 @@ class MappingGraph(QWidget):
         font = painter.font()
         font.setPointSize(8)
         painter.setFont(font)
-        painter.drawText(QRectF(0, plot.top() - 7, 42, 18), Qt.AlignmentFlag.AlignRight, "100%")
-        painter.drawText(QRectF(0, plot.bottom() - 9, 42, 18), Qt.AlignmentFlag.AlignRight, "0%")
+        painter.drawText(
+            QRectF(0, plot.top() - 7, 42, 18),
+            Qt.AlignmentFlag.AlignRight,
+            self._y_max_label,
+        )
+        painter.drawText(
+            QRectF(0, plot.bottom() - 9, 42, 18),
+            Qt.AlignmentFlag.AlignRight,
+            self._y_min_label,
+        )
         colors = {"left": "#378ADD", "right": "#EF9F27"}
         for channel in self._visible_channels:
             points = self._series.get(channel, [])
@@ -336,18 +402,39 @@ class MappingGraph(QWidget):
             path = QPainterPath()
             for index, (raw, pressure) in enumerate(points):
                 px = plot.left() + self._raw_fraction(raw) * plot.width()
-                py = plot.bottom() - pressure / 1024 * plot.height()
+                py = plot.bottom() - self._y_fraction(pressure) * plot.height()
                 if index == 0:
                     path.moveTo(px, py)
                 else:
                     path.lineTo(px, py)
             painter.setPen(QPen(QColor(colors[channel]), 2.3))
             painter.drawPath(path)
+            threshold = self._actuation_thresholds.get(channel)
+            if threshold is not None:
+                threshold_x = plot.left() + self._raw_fraction(threshold) * plot.width()
+                nearest = min(points, key=lambda point: abs(point[0] - threshold))
+                threshold_y = plot.bottom() - self._y_fraction(nearest[1]) * plot.height()
+                threshold_pen = QPen(QColor(colors[channel]), 1.2)
+                threshold_pen.setStyle(Qt.PenStyle.DashLine)
+                painter.setPen(threshold_pen)
+                painter.drawLine(
+                    QPointF(threshold_x, plot.top()),
+                    QPointF(threshold_x, plot.bottom()),
+                )
+                painter.setBrush(QColor(colors[channel]))
+                painter.setPen(QPen(QColor(theme.surface), 2))
+                painter.drawEllipse(QPointF(threshold_x, threshold_y), 5, 5)
+                painter.setPen(QColor(colors[channel]))
+                painter.drawText(
+                    QRectF(threshold_x + 5, plot.top() + 3, 70, 18),
+                    Qt.AlignmentFlag.AlignLeft,
+                    "Actuation",
+                )
             current = self._current.get(channel)
             if self._live_preview and current is not None:
                 raw, pressure = current
                 px = plot.left() + self._raw_fraction(raw) * plot.width()
-                py = plot.bottom() - pressure / 1024 * plot.height()
+                py = plot.bottom() - self._y_fraction(pressure) * plot.height()
                 px = min(plot.right(), max(plot.left(), px))
                 py = min(plot.bottom(), max(plot.top(), py))
                 painter.setBrush(QColor(colors[channel]))
@@ -441,7 +528,9 @@ class StrokeGraph(QWidget):
             painter.drawLine(QPointF(plot.left(), y), QPointF(plot.right(), y))
         if not self._analysis:
             painter.setPen(QColor(theme.muted))
-            painter.drawText(plot, Qt.AlignmentFlag.AlignCenter, "Select a recorded stroke")
+            painter.drawText(
+                plot, Qt.AlignmentFlag.AlignCenter, "Select a recorded stroke"
+            )
             return
         dynamic_timing = self._mode in {"latency", "cadence"}
         if dynamic_timing:
@@ -469,7 +558,9 @@ class StrokeGraph(QWidget):
                     origin = float(points[0][0])
                     points = [(float(x) - origin, float(y)) for x, y in points]
                 comparison_series.append((points, colors[index % len(colors)], label))
-            all_points = [point for points, _, _ in comparison_series for point in points]
+            all_points = [
+                point for points, _, _ in comparison_series for point in points
+            ]
             series = comparison_series
         else:
             stage_series = [
@@ -502,7 +593,10 @@ class StrokeGraph(QWidget):
             path = QPainterPath()
             for index, (x, y) in enumerate(points):
                 px = plot.left() + float(x) / max_x * plot.width()
-                py = plot.bottom() - min(max_y, max(0.0, float(y))) / max_y * plot.height()
+                py = (
+                    plot.bottom()
+                    - min(max_y, max(0.0, float(y))) / max_y * plot.height()
+                )
                 if index == 0:
                     path.moveTo(px, py)
                 else:

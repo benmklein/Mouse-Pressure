@@ -4,7 +4,11 @@ from __future__ import annotations
 
 from dataclasses import asdict, dataclass, replace
 
-from mouse_pressure.bridge.config import ChannelConfig, RuntimeConfig
+from mouse_pressure.bridge.config import (
+    REMAP_MODES,
+    ChannelConfig,
+    RuntimeConfig,
+)
 from mouse_pressure.bridge.curves import (
     map_pressure,
     pressure_config_for_channel,
@@ -12,6 +16,21 @@ from mouse_pressure.bridge.curves import (
 from mouse_pressure.runtime.config_store import runtime_config_to_dict
 from mouse_pressure.runtime.device_settings import SessionDeviceSettings
 from mouse_pressure.runtime.models import validate_channel_config
+from mouse_pressure.ui.hotkeys import parse_global_hotkey, parse_hold_hotkey
+
+_ACTUATION_RAW = {
+    "left": (335, 335, 348, 360, 377, 395, 416, 449, 478, 517),
+    "right": (344, 349, 359, 368, 383, 400, 421, 446, 463, 488),
+}
+
+
+def actuation_raw_estimate(channel: str, level: int) -> int:
+    """Return the measured raw-pressure estimate for a hardware actuation level."""
+    if channel not in _ACTUATION_RAW:
+        raise ValueError(f"Unknown pressure channel {channel!r}")
+    if not 1 <= int(level) <= 10:
+        raise ValueError("Actuation level must be in 1..10")
+    return _ACTUATION_RAW[channel][int(level) - 1]
 
 
 def curve_pressure_for_raw(channel: ChannelConfig, raw: int) -> int:
@@ -45,6 +64,18 @@ class SettingsDraft:
             )
         if not 30.0 <= float(self.injection_hz) <= 500.0:
             errors.append("Pen injection rate must be between 30 and 500 Hz")
+        if self.config.remap_mode not in REMAP_MODES:
+            errors.append("Remap mode must be Always remap or Hold to remap")
+        try:
+            hold = parse_hold_hotkey(self.config.remap_hold_hotkey).label
+            activation = parse_global_hotkey(self.config.activation_hotkey).label
+            deactivation = parse_global_hotkey(self.config.deactivation_hotkey).label
+            if activation == deactivation:
+                errors.append("Start and Stop shortcuts must be different")
+            if hold in {activation, deactivation}:
+                errors.append("Hold shortcut must differ from Start and Stop")
+        except ValueError as exc:
+            errors.append(f"Invalid shortcut: {exc}")
         targets = [
             target
             for enabled, target in (
@@ -56,9 +87,9 @@ class SettingsDraft:
             )
             if enabled
         ]
-        if targets and "pressure" not in targets:
+        if targets and not ({"pressure", "mouse_sensitivity"} & set(targets)):
             errors.append(
-                "At least one enabled button must map to Pressure; "
+                "At least one enabled button must map to Pressure or Mouse sensitivity; "
                 "tilt and rotation modify an active pressure stroke"
             )
         if errors:
@@ -73,6 +104,9 @@ class SettingsDraft:
 
     def effective_pressure(self, channel: str, raw: int) -> int:
         return effective_pressure_for_raw(self.effective_channel(channel), raw)
+
+    def mapped_pressure(self, channel: str, raw: int) -> int:
+        return curve_pressure_for_raw(self.effective_channel(channel), raw)
 
     def mapping_points(
         self,
@@ -97,6 +131,8 @@ class SettingsDraft:
             and self.config.session_dpi == normal.dpi
             and self.config.session_haptic_left == normal.haptic_left
             and self.config.session_haptic_right == normal.haptic_right
+            and self.config.left.actuation_level == normal.actuation_left
+            and self.config.right.actuation_level == normal.actuation_right
         )
         return patch
 

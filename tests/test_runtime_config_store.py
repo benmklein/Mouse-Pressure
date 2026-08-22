@@ -14,7 +14,10 @@ from mouse_pressure.runtime.config_store import (  # noqa: E402
     ConfigStore,
     resolve_config_dir,
 )
-from mouse_pressure.runtime.models import SchemaMismatchError  # noqa: E402
+from mouse_pressure.runtime.models import (  # noqa: E402
+    SchemaMismatchError,
+    ValidationError,
+)
 
 
 def _sample_runtime_config() -> RuntimeConfig:
@@ -26,16 +29,22 @@ def _sample_runtime_config() -> RuntimeConfig:
         suppress_rmb=True,
         debug_mode=False,
         minimize_to_tray=False,
-        release_teardown=True,
         session_dpi=1600,
         session_haptic_left=0,
         session_haptic_right=3,
         session_device_settings_follow_normal=False,
+        remap_mode="hold",
+        remap_hold_hotkey="Alt+F11",
+        activation_hotkey="Ctrl+F11",
+        deactivation_hotkey="Ctrl+Shift+F11",
         left=ChannelConfig(
+            output_target="mouse_sensitivity",
+            sensitivity_light=125,
+            sensitivity_firm=40,
             raw_min=82,
             raw_max=180,
             curve="soft",
-            contact_preset="light",
+            actuation_level=2,
             stationary_pressure_updates=True,
         ),
         right=ChannelConfig(
@@ -43,7 +52,7 @@ def _sample_runtime_config() -> RuntimeConfig:
             raw_min=84,
             raw_max=190,
             curve="hard",
-            contact_preset="firm",
+            actuation_level=8,
         ),
     )
 
@@ -59,6 +68,12 @@ class ConfigStoreTests(unittest.TestCase):
         self.assertEqual(defaults.left.output_target, "pressure")
         self.assertEqual(defaults.right.output_target, "pressure")
         self.assertFalse(defaults.debug_mode)
+        self.assertEqual(defaults.remap_mode, "always")
+        self.assertEqual(defaults.remap_hold_hotkey, "Mouse 5")
+        self.assertEqual(defaults.activation_hotkey, "Ctrl+F12")
+        self.assertEqual(defaults.deactivation_hotkey, "Ctrl+Shift+F12")
+        self.assertEqual(defaults.left.sensitivity_light, 100)
+        self.assertEqual(defaults.left.sensitivity_firm, 35)
 
     def test_load_returns_defaults_when_file_missing(self) -> None:
         with tempfile.TemporaryDirectory() as td:
@@ -117,11 +132,17 @@ class ConfigStoreTests(unittest.TestCase):
             self.assertEqual(loaded.right.output_target, "x_tilt")
             self.assertFalse(loaded.debug_mode)
             self.assertFalse(loaded.minimize_to_tray)
-            self.assertTrue(loaded.release_teardown)
             self.assertEqual(loaded.session_dpi, 1600)
             self.assertEqual(loaded.session_haptic_left, 0)
             self.assertEqual(loaded.session_haptic_right, 3)
+            self.assertEqual(loaded.left.output_target, "mouse_sensitivity")
+            self.assertEqual(loaded.left.sensitivity_light, 125)
+            self.assertEqual(loaded.left.sensitivity_firm, 40)
             self.assertFalse(loaded.session_device_settings_follow_normal)
+            self.assertEqual(loaded.remap_mode, "hold")
+            self.assertEqual(loaded.remap_hold_hotkey, "Alt+F11")
+            self.assertEqual(loaded.activation_hotkey, "Ctrl+F11")
+            self.assertEqual(loaded.deactivation_hotkey, "Ctrl+Shift+F11")
             self.assertEqual(loaded.left.curve, "soft")
             self.assertEqual(loaded.right.curve, "hard")
             self.assertTrue(loaded.left.stationary_pressure_updates)
@@ -132,7 +153,9 @@ class ConfigStoreTests(unittest.TestCase):
             store = ConfigStore(td)
             store.path.parent.mkdir(parents=True, exist_ok=True)
             store.path.write_text(
-                json.dumps({"schema_version": 2, "linked": True, "left": {}, "right": {}}),
+                json.dumps(
+                    {"schema_version": 2, "linked": True, "left": {}, "right": {}}
+                ),
                 encoding="utf-8",
             )
             with self.assertRaises(SchemaMismatchError):
@@ -143,7 +166,17 @@ class ConfigStoreTests(unittest.TestCase):
             store = ConfigStore(td)
             store.path.parent.mkdir(parents=True, exist_ok=True)
             store.path.write_text(
-                json.dumps({"schema_version": 1, "linked": True, "left": {}, "right": {}}),
+                json.dumps(
+                    {
+                        "schema_version": 1,
+                        "linked": True,
+                        "release_teardown": True,
+                        "application_mode": "selected",
+                        "pressure_applications": ["krita.exe"],
+                        "left": {},
+                        "right": {},
+                    }
+                ),
                 encoding="utf-8",
             )
 
@@ -156,13 +189,44 @@ class ConfigStoreTests(unittest.TestCase):
             self.assertEqual(loaded.right.output_target, "pressure")
             self.assertFalse(loaded.debug_mode)
             self.assertTrue(loaded.minimize_to_tray)
-            self.assertFalse(loaded.release_teardown)
             self.assertEqual(loaded.session_dpi, 800)
             self.assertEqual(loaded.session_haptic_left, 3)
             self.assertEqual(loaded.session_haptic_right, 3)
             self.assertTrue(loaded.session_device_settings_follow_normal)
+            self.assertEqual(loaded.left.sensitivity_light, 100)
+            self.assertEqual(loaded.left.sensitivity_firm, 35)
             self.assertFalse(loaded.left.stationary_pressure_updates)
             self.assertFalse(loaded.right.stationary_pressure_updates)
+
+    def test_load_rejects_duplicate_global_shortcuts(self) -> None:
+        with tempfile.TemporaryDirectory() as td:
+            store = ConfigStore(td)
+            store.path.parent.mkdir(parents=True, exist_ok=True)
+            store.path.write_text(
+                json.dumps(
+                    {
+                        "schema_version": 1,
+                        "activation_hotkey": "Ctrl+F10",
+                        "deactivation_hotkey": "Ctrl+F10",
+                    }
+                ),
+                encoding="utf-8",
+            )
+
+            with self.assertRaisesRegex(ValidationError, "must be different"):
+                store.load()
+
+    def test_load_rejects_unknown_remap_mode(self) -> None:
+        with tempfile.TemporaryDirectory() as td:
+            store = ConfigStore(td)
+            store.path.parent.mkdir(parents=True, exist_ok=True)
+            store.path.write_text(
+                json.dumps({"schema_version": 1, "remap_mode": "automatic"}),
+                encoding="utf-8",
+            )
+
+            with self.assertRaisesRegex(ValidationError, "remap_mode"):
+                store.load()
 
     def test_load_ignores_removed_stroke_timing_options(self) -> None:
         with tempfile.TemporaryDirectory() as td:

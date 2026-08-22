@@ -15,6 +15,8 @@ def _draft(config: RuntimeConfig) -> SettingsDraft:
             dpi=800,
             haptic_left=3,
             haptic_right=3,
+            actuation_left=5,
+            actuation_right=5,
         ),
     )
 
@@ -74,6 +76,17 @@ def test_runtime_patch_detects_when_session_settings_follow_normal() -> None:
     assert draft.runtime_patch()["session_device_settings_follow_normal"] is True
 
 
+def test_runtime_patch_stops_following_normal_when_actuation_differs() -> None:
+    draft = _draft(
+        RuntimeConfig(
+            left=ChannelConfig(actuation_level=4),
+            right=ChannelConfig(actuation_level=5),
+        )
+    )
+
+    assert draft.runtime_patch()["session_device_settings_follow_normal"] is False
+
+
 def test_resetting_one_channel_preserves_the_other_channel() -> None:
     left = ChannelConfig(raw_min=450)
     right = ChannelConfig(raw_min=320, raw_max=660, pressure_floor=25)
@@ -108,3 +121,31 @@ def test_mapping_points_and_live_pressure_use_the_same_floor() -> None:
 
     assert live == round(20 * 1024 / 100)
     assert points[321] == live
+
+
+def test_duplicate_global_shortcuts_are_rejected() -> None:
+    draft = _draft(
+        RuntimeConfig(
+            activation_hotkey="Ctrl+F10",
+            deactivation_hotkey="Ctrl+F10",
+        )
+    )
+
+    with pytest.raises(ValueError, match="must be different"):
+        draft.validate()
+
+
+def test_unknown_remap_mode_is_rejected() -> None:
+    draft = _draft(RuntimeConfig(remap_mode="automatic"))
+
+    with pytest.raises(ValueError, match="Remap mode"):
+        draft.validate()
+
+
+@pytest.mark.parametrize("field", ["sensitivity_light", "sensitivity_firm"])
+def test_pressure_sensitivity_range_is_validated(field: str) -> None:
+    config = RuntimeConfig()
+    setattr(config.left, field, 201)
+
+    with pytest.raises(ValueError, match="sensitivity"):
+        _draft(config).validate()

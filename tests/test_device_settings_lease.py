@@ -17,6 +17,7 @@ class _Session:
     def __init__(self) -> None:
         self.dpi = 1200
         self.haptics = (4, 2)
+        self.actuation = (7, 4)
         self.profile = (True, 2)
         self.events: list[str] = []
         self.fail_haptics = False
@@ -39,6 +40,14 @@ class _Session:
         self.haptics = (left, right)
         self.events.append(f"haptics={left}/{right}")
         return self.haptics
+
+    def get_actuation_levels(self) -> tuple[int, int]:
+        return self.actuation
+
+    def set_actuation_levels(self, *, left: int, right: int) -> tuple[int, int]:
+        self.actuation = (left, right)
+        self.events.append(f"actuation={left}/{right}")
+        return self.actuation
 
     def get_onboard_profile_state(self) -> tuple[bool, int]:
         return self.profile
@@ -87,17 +96,25 @@ def test_lease_applies_and_restores_the_complete_snapshot() -> None:
         "profile=host",
         "dpi=1600",
         "haptics=0/3",
+        "actuation=5/5",
         "pressure_enable=3/0",
     ]
 
     restored = lease.restore(session)
 
-    assert restored == SessionDeviceSettings(dpi=1200, haptic_left=4, haptic_right=2)
+    assert restored == SessionDeviceSettings(
+        dpi=1200,
+        haptic_left=4,
+        haptic_right=2,
+        actuation_left=7,
+        actuation_right=4,
+    )
     assert lease.active is False
-    assert session.events[-4:] == [
+    assert session.events[-5:] == [
         "pressure_disable",
         "dpi=1200",
         "haptics=4/2",
+        "actuation=7/4",
         "profile=2",
     ]
 
@@ -117,6 +134,7 @@ def test_failed_activation_rolls_back_partial_hardware_changes() -> None:
     assert lease.active is False
     assert session.dpi == 1200
     assert session.haptics == (4, 2)
+    assert session.actuation == (7, 4)
     assert session.profile == (True, 2)
 
 
@@ -131,9 +149,16 @@ def test_live_changes_do_not_replace_the_restore_snapshot() -> None:
     )
     restored = lease.restore(session)
 
-    assert restored == SessionDeviceSettings(dpi=1200, haptic_left=4, haptic_right=2)
+    assert restored == SessionDeviceSettings(
+        dpi=1200,
+        haptic_left=4,
+        haptic_right=2,
+        actuation_left=7,
+        actuation_right=4,
+    )
     assert session.dpi == 1200
     assert session.haptics == (4, 2)
+    assert session.actuation == (7, 4)
     assert session.profile == (True, 2)
 
 
@@ -145,6 +170,8 @@ def test_restore_reenables_profile_mode_after_dpi_change() -> None:
             dpi=800,
             haptic_left=session.haptics[0],
             haptic_right=session.haptics[1],
+            actuation_left=session.actuation[0],
+            actuation_right=session.actuation[1],
         ),
         onboard_profiles_enabled=True,
         onboard_profile_sector=2,
@@ -180,7 +207,13 @@ def test_first_live_change_arms_recovery_after_noop_activation(
         pressure_mode_arg=0,
     )
     current = DeviceSettingsSnapshot(
-        session=SessionDeviceSettings(dpi=1200, haptic_left=4, haptic_right=2),
+        session=SessionDeviceSettings(
+            dpi=1200,
+            haptic_left=4,
+            haptic_right=2,
+            actuation_left=7,
+            actuation_right=4,
+        ),
         onboard_profiles_enabled=True,
         onboard_profile_sector=2,
     )
@@ -190,7 +223,13 @@ def test_first_live_change_arms_recovery_after_noop_activation(
 
     lease.apply_live(
         session,
-        SessionDeviceSettings(dpi=1600, haptic_left=4, haptic_right=2),
+        SessionDeviceSettings(
+            dpi=1600,
+            haptic_left=4,
+            haptic_right=2,
+            actuation_left=7,
+            actuation_right=4,
+        ),
         current_settings=current,
     )
 
@@ -199,6 +238,8 @@ def test_first_live_change_arms_recovery_after_noop_activation(
             "dpi": 1200,
             "haptic_left": 4,
             "haptic_right": 2,
+            "actuation_left": 7,
+            "actuation_right": 4,
             "onboard_profiles_enabled": 1,
             "onboard_profile_sector": 2,
         }

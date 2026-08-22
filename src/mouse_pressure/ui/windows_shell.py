@@ -9,6 +9,8 @@ import time
 from pathlib import Path
 from typing import Any
 
+from mouse_pressure.ui.hotkeys import GlobalHotkey, parse_global_hotkey
+
 
 def asset_path(name: str) -> Path:
     return Path(__file__).resolve().parents[1] / "assets" / name
@@ -66,16 +68,15 @@ class SingleInstanceGuard:
 
 
 class StartHotkeyListener:
-    """Register Ctrl+F12 independently of focus while the panel runs."""
+    """Register the configured Start shortcut independently of focus."""
 
     HOTKEY_ID = 0x5354
     WM_HOTKEY = 0x0312
     PM_REMOVE = 0x0001
-    MOD_CONTROL = 0x0002
-    VK_F12 = 0x7B
 
-    def __init__(self, callback: Any) -> None:
+    def __init__(self, callback: Any, binding: str = "Ctrl+F12") -> None:
         self._callback = callback
+        self.hotkey: GlobalHotkey = parse_global_hotkey(binding)
         self._stop = threading.Event()
         self._ready = threading.Event()
         self._registered = False
@@ -103,8 +104,8 @@ class StartHotkeyListener:
             user32.RegisterHotKey(
                 None,
                 self.HOTKEY_ID,
-                self.MOD_CONTROL,
-                self.VK_F12,
+                self.hotkey.modifiers,
+                self.hotkey.virtual_key,
             )
         )
         self._ready.set()

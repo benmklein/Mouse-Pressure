@@ -12,11 +12,13 @@ from mouse_pressure.sniff.hidpp_pressure import PressureHidppSession
 
 @dataclass(frozen=True, slots=True)
 class SessionDeviceSettings:
-    """DPI and haptics requested while pressure output is active."""
+    """Hardware settings requested while pressure output is active."""
 
     dpi: int
     haptic_left: int
     haptic_right: int
+    actuation_left: int = 5
+    actuation_right: int = 5
 
     @classmethod
     def from_mapping(cls, settings: Mapping[str, int] | Self) -> Self:
@@ -27,6 +29,8 @@ class SessionDeviceSettings:
                 dpi=int(settings["dpi"]),
                 haptic_left=int(settings["haptic_left"]),
                 haptic_right=int(settings["haptic_right"]),
+                actuation_left=int(settings.get("actuation_left", 5)),
+                actuation_right=int(settings.get("actuation_right", 5)),
             )
         except (KeyError, TypeError, ValueError) as exc:
             raise ValidationError(
@@ -38,6 +42,8 @@ class SessionDeviceSettings:
             "dpi": int(self.dpi),
             "haptic_left": int(self.haptic_left),
             "haptic_right": int(self.haptic_right),
+            "actuation_left": int(self.actuation_left),
+            "actuation_right": int(self.actuation_right),
         }
 
 
@@ -83,6 +89,8 @@ def validate_device_settings(
         raise ValidationError("DPI must be 100..32000 in 50-DPI increments")
     if not 0 <= validated.haptic_left <= 5 or not 0 <= validated.haptic_right <= 5:
         raise ValidationError("Haptic levels must be in 0..5")
+    if not 1 <= validated.actuation_left <= 10 or not 1 <= validated.actuation_right <= 10:
+        raise ValidationError("Actuation levels must be in 1..10")
     return validated
 
 
@@ -96,6 +104,7 @@ def read_device_settings(
         discover()
     dpi = session.get_dpi()
     left, right = session.get_haptic_levels()
+    actuation_left, actuation_right = session.get_actuation_levels()
     profiles_enabled: bool | None = None
     profile_sector: int | None = None
     profile_reader = getattr(session, "get_onboard_profile_state", None)
@@ -108,6 +117,8 @@ def read_device_settings(
             dpi=int(dpi),
             haptic_left=int(left),
             haptic_right=int(right),
+            actuation_left=int(actuation_left),
+            actuation_right=int(actuation_right),
         ),
         onboard_profiles_enabled=profiles_enabled,
         onboard_profile_sector=profile_sector,
@@ -141,6 +152,8 @@ def apply_device_settings(
     dpi = current.session.dpi
     left = current.session.haptic_left
     right = current.session.haptic_right
+    actuation_left = current.session.actuation_left
+    actuation_right = current.session.actuation_right
     if settings.dpi != dpi:
         if current.onboard_profiles_enabled:
             profile_writer = getattr(session, "set_onboard_profile_state", None)
@@ -156,10 +169,20 @@ def apply_device_settings(
             left=settings.haptic_left,
             right=settings.haptic_right,
         )
+    if (
+        settings.actuation_left != actuation_left
+        or settings.actuation_right != actuation_right
+    ):
+        actuation_left, actuation_right = session.set_actuation_levels(
+            left=settings.actuation_left,
+            right=settings.actuation_right,
+        )
     return SessionDeviceSettings(
         dpi=int(dpi),
         haptic_left=int(left),
         haptic_right=int(right),
+        actuation_left=int(actuation_left),
+        actuation_right=int(actuation_right),
     )
 
 

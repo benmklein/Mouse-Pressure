@@ -20,7 +20,7 @@ def _valid_channel() -> dict:
         "deadzone_high": 0,
         "curve": "linear",
         "curve_strength": 1.0,
-        "contact_preset": "medium",
+        "actuation_level": 5,
         "pressure_floor": 12,
         "path_stabilization": 0,
         "pressure_influence": 85,

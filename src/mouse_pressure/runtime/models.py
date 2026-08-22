@@ -1,4 +1,5 @@
 """Validation errors and helpers shared by runtime configuration callers."""
+
 from __future__ import annotations
 
 
@@ -19,8 +20,7 @@ class StreamNotActiveError(RuntimeError):
 
 
 _PROTOCOL_CURVES = {"linear", "soft", "hard", "scurve"}
-_CONTACT_PRESETS = {"light", "medium", "firm"}
-_OUTPUT_TARGETS = {"pressure", "x_tilt", "y_tilt", "rotation"}
+_OUTPUT_TARGETS = {"pressure", "mouse_sensitivity", "x_tilt", "y_tilt", "rotation"}
 CURVE_STRENGTH_MIN = 0.5
 CURVE_STRENGTH_MAX = 4.0
 
@@ -34,13 +34,21 @@ def validate_channel_config(ch: dict) -> list[str]:
     errors: list[str] = []
 
     output_target = ch.get("output_target", "pressure")
+    sensitivity_light = ch.get("sensitivity_light", 100)
+    sensitivity_firm = ch.get("sensitivity_firm", 35)
+    x_tilt_light = ch.get("x_tilt_light", 0)
+    x_tilt_firm = ch.get("x_tilt_firm", 60)
+    y_tilt_light = ch.get("y_tilt_light", 0)
+    y_tilt_firm = ch.get("y_tilt_firm", 60)
+    rotation_light = ch.get("rotation_light", 0)
+    rotation_firm = ch.get("rotation_firm", 359)
     raw_min = ch.get("raw_min")
     raw_max = ch.get("raw_max")
     deadzone_low = ch.get("deadzone_low")
     deadzone_high = ch.get("deadzone_high")
     curve = ch.get("curve")
     curve_strength = ch.get("curve_strength")
-    contact_preset = ch.get("contact_preset")
+    actuation_level = ch.get("actuation_level")
     pressure_floor = ch.get("pressure_floor")
     path_stabilization = ch.get("path_stabilization")
     pressure_influence = ch.get("pressure_influence")
@@ -53,8 +61,27 @@ def validate_channel_config(ch: dict) -> list[str]:
         errors.append("output_target must be a string")
     elif output_target not in _OUTPUT_TARGETS:
         errors.append(
-            "output_target must be one of: pressure, x_tilt, y_tilt, rotation"
+            "output_target must be one of: pressure, mouse_sensitivity, x_tilt, y_tilt, rotation"
         )
+
+    if not isinstance(sensitivity_light, int) or not 0 <= sensitivity_light <= 200:
+        errors.append("sensitivity_light must be an integer in 0..200")
+    if not isinstance(sensitivity_firm, int) or not 0 <= sensitivity_firm <= 200:
+        errors.append("sensitivity_firm must be an integer in 0..200")
+    for name, value in (
+        ("x_tilt_light", x_tilt_light),
+        ("x_tilt_firm", x_tilt_firm),
+        ("y_tilt_light", y_tilt_light),
+        ("y_tilt_firm", y_tilt_firm),
+    ):
+        if not isinstance(value, int) or not -60 <= value <= 60:
+            errors.append(f"{name} must be an integer in -60..60")
+    for name, value in (
+        ("rotation_light", rotation_light),
+        ("rotation_firm", rotation_firm),
+    ):
+        if not isinstance(value, int) or not 0 <= value <= 359:
+            errors.append(f"{name} must be an integer in 0..359")
 
     if not isinstance(raw_min, int):
         errors.append("raw_min must be an integer")
@@ -95,10 +122,10 @@ def validate_channel_config(ch: dict) -> list[str]:
                 f"{CURVE_STRENGTH_MIN:g}..{CURVE_STRENGTH_MAX:g}"
             )
 
-    if not isinstance(contact_preset, str):
-        errors.append("contact_preset must be a string")
-    elif contact_preset not in _CONTACT_PRESETS:
-        errors.append("contact_preset must be one of: light, medium, firm")
+    if not isinstance(actuation_level, int):
+        errors.append("actuation_level must be an integer")
+    elif not 1 <= actuation_level <= 10:
+        errors.append("actuation_level must be in 1..10")
 
     if not isinstance(pressure_floor, int):
         errors.append("pressure_floor must be an integer")

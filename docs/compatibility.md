@@ -25,7 +25,7 @@ does not guarantee compatibility with future firmware, G HUB, Windows, Krita,
 or other application updates. Pressure calibration can vary between physical
 devices. Release notes must identify the combinations actually tested.
 
-## Alpha limitations
+## Beta limitations
 
 - Windows 11 x64 is expected to work but has not yet been tested on physical
   hardware. Windows on ARM is also unverified.
@@ -36,6 +36,9 @@ devices. Release notes must identify the combinations actually tested.
   Stop and Start are not required; the following strokes normally work.
 - Pressure behavior can differ between Windows Ink applications and brush
   presets.
+- Anti-cheat compatibility is untested. Mouse Pressure uses a low-level mouse
+  hook and synthetic Windows pointer input. Stop it before launching a game
+  protected by anti-cheat software.
 
 Additional mice, remote desktop sessions, virtual machines, and drawing
 applications not named in a release's test matrix should be described as

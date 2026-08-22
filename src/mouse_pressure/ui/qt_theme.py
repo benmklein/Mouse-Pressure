@@ -114,7 +114,29 @@ def stylesheet(theme: Theme) -> str:
     QLabel#statusStopped {{ color: {theme.muted}; font-weight: 600; }}
     QLabel#statusBusy {{ color: {theme.warning}; font-weight: 600; }}
     QLabel#statusError {{ color: {theme.danger}; font-weight: 600; }}
-    QFrame#footerRule {{ color: {theme.border}; background: {theme.border}; max-height: 1px; }}
+    QFrame#connectionDotConnected {{
+        background: {theme.success};
+        border: none;
+        border-radius: 4px;
+    }}
+    QFrame#connectionDotDisconnected {{
+        background: {theme.danger};
+        border: none;
+        border-radius: 4px;
+    }}
+    QFrame#footerRule, QFrame#mappingRule {{
+        color: {theme.border};
+        background: {theme.border};
+        border: none;
+        min-height: 1px;
+        max-height: 1px;
+    }}
+    QFrame#settingsColumnRule {{
+        background: {theme.border};
+        border: none;
+        min-width: 1px;
+        max-width: 1px;
+    }}
     QFrame#card {{
         background: {theme.surface};
         border: 1px solid {theme.border};
@@ -208,6 +230,18 @@ def stylesheet(theme: Theme) -> str:
         background: {theme.surface}; border: 1px solid {theme.border};
         selection-background-color: {theme.accent_soft};
     }}
+    QListWidget {{
+        color: {theme.text};
+        background: {theme.surface_alt};
+        border: 1px solid {theme.border};
+        border-radius: 7px;
+        outline: none;
+    }}
+    QListWidget::item {{ padding: 6px 8px; }}
+    QListWidget::item:selected {{
+        color: white;
+        background: {theme.accent};
+    }}
     QTabWidget::pane {{ border: none; background: transparent; }}
     QTabBar::tab {{
         background: transparent;
@@ -237,6 +271,7 @@ def stylesheet(theme: Theme) -> str:
         border: 2px solid {theme.accent};
         width: 14px; height: 14px; margin: -6px 0; border-radius: 8px;
     }}
+    QFrame#sliderTick {{ background: {theme.muted}; border: none; }}
     QCheckBox {{ spacing: 7px; }}
     QPlainTextEdit {{
         background: {theme.terminal}; color: {theme.terminal_text};

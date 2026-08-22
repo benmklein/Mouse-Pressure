@@ -21,11 +21,21 @@ from mouse_pressure.sniff.hidpp_pressure import (
     PressureHidppSession,
     normalize_raw_pressure,
 )
+from mouse_pressure.ui.hotkeys import (
+    MOD_ALT,
+    MOD_CONTROL,
+    MOD_SHIFT,
+    parse_global_hotkey,
+    parse_hold_hotkey,
+)
 
 PT_PEN = 3
 POINTER_FEEDBACK_DEFAULT = 1
 VK_LBUTTON = 0x01
 VK_RBUTTON = 0x02
+VK_SHIFT = 0x10
+VK_CONTROL = 0x11
+VK_MENU = 0x12
 
 POINTER_FLAG_NEW = 0x00000001
 POINTER_FLAG_INRANGE = 0x00000002
@@ -57,6 +67,10 @@ WM_LBUTTONDBLCLK = 0x0203
 WM_RBUTTONDOWN = 0x0204
 WM_RBUTTONUP = 0x0205
 WM_RBUTTONDBLCLK = 0x0206
+WM_MBUTTONDOWN = 0x0207
+WM_MBUTTONUP = 0x0208
+WM_XBUTTONDOWN = 0x020B
+WM_XBUTTONUP = 0x020C
 WM_NCLBUTTONDOWN = 0x00A1
 WM_NCLBUTTONUP = 0x00A2
 WM_NCRBUTTONDOWN = 0x00A4
@@ -66,9 +80,8 @@ QS_ALLINPUT = 0x04FF
 MWMO_INPUTAVAILABLE = 0x0004
 WM_HOTKEY = 0x0312
 WM_INPUT = 0x00FF
-MOD_CONTROL = 0x0002
-MOD_SHIFT = 0x0004
-VK_F12 = 0x7B
+XBUTTON1 = 0x0001
+XBUTTON2 = 0x0002
 EMERGENCY_HOTKEY_ID = 0x5353
 SUPPRESSOR_HEARTBEAT_TIMEOUT_S = 3.0
 REPORT_LONG = 0x11
@@ -89,6 +102,11 @@ MAX_DIRECT_CONTACT_POINTS_PER_UPDATE = 12
 # fast geometry or a large pressure transition where the extra detail matters.
 TARGET_CONTACT_SPACING_PX = 2.5
 TARGET_CONTACT_PRESSURE_STEP = 18
+# Path strength historically described a per-packet filter tuned around a
+# 1,000 Hz mouse. Convert that reference response to elapsed time while
+# bounding scheduler stalls so an old point cannot create an unbounded jump.
+PATH_STABILIZER_REFERENCE_INTERVAL_S = 0.001
+PATH_STABILIZER_MAX_INTERVAL_S = 0.05
 # VMulti is virtual *hardware*, so its pointer promotion is not guaranteed to
 # carry LLMHF_INJECTED.  Match only the immediate, near-identical hook feedback
 # from a report we just wrote; a wider window risks swallowing real mouse input.
@@ -125,6 +143,7 @@ SM_XVIRTUALSCREEN = 76
 SM_YVIRTUALSCREEN = 77
 SM_CXVIRTUALSCREEN = 78
 SM_CYVIRTUALSCREEN = 79
+GA_ROOT = 2
 
 
 @dataclass
@@ -155,6 +174,25 @@ class SyntheticPenConfig:
     suppress_rmb: bool = False
     left_output_target: str = "pressure"
     right_output_target: str = "pressure"
+    remap_mode: str = "always"
+    remap_hold_hotkey: str = "Mouse 5"
+    sensitivity_light: int = 100
+    sensitivity_firm: int = 35
+    right_sensitivity_light: int | None = None
+    right_sensitivity_firm: int | None = None
+    x_tilt_light: int = 0
+    x_tilt_firm: int = 60
+    right_x_tilt_light: int | None = None
+    right_x_tilt_firm: int | None = None
+    y_tilt_light: int = 0
+    y_tilt_firm: int = 60
+    right_y_tilt_light: int | None = None
+    right_y_tilt_firm: int | None = None
+    rotation_light: int = 0
+    rotation_firm: int = 359
+    right_rotation_light: int | None = None
+    right_rotation_firm: int | None = None
+    deactivation_hotkey: str = "Ctrl+Shift+F12"
     debug_mode: bool = True
     output_backend: str = "synthetic"
     right_contact_threshold: int | None = None
@@ -171,7 +209,6 @@ class SyntheticPenConfig:
     click_max_ms: int = 220
     click_move_px: int = 6
     click_pressure_max: int = 12
-    release_teardown: bool = False
     trace_dir: str | None = None
     trace_raw_min: int | None = None
     trace_raw_max: int | None = None
@@ -366,7 +403,11 @@ class _SyntheticPenInjector:
         self.pti = POINTER_TYPE_INFO()
         self.pti.type = PT_PEN
 
-        self.user32.CreateSyntheticPointerDevice.argtypes = [ctypes.c_uint32, ctypes.c_ulong, ctypes.c_uint32]
+        self.user32.CreateSyntheticPointerDevice.argtypes = [
+            ctypes.c_uint32,
+            ctypes.c_ulong,
+            ctypes.c_uint32,
+        ]
         self.user32.CreateSyntheticPointerDevice.restype = ctypes.c_void_p
         self.user32.InjectSyntheticPointerInput.argtypes = [
             ctypes.c_void_p,
@@ -376,6 +417,8 @@ class _SyntheticPenInjector:
         self.user32.InjectSyntheticPointerInput.restype = ctypes.c_int
         self.user32.GetCursorPos.argtypes = [ctypes.POINTER(wintypes.POINT)]
         self.user32.GetCursorPos.restype = ctypes.c_int
+        self.user32.GetAsyncKeyState.argtypes = [ctypes.c_int]
+        self.user32.GetAsyncKeyState.restype = ctypes.c_short
         self.user32.GetAsyncKeyState.argtypes = [ctypes.c_int]
         self.user32.GetAsyncKeyState.restype = ctypes.c_short
         self.user32.GetSystemMetrics.argtypes = [ctypes.c_int]
@@ -401,7 +444,9 @@ class _SyntheticPenInjector:
 
     def open(self) -> None:
         ctypes.set_last_error(0)
-        dev = self.user32.CreateSyntheticPointerDevice(PT_PEN, 1, POINTER_FEEDBACK_DEFAULT)
+        dev = self.user32.CreateSyntheticPointerDevice(
+            PT_PEN, 1, POINTER_FEEDBACK_DEFAULT
+        )
         err = ctypes.get_last_error()
         if not dev:
             raise RuntimeError(f"CreateSyntheticPointerDevice failed, err={err}")
@@ -412,7 +457,9 @@ class _SyntheticPenInjector:
                 self.dpi = dpi
         self.screen_w = max(1, int(self.user32.GetSystemMetrics(0)))
         self.screen_h = max(1, int(self.user32.GetSystemMetrics(1)))
-        self.log(f"SYNTH open handle=0x{int(dev):X} screen={self.screen_w}x{self.screen_h} dpi={self.dpi}")
+        self.log(
+            f"SYNTH open handle=0x{int(dev):X} screen={self.screen_w}x{self.screen_h} dpi={self.dpi}"
+        )
 
     def close(self) -> None:
         if self.device and self._destroy is not None:
@@ -497,7 +544,11 @@ class _SyntheticPenInjector:
         self.pti.penInfo.tiltY = clamp_i(int(tilt_y or 0), -90, 90)
 
         ctypes.set_last_error(0)
-        ok = bool(self.user32.InjectSyntheticPointerInput(self.device, ctypes.byref(self.pti), 1))
+        ok = bool(
+            self.user32.InjectSyntheticPointerInput(
+                self.device, ctypes.byref(self.pti), 1
+            )
+        )
         err = ctypes.get_last_error()
         if not ok:
             self.log(
@@ -520,6 +571,15 @@ class _MouseLmbSuppressor:
         allow_raw_direct_motion: bool = True,
         left_button_owns_contact: bool = True,
         right_button_owns_contact: bool = True,
+        remap_mode: str = "always",
+        remap_hold_hotkey: str = "Mouse 5",
+        left_sensitivity_enabled: bool = False,
+        left_sensitivity_light: int = 100,
+        left_sensitivity_firm: int = 35,
+        right_sensitivity_enabled: bool = False,
+        right_sensitivity_light: int = 100,
+        right_sensitivity_firm: int = 35,
+        deactivation_hotkey: str = "Ctrl+Shift+F12",
     ) -> None:
         self.log = log
         self.suppress_left = bool(suppress_left)
@@ -527,6 +587,22 @@ class _MouseLmbSuppressor:
         self.debug_mode = bool(debug_mode)
         self._left_button_owns_contact = bool(left_button_owns_contact)
         self._right_button_owns_contact = bool(right_button_owns_contact)
+        self._remap_mode = str(remap_mode)
+        self._remap_hold_hotkey = parse_hold_hotkey(remap_hold_hotkey)
+        self._left_sensitivity_enabled = bool(left_sensitivity_enabled)
+        self._left_sensitivity_light = clamp_i(int(left_sensitivity_light), 0, 200)
+        self._left_sensitivity_firm = clamp_i(int(left_sensitivity_firm), 0, 200)
+        self._right_sensitivity_enabled = bool(right_sensitivity_enabled)
+        self._right_sensitivity_light = clamp_i(int(right_sensitivity_light), 0, 200)
+        self._right_sensitivity_firm = clamp_i(int(right_sensitivity_firm), 0, 200)
+        self._left_mapped_pressure = 0
+        self._right_mapped_pressure = 0
+        self._motion_carry_x = 0.0
+        self._motion_carry_y = 0.0
+        self._hold_mouse_down = False
+        self._left_remap_latched = self._remap_mode == "always"
+        self._right_remap_latched = self._remap_mode == "always"
+        self._deactivation_hotkey = parse_global_hotkey(deactivation_hotkey)
         self.user32 = ctypes.WinDLL("user32", use_last_error=True)
         self.kernel32 = ctypes.WinDLL("kernel32", use_last_error=True)
         self.enabled = False
@@ -576,9 +652,9 @@ class _MouseLmbSuppressor:
             "right": None,
         }
         self._precontact_started_at = {"left": 0.0, "right": 0.0}
-        self._idle_raw_history: deque[
-            tuple[float, int, str, int, int]
-        ] = deque(maxlen=1024)
+        self._idle_raw_history: deque[tuple[float, int, str, int, int]] = deque(
+            maxlen=1024
+        )
         self._timing_callback: (
             Callable[[str, float, dict[str, int | float | str]], None] | None
         ) = None
@@ -588,6 +664,8 @@ class _MouseLmbSuppressor:
         self._rmb_down = False
         self._hook_lmb_up_pending_at = 0.0
         self._hook_rmb_up_pending_at = 0.0
+        self._nonclient_left_passthrough = False
+        self._nonclient_right_passthrough = False
         self._idle_raw_position_fresh = False
         self._last_heartbeat = 0.0
         self._fail_open_logged = False
@@ -595,15 +673,27 @@ class _MouseLmbSuppressor:
         self._motion_diag_lock = threading.Lock()
         self._motion_diag: dict[str, float | int] = {}
         self._hardware_positions: deque[tuple[float, int, int]] = deque(maxlen=512)
-        self._recent_injected_positions: deque[tuple[float, int, int]] = deque(maxlen=256)
+        self._recent_injected_positions: deque[tuple[float, int, int]] = deque(
+            maxlen=256
+        )
         self._pending_hook_positions: deque[tuple[float, int, int]] = deque(maxlen=64)
         self._reset_motion_diagnostics()
 
-        self.user32.SetWindowsHookExW.argtypes = [ctypes.c_int, ctypes.c_void_p, ctypes.c_void_p, ctypes.c_uint32]
+        self.user32.SetWindowsHookExW.argtypes = [
+            ctypes.c_int,
+            ctypes.c_void_p,
+            ctypes.c_void_p,
+            ctypes.c_uint32,
+        ]
         self.user32.SetWindowsHookExW.restype = ctypes.c_void_p
         self.user32.UnhookWindowsHookEx.argtypes = [ctypes.c_void_p]
         self.user32.UnhookWindowsHookEx.restype = ctypes.c_int
-        self.user32.CallNextHookEx.argtypes = [ctypes.c_void_p, ctypes.c_int, ctypes.c_size_t, ctypes.c_void_p]
+        self.user32.CallNextHookEx.argtypes = [
+            ctypes.c_void_p,
+            ctypes.c_int,
+            ctypes.c_size_t,
+            ctypes.c_void_p,
+        ]
         self.user32.CallNextHookEx.restype = ctypes.c_longlong
         self.user32.PeekMessageW.argtypes = [
             ctypes.POINTER(wintypes.MSG),
@@ -625,7 +715,12 @@ class _MouseLmbSuppressor:
             ctypes.c_uint32,
         ]
         self.user32.MsgWaitForMultipleObjectsEx.restype = ctypes.c_uint32
-        self.user32.RegisterHotKey.argtypes = [ctypes.c_void_p, ctypes.c_int, ctypes.c_uint, ctypes.c_uint]
+        self.user32.RegisterHotKey.argtypes = [
+            ctypes.c_void_p,
+            ctypes.c_int,
+            ctypes.c_uint,
+            ctypes.c_uint,
+        ]
         self.user32.RegisterHotKey.restype = ctypes.c_int
         self.user32.UnregisterHotKey.argtypes = [ctypes.c_void_p, ctypes.c_int]
         self.user32.UnregisterHotKey.restype = ctypes.c_int
@@ -688,6 +783,20 @@ class _MouseLmbSuppressor:
         self.user32.GetCursorPos.restype = ctypes.c_int
         self.user32.GetSystemMetrics.argtypes = [ctypes.c_int]
         self.user32.GetSystemMetrics.restype = ctypes.c_int
+        self.user32.WindowFromPoint.argtypes = [wintypes.POINT]
+        self.user32.WindowFromPoint.restype = ctypes.c_void_p
+        self.user32.GetAncestor.argtypes = [ctypes.c_void_p, ctypes.c_uint]
+        self.user32.GetAncestor.restype = ctypes.c_void_p
+        self.user32.GetClientRect.argtypes = [
+            ctypes.c_void_p,
+            ctypes.POINTER(wintypes.RECT),
+        ]
+        self.user32.GetClientRect.restype = wintypes.BOOL
+        self.user32.ClientToScreen.argtypes = [
+            ctypes.c_void_p,
+            ctypes.POINTER(wintypes.POINT),
+        ]
+        self.user32.ClientToScreen.restype = wintypes.BOOL
         self.kernel32.GetModuleHandleW.argtypes = [wintypes.LPCWSTR]
         self.kernel32.GetModuleHandleW.restype = ctypes.c_void_p
 
@@ -715,7 +824,9 @@ class _MouseLmbSuppressor:
         self._stop.clear()
         self._ready.clear()
         self._input_ready.clear()
-        self._thread = threading.Thread(target=self._run, name="lmb-suppressor", daemon=True)
+        self._thread = threading.Thread(
+            target=self._run, name="lmb-suppressor", daemon=True
+        )
         self._thread.start()
         if not self._ready.wait(timeout=2.0):
             self.fail_open("mouse input hook startup timed out")
@@ -732,6 +843,9 @@ class _MouseLmbSuppressor:
             self._thread = None
         self._lmb_down = False
         self._rmb_down = False
+        self._hold_mouse_down = False
+        self._left_remap_latched = False
+        self._right_remap_latched = False
         self._hook_lmb_up_pending_at = 0.0
         self._hook_rmb_up_pending_at = 0.0
         with self._button_anchor_wait_lock:
@@ -777,13 +891,13 @@ class _MouseLmbSuppressor:
         self._resolve_deferred_hook_releases()
         if self._button_anchor_blocked("left"):
             return False
-        return self._lmb_down if self.enabled else False
+        return bool(self.enabled and self._lmb_down and self._left_remap_latched)
 
     def is_rmb_down(self) -> bool:
         self._resolve_deferred_hook_releases()
         if self._button_anchor_blocked("right"):
             return False
-        return self._rmb_down if self.enabled else False
+        return bool(self.enabled and self._rmb_down and self._right_remap_latched)
 
     def contact_anchor_ready(self, button: str) -> bool:
         """Return whether the current contact has a physical desktop anchor."""
@@ -827,18 +941,16 @@ class _MouseLmbSuppressor:
         timed_out = False
         if (
             self._hook_lmb_up_pending_at > 0.0
-            and observed_at - self._hook_lmb_up_pending_at
-            >= RAW_BUTTON_UP_FALLBACK_S
+            and observed_at - self._hook_lmb_up_pending_at >= RAW_BUTTON_UP_FALLBACK_S
         ):
-            self._lmb_down = False
+            self._finish_button_press("left")
             self._hook_lmb_up_pending_at = 0.0
             timed_out = True
         if (
             self._hook_rmb_up_pending_at > 0.0
-            and observed_at - self._hook_rmb_up_pending_at
-            >= RAW_BUTTON_UP_FALLBACK_S
+            and observed_at - self._hook_rmb_up_pending_at >= RAW_BUTTON_UP_FALLBACK_S
         ):
-            self._rmb_down = False
+            self._finish_button_press("right")
             self._hook_rmb_up_pending_at = 0.0
             timed_out = True
         if timed_out:
@@ -867,7 +979,7 @@ class _MouseLmbSuppressor:
         if hook_kind is not None:
             self._emit_timing(hook_kind, observed_at, x=int(x), y=int(y))
         if msg in (WM_LBUTTONDOWN, WM_NCLBUTTONDOWN):
-            self._lmb_down = True
+            self._begin_button_press("left")
             self._hook_lmb_up_pending_at = 0.0
             self._button_anchor = (float(observed_at), int(x), int(y))
             if self._left_button_owns_contact:
@@ -877,9 +989,9 @@ class _MouseLmbSuppressor:
                 self._hook_lmb_up_pending_at = float(observed_at)
                 self._add_motion_diagnostics(hook_up_deferred=1)
             else:
-                self._lmb_down = False
+                self._finish_button_press("left")
         elif msg in (WM_RBUTTONDOWN, WM_NCRBUTTONDOWN):
-            self._rmb_down = True
+            self._begin_button_press("right")
             self._hook_rmb_up_pending_at = 0.0
             self._button_anchor = (float(observed_at), int(x), int(y))
             if self._right_button_owns_contact:
@@ -889,7 +1001,89 @@ class _MouseLmbSuppressor:
                 self._hook_rmb_up_pending_at = float(observed_at)
                 self._add_motion_diagnostics(hook_up_deferred=1)
             else:
-                self._rmb_down = False
+                self._finish_button_press("right")
+
+    def _is_nonclient_point(self, x: int, y: int) -> bool:
+        """Return whether a screen point is in native window chrome."""
+
+        target = int(self.user32.WindowFromPoint(wintypes.POINT(int(x), int(y))) or 0)
+        if not target:
+            return False
+        root = int(self.user32.GetAncestor(target, GA_ROOT) or target)
+        rect = wintypes.RECT()
+        if not self.user32.GetClientRect(root, ctypes.byref(rect)):
+            return False
+        top_left = wintypes.POINT(int(rect.left), int(rect.top))
+        bottom_right = wintypes.POINT(int(rect.right), int(rect.bottom))
+        if not self.user32.ClientToScreen(root, ctypes.byref(top_left)):
+            return False
+        if not self.user32.ClientToScreen(root, ctypes.byref(bottom_right)):
+            return False
+        return not (
+            int(top_left.x) <= int(x) < int(bottom_right.x)
+            and int(top_left.y) <= int(y) < int(bottom_right.y)
+        )
+
+    def _cancel_button_contact_for_passthrough(self, button: str) -> None:
+        self._finish_button_press(button)
+        if button == "right":
+            self._hook_rmb_up_pending_at = 0.0
+        else:
+            self._hook_lmb_up_pending_at = 0.0
+        with self._button_anchor_wait_lock:
+            if self._button_anchor_wait_button == button:
+                self._button_anchor_wait_button = None
+                self._button_anchor_wait_started_at = 0.0
+                self._button_anchor_wait_dx = 0
+                self._button_anchor_wait_dy = 0
+        self._button_anchor = None
+        self._raw_contact_active = self._contact_button_down()
+        if not self._raw_contact_active:
+            self._contact_anchor_ready = False
+            with self._position_lock:
+                self._hardware_positions.clear()
+            self._reset_motion_carry()
+        self._signal_input_ready()
+
+    def _handle_nonclient_passthrough(
+        self,
+        msg: int,
+        *,
+        x: int,
+        y: int,
+        injected: bool,
+    ) -> bool:
+        """Keep title-bar and resize-border clicks out of the pen lifecycle."""
+
+        if injected:
+            return False
+        left_down = msg in (WM_LBUTTONDOWN, WM_LBUTTONDBLCLK, WM_NCLBUTTONDOWN)
+        right_down = msg in (WM_RBUTTONDOWN, WM_RBUTTONDBLCLK, WM_NCRBUTTONDOWN)
+        left_up = msg in (WM_LBUTTONUP, WM_NCLBUTTONUP)
+        right_up = msg in (WM_RBUTTONUP, WM_NCRBUTTONUP)
+        if left_down and (
+            msg == WM_NCLBUTTONDOWN or self._is_nonclient_point(x, y)
+        ):
+            self._nonclient_left_passthrough = True
+            self._cancel_button_contact_for_passthrough("left")
+            self._emit_timing("nonclient_left_down", time.perf_counter(), x=x, y=y)
+            return True
+        if right_down and (
+            msg == WM_NCRBUTTONDOWN or self._is_nonclient_point(x, y)
+        ):
+            self._nonclient_right_passthrough = True
+            self._cancel_button_contact_for_passthrough("right")
+            self._emit_timing("nonclient_right_down", time.perf_counter(), x=x, y=y)
+            return True
+        if left_up and self._nonclient_left_passthrough:
+            self._nonclient_left_passthrough = False
+            self._emit_timing("nonclient_left_up", time.perf_counter(), x=x, y=y)
+            return True
+        if right_up and self._nonclient_right_passthrough:
+            self._nonclient_right_passthrough = False
+            self._emit_timing("nonclient_right_up", time.perf_counter(), x=x, y=y)
+            return True
+        return False
 
     def _reanchor_new_contact_from_hook(
         self,
@@ -921,8 +1115,10 @@ class _MouseLmbSuppressor:
             pending_dx = self._button_anchor_wait_dx if pending_anchor else 0
             pending_dy = self._button_anchor_wait_dy if pending_anchor else 0
             with self._position_lock:
-                self._raw_x = int(x) + pending_dx
-                self._raw_y = int(y) + pending_dy
+                self._raw_x, self._raw_y = self._clamp_virtual_desktop(
+                    int(x) + pending_dx,
+                    int(y) + pending_dy,
+                )
                 self._logical_position_initialized = True
                 self._idle_raw_position_fresh = False
                 self._cursor_baseline_x = self._raw_x
@@ -963,7 +1159,9 @@ class _MouseLmbSuppressor:
             else:
                 positions = [
                     self._hardware_positions.popleft()
-                    for _ in range(min(max(0, int(max_count)), len(self._hardware_positions)))
+                    for _ in range(
+                        min(max(0, int(max_count)), len(self._hardware_positions))
+                    )
                 ]
             if not self._hardware_positions:
                 self._input_ready.clear()
@@ -1108,9 +1306,172 @@ class _MouseLmbSuppressor:
 
     def _contact_button_down(self) -> bool:
         return bool(
-            (self._left_button_owns_contact and self._lmb_down)
-            or (self._right_button_owns_contact and self._rmb_down)
+            (
+                self._left_button_owns_contact
+                and self._lmb_down
+                and self._left_remap_latched
+            )
+            or (
+                self._right_button_owns_contact
+                and self._rmb_down
+                and self._right_remap_latched
+            )
         )
+
+    def configure_remap(self, *, mode: str, hold_hotkey: str) -> None:
+        next_mode = str(mode)
+        self._remap_mode = next_mode
+        self._remap_hold_hotkey = parse_hold_hotkey(hold_hotkey)
+        self._hold_mouse_down = False
+
+    def _remap_available(self) -> bool:
+        return self._remap_mode == "always" or self._is_hold_hotkey_down()
+
+    def _is_hold_hotkey_down(self) -> bool:
+        if not self.enabled or self._remap_mode != "hold":
+            return False
+        binding = self._remap_hold_hotkey
+        if binding.virtual_key in (0x04, 0x05, 0x06):
+            return self._hold_mouse_down
+        required_modifiers = (
+            (MOD_CONTROL, VK_CONTROL),
+            (MOD_ALT, VK_MENU),
+            (MOD_SHIFT, VK_SHIFT),
+        )
+        for modifier, virtual_key in required_modifiers:
+            required = bool(binding.modifiers & modifier)
+            pressed = bool(int(self.user32.GetAsyncKeyState(virtual_key)) & 0x8000)
+            if pressed != required:
+                return False
+        return bool(int(self.user32.GetAsyncKeyState(binding.virtual_key)) & 0x8000)
+
+    def _handle_hold_mouse_message(
+        self,
+        msg: int,
+        *,
+        mouse_data: int,
+        injected: bool,
+    ) -> bool:
+        if not self.enabled or self._remap_mode != "hold" or injected:
+            return False
+        binding = self._remap_hold_hotkey.virtual_key
+        if binding == 0x04:
+            if msg not in (WM_MBUTTONDOWN, WM_MBUTTONUP):
+                return False
+            self._hold_mouse_down = msg == WM_MBUTTONDOWN
+            return True
+        if binding not in (0x05, 0x06) or msg not in (
+            WM_XBUTTONDOWN,
+            WM_XBUTTONUP,
+        ):
+            return False
+        expected = XBUTTON1 if binding == 0x05 else XBUTTON2
+        if ((int(mouse_data) >> 16) & 0xFFFF) != expected:
+            return False
+        self._hold_mouse_down = msg == WM_XBUTTONDOWN
+        return True
+
+    def _begin_button_press(self, button: str) -> None:
+        if button == "right":
+            if not self._rmb_down:
+                self._right_remap_latched = self._remap_available()
+            self._rmb_down = True
+            return
+        if not self._lmb_down:
+            self._left_remap_latched = self._remap_available()
+        self._lmb_down = True
+
+    def _finish_button_press(self, button: str) -> None:
+        if button == "right":
+            self._rmb_down = False
+            self._right_remap_latched = False
+            return
+        self._lmb_down = False
+        self._left_remap_latched = False
+
+    def configure_pressure_sensitivity(
+        self,
+        *,
+        left_enabled: bool,
+        left_light: int,
+        left_firm: int,
+        right_enabled: bool,
+        right_light: int,
+        right_firm: int,
+    ) -> None:
+        self._left_sensitivity_enabled = bool(left_enabled)
+        self._left_sensitivity_light = clamp_i(int(left_light), 0, 200)
+        self._left_sensitivity_firm = clamp_i(int(left_firm), 0, 200)
+        self._right_sensitivity_enabled = bool(right_enabled)
+        self._right_sensitivity_light = clamp_i(int(right_light), 0, 200)
+        self._right_sensitivity_firm = clamp_i(int(right_firm), 0, 200)
+        if not left_enabled and not right_enabled:
+            self._reset_motion_carry()
+
+    def set_pressure_samples(self, left_mapped: int, right_mapped: int) -> None:
+        self._left_mapped_pressure = clamp_i(int(left_mapped), 0, 1023)
+        self._right_mapped_pressure = clamp_i(int(right_mapped), 0, 1023)
+
+    def _pressure_sensitivity_channel(self) -> str | None:
+        active_latched_press = bool(
+            (self._lmb_down and self._left_remap_latched)
+            or (self._rmb_down and self._right_remap_latched)
+        )
+        if not active_latched_press and not self._remap_available():
+            return None
+        if (
+            self._left_sensitivity_enabled
+            and self._lmb_down
+            and self._left_remap_latched
+        ):
+            return "left"
+        if (
+            self._right_sensitivity_enabled
+            and self._rmb_down
+            and self._right_remap_latched
+        ):
+            return "right"
+        if self._left_sensitivity_enabled and self._right_sensitivity_enabled:
+            return (
+                "right"
+                if self._right_mapped_pressure > self._left_mapped_pressure
+                else "left"
+            )
+        if self._left_sensitivity_enabled:
+            return "left"
+        if self._right_sensitivity_enabled:
+            return "right"
+        return None
+
+    def _pressure_motion_multiplier(self) -> float:
+        channel = self._pressure_sensitivity_channel()
+        if channel == "left":
+            mapped = self._left_mapped_pressure
+            light = self._left_sensitivity_light
+            firm = self._left_sensitivity_firm
+        elif channel == "right":
+            mapped = self._right_mapped_pressure
+            light = self._right_sensitivity_light
+            firm = self._right_sensitivity_firm
+        else:
+            return 1.0
+        fraction = mapped / 1023.0
+        percent = light + (firm - light) * fraction
+        return percent / 100.0
+
+    def _reset_motion_carry(self) -> None:
+        self._motion_carry_x = 0.0
+        self._motion_carry_y = 0.0
+
+    def _scale_contact_delta(self, dx: int, dy: int) -> tuple[int, int]:
+        multiplier = self._pressure_motion_multiplier()
+        scaled_x = int(dx) * multiplier + self._motion_carry_x
+        scaled_y = int(dy) * multiplier + self._motion_carry_y
+        output_x = math.trunc(scaled_x)
+        output_y = math.trunc(scaled_y)
+        self._motion_carry_x = scaled_x - output_x
+        self._motion_carry_y = scaled_y - output_y
+        return output_x, output_y
 
     def set_button_ownership(self, *, left: bool, right: bool) -> None:
         """Choose which physical buttons may open or extend pen contact."""
@@ -1210,14 +1571,15 @@ class _MouseLmbSuppressor:
                 stats = {}
             snapshot["native_capture"] = 1
             snapshot["native_capture_dropped"] = int(stats.get("dropped", 0))
-            snapshot["native_capture_max_depth"] = int(
-                stats.get("max_queue_depth", 0)
-            )
+            snapshot["native_capture_max_depth"] = int(stats.get("max_queue_depth", 0))
         return snapshot
 
     def _publish_hardware_position(self, observed_at: float, x: int, y: int) -> bool:
+        x, y = self._clamp_virtual_desktop(int(x), int(y))
         with self._position_lock:
-            previous = self._hardware_positions[-1] if self._hardware_positions else None
+            previous = (
+                self._hardware_positions[-1] if self._hardware_positions else None
+            )
             position = (float(observed_at), int(x), int(y))
             if previous is not None and previous[1:] == position[1:]:
                 return False
@@ -1231,6 +1593,31 @@ class _MouseLmbSuppressor:
                 pass
         return True
 
+    def _virtual_desktop_bounds(self) -> tuple[int, int, int, int]:
+        left = int(self.user32.GetSystemMetrics(SM_XVIRTUALSCREEN))
+        top = int(self.user32.GetSystemMetrics(SM_YVIRTUALSCREEN))
+        right = (
+            left
+            + max(
+                1,
+                int(self.user32.GetSystemMetrics(SM_CXVIRTUALSCREEN)),
+            )
+            - 1
+        )
+        bottom = (
+            top
+            + max(
+                1,
+                int(self.user32.GetSystemMetrics(SM_CYVIRTUALSCREEN)),
+            )
+            - 1
+        )
+        return left, top, right, bottom
+
+    def _clamp_virtual_desktop(self, x: int, y: int) -> tuple[int, int]:
+        left, top, right, bottom = self._virtual_desktop_bounds()
+        return clamp_i(int(x), left, right), clamp_i(int(y), top, bottom)
+
     def _handle_native_mouse_move(
         self,
         observed_at: float,
@@ -1240,6 +1627,14 @@ class _MouseLmbSuppressor:
         injected: bool,
     ) -> None:
         """Capture the OS-transformed cursor position for one native move."""
+        left, top, right, bottom = self._virtual_desktop_bounds()
+        if not (left <= int(x) <= right and top <= int(y) <= bottom):
+            # Synthetic pen promotion can surface through WH_MOUSE_LL with
+            # normalized absolute coordinates (for example y=32000) rather
+            # than desktop pixels. Never let that point become the coordinate
+            # paired with the next device-validated Raw Input packet.
+            self._add_motion_diagnostics(out_of_bounds_hook_filtered=1)
+            return
         # Raw Input identifies the physical device, but its lLastX/lLastY values
         # are device counts rather than desktop pixels. The low-level hook gives
         # us the corresponding Windows cursor coordinates after DPI, pointer
@@ -1249,6 +1644,43 @@ class _MouseLmbSuppressor:
         )
         if self._raw_input_active:
             if not self._contact_button_down():
+                if self._raw_direct_mode or self._pressure_sensitivity_channel() is None:
+                    return
+                if bridge_feedback:
+                    with self._position_lock:
+                        self._cursor_baseline_x = int(x)
+                        self._cursor_baseline_y = int(y)
+                        self._cursor_baseline_initialized = True
+                    return
+                corrected_position: tuple[int, int] | None = None
+                with self._position_lock:
+                    if not self._logical_position_initialized:
+                        self._raw_x, self._raw_y = int(x), int(y)
+                        self._logical_position_initialized = True
+                    if self._cursor_baseline_initialized:
+                        source_dx = int(x) - self._cursor_baseline_x
+                        source_dy = int(y) - self._cursor_baseline_y
+                        scaled_dx, scaled_dy = self._scale_contact_delta(
+                            source_dx,
+                            source_dy,
+                        )
+                        self._raw_x += scaled_dx
+                        self._raw_y += scaled_dy
+                        self._raw_x, self._raw_y = self._clamp_virtual_desktop(
+                            self._raw_x,
+                            self._raw_y,
+                        )
+                        if (scaled_dx, scaled_dy) != (source_dx, source_dy):
+                            corrected_position = (self._raw_x, self._raw_y)
+                    self._cursor_baseline_x = int(x)
+                    self._cursor_baseline_y = int(y)
+                    self._cursor_baseline_initialized = True
+                if corrected_position is not None:
+                    self.mark_injected_position(*corrected_position)
+                    if not self.user32.SetCursorPos(*corrected_position):
+                        self._add_motion_diagnostics(
+                            sensitivity_correction_failed=1
+                        )
                 return
             if self._raw_direct_mode:
                 # With Windows set to 1:1 and acceleration disabled, Raw Input
@@ -1285,8 +1717,16 @@ class _MouseLmbSuppressor:
                     self._raw_x, self._raw_y = int(x), int(y)
                     self._logical_position_initialized = True
                 if self._cursor_baseline_initialized:
-                    self._raw_x += int(x) - self._cursor_baseline_x
-                    self._raw_y += int(y) - self._cursor_baseline_y
+                    delta_x, delta_y = self._scale_contact_delta(
+                        int(x) - self._cursor_baseline_x,
+                        int(y) - self._cursor_baseline_y,
+                    )
+                    self._raw_x += delta_x
+                    self._raw_y += delta_y
+                    self._raw_x, self._raw_y = self._clamp_virtual_desktop(
+                        self._raw_x,
+                        self._raw_y,
+                    )
                 self._cursor_baseline_x = int(x)
                 self._cursor_baseline_y = int(y)
                 self._cursor_baseline_initialized = True
@@ -1299,15 +1739,19 @@ class _MouseLmbSuppressor:
             )
             return
         else:
-            if injected or bridge_feedback or self._is_recent_injected_position(
-                int(x), int(y), observed_at
+            if (
+                injected
+                or bridge_feedback
+                or self._is_recent_injected_position(int(x), int(y), observed_at)
             ):
                 return
         self._publish_hardware_position(observed_at, int(x), int(y))
 
     def _publish_raw_correlated_position(self, observed_at: float) -> None:
         cutoff = float(observed_at) - 0.03
-        while self._pending_hook_positions and self._pending_hook_positions[0][0] < cutoff:
+        while (
+            self._pending_hook_positions and self._pending_hook_positions[0][0] < cutoff
+        ):
             self._pending_hook_positions.popleft()
         if self._pending_hook_positions:
             # A native hook drain can supply several transformed points before
@@ -1331,9 +1775,7 @@ class _MouseLmbSuppressor:
         self._accepted_motion_count += 1
         if self.debug_mode and self._accepted_motion_count == 1:
             self.log("MOTION correlated hook coordinates with Raw Input device")
-        published = self._publish_hardware_position(
-            publish_at, int(x), int(y)
-        )
+        published = self._publish_hardware_position(publish_at, int(x), int(y))
         self._add_motion_diagnostics(
             **{
                 source: 1,
@@ -1377,6 +1819,18 @@ class _MouseLmbSuppressor:
     def _handle_raw_mouse(self, device_handle: int, mouse: RAWMOUSE) -> None:
         observed_at = time.perf_counter()
         flags = int(mouse.usButtonFlags)
+        # Synthetic pen promotion can re-enter Raw Input with hDevice == 0
+        # and mouse-button flags. Those packets are not attributable to the
+        # supported physical mouse and must never mutate managed-button state.
+        device_button_flags = flags if int(device_handle) != 0 else 0
+        if self._nonclient_left_passthrough:
+            device_button_flags &= ~(
+                RI_MOUSE_LEFT_BUTTON_DOWN | RI_MOUSE_LEFT_BUTTON_UP
+            )
+        if self._nonclient_right_passthrough:
+            device_button_flags &= ~(
+                RI_MOUSE_RIGHT_BUTTON_DOWN | RI_MOUSE_RIGHT_BUTTON_UP
+            )
         dx = int(mouse.lLastX)
         dy = int(mouse.lLastY)
         self._emit_timing(
@@ -1419,31 +1873,31 @@ class _MouseLmbSuppressor:
                         int(dy),
                     )
                 )
-        # Auxiliary buttons (for example pressure-to-tilt) are held alongside
-        # the contact owner. Track their state without letting them keep the
-        # Raw Input contact session alive across separate strokes.
-        if not self._left_button_owns_contact:
-            if flags & RI_MOUSE_LEFT_BUTTON_DOWN:
-                self._lmb_down = True
-                self._hook_lmb_up_pending_at = 0.0
-            if flags & RI_MOUSE_LEFT_BUTTON_UP:
-                self._lmb_down = False
-                self._hook_lmb_up_pending_at = 0.0
-        if not self._right_button_owns_contact:
-            if flags & RI_MOUSE_RIGHT_BUTTON_DOWN:
-                self._rmb_down = True
-                self._hook_rmb_up_pending_at = 0.0
-            if flags & RI_MOUSE_RIGHT_BUTTON_UP:
-                self._rmb_down = False
-                self._hook_rmb_up_pending_at = 0.0
+        if device_button_flags & RI_MOUSE_LEFT_BUTTON_DOWN:
+            self._begin_button_press("left")
+            self._hook_lmb_up_pending_at = 0.0
+        if device_button_flags & RI_MOUSE_RIGHT_BUTTON_DOWN:
+            self._begin_button_press("right")
+            self._hook_rmb_up_pending_at = 0.0
+        # Auxiliary or non-remapped buttons do not own the Raw Input contact.
+        if device_button_flags & RI_MOUSE_LEFT_BUTTON_UP and (
+            not self._left_button_owns_contact or not self._raw_contact_active
+        ):
+            self._finish_button_press("left")
+            self._hook_lmb_up_pending_at = 0.0
+        if device_button_flags & RI_MOUSE_RIGHT_BUTTON_UP and (
+            not self._right_button_owns_contact or not self._raw_contact_active
+        ):
+            self._finish_button_press("right")
+            self._hook_rmb_up_pending_at = 0.0
 
         button_down_flags = 0
-        if self._left_button_owns_contact:
+        if self._left_button_owns_contact and self._left_remap_latched:
             button_down_flags |= RI_MOUSE_LEFT_BUTTON_DOWN
-        if self._right_button_owns_contact:
+        if self._right_button_owns_contact and self._right_remap_latched:
             button_down_flags |= RI_MOUSE_RIGHT_BUTTON_DOWN
         consume_button_packet_motion = False
-        if flags & button_down_flags and int(device_handle) != 0:
+        if device_button_flags & button_down_flags:
             incoming_identity = self._get_raw_device_identity(int(device_handle))
             if self._raw_contact_active:
                 same_device = int(device_handle) == self._raw_device_handle
@@ -1457,28 +1911,19 @@ class _MouseLmbSuppressor:
                     # physical Logitech device selected for this stroke.
                     self._add_motion_diagnostics(foreign_button_ignored=1)
                     return
-                if flags & RI_MOUSE_LEFT_BUTTON_DOWN:
-                    self._lmb_down = True
-                if flags & RI_MOUSE_RIGHT_BUTTON_DOWN:
-                    self._rmb_down = True
                 return
-            if flags & RI_MOUSE_LEFT_BUTTON_DOWN:
-                self._lmb_down = True
-                self._hook_lmb_up_pending_at = 0.0
-            if flags & RI_MOUSE_RIGHT_BUTTON_DOWN:
-                self._rmb_down = True
-                self._hook_rmb_up_pending_at = 0.0
             self._raw_device_handle = int(device_handle)
             self._raw_motion_device_handle = 0
             self._accepted_motion_count = 0
             self._pending_hook_positions.clear()
             self._selected_raw_identity = incoming_identity
             self._raw_contact_active = True
+            self._reset_motion_carry()
             anchor = self._button_anchor
             anchor_ready = bool(
                 anchor is not None and time.perf_counter() - anchor[0] <= 0.1
             )
-            immediate_wake = self._button_down_wake_enabled(flags)
+            immediate_wake = self._button_down_wake_enabled(device_button_flags)
             consume_button_packet_motion = immediate_wake
             if anchor_ready and anchor is not None:
                 # The button hook is an absolute desktop measurement.  Always
@@ -1486,8 +1931,7 @@ class _MouseLmbSuppressor:
                 # carry from one stroke into the next.
                 self._raw_x, self._raw_y = anchor[1], anchor[2]
             elif not (
-                self._idle_raw_position_fresh
-                and self._logical_position_initialized
+                self._idle_raw_position_fresh and self._logical_position_initialized
             ):
                 self._raw_x, self._raw_y = self._cursor_position()
             self._logical_position_initialized = True
@@ -1496,14 +1940,20 @@ class _MouseLmbSuppressor:
             self._cursor_baseline_y = self._raw_y
             self._cursor_baseline_initialized = True
             self._button_anchor = None
-            precontact_path = self._precontact_path_for_down(
-                "right" if flags & RI_MOUSE_RIGHT_BUTTON_DOWN else "left",
-                observed_at=observed_at,
-                device_handle=int(device_handle),
-                device_identity=incoming_identity,
-                anchor_x=int(self._raw_x),
-                anchor_y=int(self._raw_y),
-            ) if immediate_wake and self._first_contact_pending else []
+            precontact_path = (
+                self._precontact_path_for_down(
+                    "right"
+                    if device_button_flags & RI_MOUSE_RIGHT_BUTTON_DOWN
+                    else "left",
+                    observed_at=observed_at,
+                    device_handle=int(device_handle),
+                    device_identity=incoming_identity,
+                    anchor_x=int(self._raw_x),
+                    anchor_y=int(self._raw_y),
+                )
+                if immediate_wake and self._first_contact_pending
+                else []
+            )
             self._first_contact_pending = False
             self._contact_anchor_ready = bool(anchor_ready or precontact_path)
             with self._button_anchor_wait_lock:
@@ -1511,7 +1961,7 @@ class _MouseLmbSuppressor:
                 if immediate_wake and not anchor_ready:
                     self._button_anchor_wait_button = (
                         "right"
-                        if flags & RI_MOUSE_RIGHT_BUTTON_DOWN
+                        if device_button_flags & RI_MOUSE_RIGHT_BUTTON_DOWN
                         else "left"
                     )
                     self._button_anchor_wait_started_at = observed_at
@@ -1547,34 +1997,50 @@ class _MouseLmbSuppressor:
         if not self._raw_contact_active:
             if (
                 self._raw_direct_mode
-                and self._logical_position_initialized
                 and (dx != 0 or dy != 0)
             ):
-                movement_identity = self._get_raw_device_identity(
-                    int(device_handle)
-                )
+                movement_identity = self._get_raw_device_identity(int(device_handle))
+                if (
+                    self._raw_motion_device_handle == 0
+                    and int(device_handle) != 0
+                    and self._pressure_sensitivity_channel() is not None
+                ):
+                    cursor_x, cursor_y = self._cursor_position()
+                    self._raw_device_handle = int(device_handle)
+                    self._raw_motion_device_handle = int(device_handle)
+                    self._selected_raw_identity = movement_identity
+                    self._raw_x = int(cursor_x) - dx
+                    self._raw_y = int(cursor_y) - dy
+                    self._logical_position_initialized = True
                 same_device = int(device_handle) == self._raw_motion_device_handle
                 same_identity = bool(
                     self._selected_raw_identity
                     and movement_identity == self._selected_raw_identity
                 )
-                if same_device or same_identity:
+                corrected_position: tuple[int, int] | None = None
+                if self._logical_position_initialized and (same_device or same_identity):
+                    sensitivity_active = (
+                        self._pressure_sensitivity_channel() is not None
+                    )
+                    scaled_dx, scaled_dy = (
+                        self._scale_contact_delta(dx, dy)
+                        if sensitivity_active
+                        else (dx, dy)
+                    )
                     with self._position_lock:
-                        self._raw_x += dx
-                        self._raw_y += dy
-                        left = int(self.user32.GetSystemMetrics(SM_XVIRTUALSCREEN))
-                        top = int(self.user32.GetSystemMetrics(SM_YVIRTUALSCREEN))
-                        right = left + max(
-                            1,
-                            int(self.user32.GetSystemMetrics(SM_CXVIRTUALSCREEN)),
-                        ) - 1
-                        bottom = top + max(
-                            1,
-                            int(self.user32.GetSystemMetrics(SM_CYVIRTUALSCREEN)),
-                        ) - 1
-                        self._raw_x = clamp_i(self._raw_x, left, right)
-                        self._raw_y = clamp_i(self._raw_y, top, bottom)
+                        self._raw_x += scaled_dx
+                        self._raw_y += scaled_dy
+                        self._raw_x, self._raw_y = self._clamp_virtual_desktop(
+                            self._raw_x,
+                            self._raw_y,
+                        )
                         self._idle_raw_position_fresh = True
+                        if sensitivity_active and (scaled_dx, scaled_dy) != (dx, dy):
+                            corrected_position = (self._raw_x, self._raw_y)
+                if corrected_position is not None:
+                    self.mark_injected_position(*corrected_position)
+                    if not self.user32.SetCursorPos(*corrected_position):
+                        self._add_motion_diagnostics(sensitivity_correction_failed=1)
             return
 
         has_movement = dx != 0 or dy != 0
@@ -1620,21 +2086,14 @@ class _MouseLmbSuppressor:
                 raw_distance=math.hypot(dx, dy),
             )
             if self._raw_direct_mode:
+                scaled_dx, scaled_dy = self._scale_contact_delta(dx, dy)
                 with self._position_lock:
-                    self._raw_x += dx
-                    self._raw_y += dy
-                    left = int(self.user32.GetSystemMetrics(SM_XVIRTUALSCREEN))
-                    top = int(self.user32.GetSystemMetrics(SM_YVIRTUALSCREEN))
-                    right = left + max(
-                        1,
-                        int(self.user32.GetSystemMetrics(SM_CXVIRTUALSCREEN)),
-                    ) - 1
-                    bottom = top + max(
-                        1,
-                        int(self.user32.GetSystemMetrics(SM_CYVIRTUALSCREEN)),
-                    ) - 1
-                    self._raw_x = clamp_i(self._raw_x, left, right)
-                    self._raw_y = clamp_i(self._raw_y, top, bottom)
+                    self._raw_x += scaled_dx
+                    self._raw_y += scaled_dy
+                    self._raw_x, self._raw_y = self._clamp_virtual_desktop(
+                        self._raw_x,
+                        self._raw_y,
+                    )
                     x, y = self._raw_x, self._raw_y
                     self._pending_hook_positions.clear()
                 published = self._publish_hardware_position(observed_at, x, y)
@@ -1647,12 +2106,15 @@ class _MouseLmbSuppressor:
                 self._publish_raw_correlated_position(observed_at)
 
         button_up_flags = RI_MOUSE_LEFT_BUTTON_UP | RI_MOUSE_RIGHT_BUTTON_UP
-        if flags & button_up_flags and int(device_handle) == self._raw_device_handle:
-            if flags & RI_MOUSE_LEFT_BUTTON_UP:
-                self._lmb_down = False
+        if (
+            device_button_flags & button_up_flags
+            and int(device_handle) == self._raw_device_handle
+        ):
+            if device_button_flags & RI_MOUSE_LEFT_BUTTON_UP:
+                self._finish_button_press("left")
                 self._hook_lmb_up_pending_at = 0.0
-            if flags & RI_MOUSE_RIGHT_BUTTON_UP:
-                self._rmb_down = False
+            if device_button_flags & RI_MOUSE_RIGHT_BUTTON_UP:
+                self._finish_button_press("right")
                 self._hook_rmb_up_pending_at = 0.0
             with self._button_anchor_wait_lock:
                 self._button_anchor_wait_button = None
@@ -1663,6 +2125,7 @@ class _MouseLmbSuppressor:
             if not self._raw_contact_active:
                 self._idle_raw_position_fresh = False
                 self._contact_anchor_ready = False
+                self._reset_motion_carry()
             self._add_motion_diagnostics(raw_up_received=1)
             callback = self._movement_callback
             if callback is not None:
@@ -1674,7 +2137,9 @@ class _MouseLmbSuppressor:
     def mark_injected_position(self, x: int, y: int) -> None:
         """Identify pointer-promotion feedback before it reaches the hook."""
         with self._position_lock:
-            self._recent_injected_positions.append((time.perf_counter(), int(x), int(y)))
+            self._recent_injected_positions.append(
+                (time.perf_counter(), int(x), int(y))
+            )
             if not self._logical_position_initialized:
                 self._raw_x, self._raw_y = int(x), int(y)
                 self._logical_position_initialized = True
@@ -1691,7 +2156,10 @@ class _MouseLmbSuppressor:
         # without changing the physical mouse trajectory.
         cutoff = now - 0.02
         with self._position_lock:
-            while self._recent_injected_positions and self._recent_injected_positions[0][0] < cutoff:
+            while (
+                self._recent_injected_positions
+                and self._recent_injected_positions[0][0] < cutoff
+            ):
                 self._recent_injected_positions.popleft()
             return any(
                 recent_x == int(x) and recent_y == int(y)
@@ -1719,6 +2187,35 @@ class _MouseLmbSuppressor:
             self._last_heartbeat = time.perf_counter()
 
     @staticmethod
+    def _should_process_physical_button_message(
+        msg: int,
+        *,
+        injected: bool,
+        bridge_feedback: bool,
+    ) -> bool:
+        # Coordinate matching is safe for filtering motion only. A real click
+        # commonly starts at the last pen coordinate, so treating that match
+        # as button feedback can discard a real press at the previous stroke's
+        # endpoint. The hook's injected flag is authoritative here.
+        del bridge_feedback
+        return bool(
+            msg
+            in (
+                WM_LBUTTONDOWN,
+                WM_LBUTTONUP,
+                WM_LBUTTONDBLCLK,
+                WM_NCLBUTTONDOWN,
+                WM_NCLBUTTONUP,
+                WM_RBUTTONDOWN,
+                WM_RBUTTONUP,
+                WM_RBUTTONDBLCLK,
+                WM_NCRBUTTONDOWN,
+                WM_NCRBUTTONUP,
+            )
+            and not injected
+        )
+
+    @staticmethod
     def _should_block_message(
         msg: int,
         *,
@@ -1726,6 +2223,8 @@ class _MouseLmbSuppressor:
         bridge_feedback: bool = False,
         suppress_left: bool = True,
         suppress_right: bool = False,
+        remap_left: bool = True,
+        remap_right: bool = True,
     ) -> bool:
         """Block configured hardware buttons; movement must pass through.
 
@@ -1753,8 +2252,8 @@ class _MouseLmbSuppressor:
             WM_NCRBUTTONDOWN,
             WM_NCRBUTTONUP,
         )
-        return (suppress_left and left_message) or (
-            suppress_right and right_message
+        return (suppress_left and remap_left and left_message) or (
+            suppress_right and remap_right and right_message
         )
 
     def fail_open(self, reason: str) -> None:
@@ -1762,8 +2261,13 @@ class _MouseLmbSuppressor:
         self.enabled = False
         self._lmb_down = False
         self._rmb_down = False
+        self._hold_mouse_down = False
+        self._left_remap_latched = False
+        self._right_remap_latched = False
         self._hook_lmb_up_pending_at = 0.0
         self._hook_rmb_up_pending_at = 0.0
+        self._nonclient_left_passthrough = False
+        self._nonclient_right_passthrough = False
         self._raw_contact_active = False
         self._contact_anchor_ready = False
         self._input_ready.set()
@@ -1828,7 +2332,9 @@ class _MouseLmbSuppressor:
         return total
 
     def _run(self) -> None:
-        hook_proc_t = ctypes.WINFUNCTYPE(ctypes.c_longlong, ctypes.c_int, ctypes.c_size_t, ctypes.c_void_p)
+        hook_proc_t = ctypes.WINFUNCTYPE(
+            ctypes.c_longlong, ctypes.c_int, ctypes.c_size_t, ctypes.c_void_p
+        )
 
         native_capture = self._native_input_capture
         if native_capture is not None:
@@ -1871,7 +2377,9 @@ class _MouseLmbSuppressor:
                     if copied != 0xFFFFFFFF:
                         raw = ctypes.cast(buffer, ctypes.POINTER(RAWINPUT)).contents
                         if int(raw.header.dwType) == RIM_TYPEMOUSE:
-                            self._handle_raw_mouse(int(raw.header.hDevice or 0), raw.mouse)
+                            self._handle_raw_mouse(
+                                int(raw.header.hDevice or 0), raw.mouse
+                            )
                 self._drain_buffered_raw_input()
             return int(self.user32.DefWindowProcW(hwnd, message, w_param, l_param))
 
@@ -1891,14 +2399,41 @@ class _MouseLmbSuppressor:
                     WM_RBUTTONDBLCLK,
                     WM_NCRBUTTONDOWN,
                     WM_NCRBUTTONUP,
+                    WM_MBUTTONDOWN,
+                    WM_MBUTTONUP,
+                    WM_XBUTTONDOWN,
+                    WM_XBUTTONUP,
                 ):
                     try:
-                        info = ctypes.cast(l_param, ctypes.POINTER(MSLLHOOKSTRUCT)).contents
+                        info = ctypes.cast(
+                            l_param, ctypes.POINTER(MSLLHOOKSTRUCT)
+                        ).contents
                         injected = (int(info.flags) & LLMHF_INJECTED) != 0
                     except Exception:
-                        return int(self.user32.CallNextHookEx(self.hook, n_code, w_param, l_param))
+                        return int(
+                            self.user32.CallNextHookEx(
+                                self.hook, n_code, w_param, l_param
+                            )
+                        )
 
                     observed_at = time.perf_counter()
+                    if self._handle_nonclient_passthrough(
+                        msg,
+                        x=int(info.pt.x),
+                        y=int(info.pt.y),
+                        injected=injected,
+                    ):
+                        return int(
+                            self.user32.CallNextHookEx(
+                                self.hook, n_code, w_param, l_param
+                            )
+                        )
+                    if self._handle_hold_mouse_message(
+                        msg,
+                        mouse_data=int(info.mouseData),
+                        injected=injected,
+                    ):
+                        return 1
                     bridge_feedback = self._is_recent_bridge_feedback(
                         int(info.pt.x), int(info.pt.y), observed_at
                     )
@@ -1915,19 +2450,31 @@ class _MouseLmbSuppressor:
                     # IMPORTANT: only hardware events may mutate hook button state.
                     # Injected mouse events (from synthetic pointer promotion, etc.)
                     # must not arm/disarm contact or we can get stuck-down lag.
-                    if not injected and not bridge_feedback:
+                    remap_left = self._left_remap_latched
+                    remap_right = self._right_remap_latched
+                    if self._should_process_physical_button_message(
+                        msg,
+                        injected=injected,
+                        bridge_feedback=bridge_feedback,
+                    ):
                         self._handle_physical_hook_button(
                             msg,
                             observed_at=observed_at,
                             x=int(info.pt.x),
                             y=int(info.pt.y),
                         )
+                        if msg in (WM_LBUTTONDOWN, WM_NCLBUTTONDOWN):
+                            remap_left = self._left_remap_latched
+                        elif msg in (WM_RBUTTONDOWN, WM_NCRBUTTONDOWN):
+                            remap_right = self._right_remap_latched
                     should_block = self._should_block_message(
                         msg,
                         injected=injected,
                         bridge_feedback=bridge_feedback,
                         suppress_left=self.suppress_left,
                         suppress_right=self.suppress_right,
+                        remap_left=remap_left,
+                        remap_right=remap_right,
                     )
                     if should_block:
                         return 1
@@ -1937,7 +2484,9 @@ class _MouseLmbSuppressor:
         self._wnd_proc = _raw_wnd_proc
         hmod = self.kernel32.GetModuleHandleW(None)
         ctypes.set_last_error(0)
-        self.hook = ctypes.c_void_p(self.user32.SetWindowsHookExW(WH_MOUSE_LL, self._proc, hmod, 0))
+        self.hook = ctypes.c_void_p(
+            self.user32.SetWindowsHookExW(WH_MOUSE_LL, self._proc, hmod, 0)
+        )
         err = ctypes.get_last_error()
         if not self.hook:
             self.log(f"LMB suppressor hook install failed err={err}")
@@ -1955,7 +2504,9 @@ class _MouseLmbSuppressor:
         window_class.hInstance = hmod
         window_class.lpszClassName = self._raw_class_name
         ctypes.set_last_error(0)
-        self._raw_class_atom = int(self.user32.RegisterClassW(ctypes.byref(window_class)))
+        self._raw_class_atom = int(
+            self.user32.RegisterClassW(ctypes.byref(window_class))
+        )
         raw_error = ctypes.get_last_error()
         if self._raw_class_atom:
             self._raw_hwnd = ctypes.c_void_p(
@@ -2001,7 +2552,9 @@ class _MouseLmbSuppressor:
                 f"coordinates={coordinate_mode}"
             )
         else:
-            self.log(f"WARN raw mouse input unavailable err={raw_error}; using hook positions")
+            self.log(
+                f"WARN raw mouse input unavailable err={raw_error}; using hook positions"
+            )
 
         suppressed = "/".join(
             name
@@ -2015,25 +2568,29 @@ class _MouseLmbSuppressor:
             self.log(f"Mouse button suppressor active ({suppressed})")
         else:
             self.log("Mouse input monitor active (no buttons suppressed)")
+        hotkey = self._deactivation_hotkey
         hotkey_registered = bool(
             self.user32.RegisterHotKey(
                 None,
                 EMERGENCY_HOTKEY_ID,
-                MOD_CONTROL | MOD_SHIFT,
-                VK_F12,
+                hotkey.modifiers,
+                hotkey.virtual_key,
             )
         )
         if hotkey_registered:
-            self.log("Stop hotkey: Ctrl+Shift+F12")
+            self.log(f"Stop hotkey: {hotkey.label}")
         else:
-            self.log("WARN Stop hotkey Ctrl+Shift+F12 could not be registered")
+            self.log(f"WARN Stop hotkey {hotkey.label} could not be registered")
         self._ready.set()
 
         msg = wintypes.MSG()
         while not self._stop.is_set():
             while self.user32.PeekMessageW(ctypes.byref(msg), None, 0, 0, PM_REMOVE):
-                if int(msg.message) == WM_HOTKEY and int(msg.wParam) == EMERGENCY_HOTKEY_ID:
-                    reason = "Stop hotkey Ctrl+Shift+F12 pressed"
+                if (
+                    int(msg.message) == WM_HOTKEY
+                    and int(msg.wParam) == EMERGENCY_HOTKEY_ID
+                ):
+                    reason = f"Stop hotkey {hotkey.label} pressed"
                     self.fail_open(reason)
                     if not self._force_stop_requested:
                         self._force_stop_requested = True
@@ -2043,7 +2600,11 @@ class _MouseLmbSuppressor:
                     continue
                 self.user32.TranslateMessage(ctypes.byref(msg))
                 self.user32.DispatchMessageW(ctypes.byref(msg))
-            if self.enabled and time.perf_counter() - self._last_heartbeat > SUPPRESSOR_HEARTBEAT_TIMEOUT_S:
+            if (
+                self.enabled
+                and time.perf_counter() - self._last_heartbeat
+                > SUPPRESSOR_HEARTBEAT_TIMEOUT_S
+            ):
                 self.fail_open(
                     f"pressure stream heartbeat stopped for {SUPPRESSOR_HEARTBEAT_TIMEOUT_S:.1f}s"
                 )
@@ -2102,6 +2663,7 @@ class _StrokePlanner:
     those adapters because delivery success is an input to stroke state, and it
     synchronously preserves report order without exposing a plan/commit seam.
     """
+
     def __init__(
         self,
         config: SyntheticPenConfig,
@@ -2122,9 +2684,7 @@ class _StrokePlanner:
         self._trace_submission_tokens: set[int] = set()
         if config.debug_mode:
             self._suppressor.set_timing_callback(self._observe_native_timing)
-        self._suppressor.set_button_down_wake_callback(
-            self._button_down_wake_enabled
-        )
+        self._suppressor.set_button_down_wake_callback(self._button_down_wake_enabled)
         self.active_button: str | None = None
         self.state = "idle"
         self.contact_frame_no = 0
@@ -2158,6 +2718,7 @@ class _StrokePlanner:
         self._contact_path_direction: tuple[float, float] | None = None
         self._stabilized_position: tuple[float, float] | None = None
         self._stabilizer_last_raw: tuple[int, int] | None = None
+        self._stabilizer_last_observed_at: float | None = None
         self._event_driven_movement = False
         self._last_update_at = 0.0
         self._update_interval_ema = 1.0 / 240.0
@@ -2170,7 +2731,10 @@ class _StrokePlanner:
         self._last_sent_tilt_y = 0
         self._stationary_anchor_started_at = 0.0
         self._stationary_dab_emitted = False
-        self._startup_contact_prime_pending = True
+        self._native_contact_prime_pending = True
+        self._native_contact_prime_delay_s = 0.002
+        self._last_contact_target_root_hwnd = 0
+        self._last_contact_target_root_rect: tuple[int, int, int, int] | None = None
 
         self.click_candidate_active = False
         self.click_start_t = 0.0
@@ -2196,6 +2760,25 @@ class _StrokePlanner:
             if button == "right"
             else self.config.left_output_target
         )
+
+    def _output_range(self, button: str, target: str) -> tuple[int, int]:
+        prefix = "right_" if button == "right" else ""
+        fallback_prefix = "" if button == "right" else prefix
+        light = getattr(self.config, f"{prefix}{target}_light", None)
+        firm = getattr(self.config, f"{prefix}{target}_firm", None)
+        if light is None:
+            light = getattr(self.config, f"{fallback_prefix}{target}_light")
+        if firm is None:
+            firm = getattr(self.config, f"{fallback_prefix}{target}_firm")
+        return int(light), int(firm)
+
+    def _map_auxiliary_output(self, button: str, target: str, mapped: int) -> int:
+        light, firm = self._output_range(button, target)
+        fraction = clamp_i(int(mapped), 0, 1023) / 1023.0
+        value = round(light + (firm - light) * fraction)
+        if target in {"x_tilt", "y_tilt"}:
+            return clamp_i(value, -60, 60)
+        return clamp_i(value, 0, 359)
 
     def _has_aux_xtilt(self) -> bool:
         return bool(
@@ -2237,6 +2820,7 @@ class _StrokePlanner:
         tokens = frozenset(self._trace_submission_tokens)
         deferred = None
         if callable(collector) and tokens:
+
             def collect_native_delivery() -> list[dict[str, Any]]:
                 return [
                     {"kind": "native_delivery", **event}
@@ -2246,6 +2830,121 @@ class _StrokePlanner:
             deferred = collect_native_delivery
         trace.finish(reason, deferred_events=deferred)
         self._trace_submission_tokens.clear()
+
+    @staticmethod
+    def _contact_window_route(x: int, y: int) -> dict[str, int | str | bool]:
+        """Describe the foreground target selected at pen DOWN."""
+
+        try:
+            user32 = ctypes.WinDLL("user32", use_last_error=True)
+            user32.GetForegroundWindow.argtypes = []
+            user32.GetForegroundWindow.restype = ctypes.c_void_p
+            user32.WindowFromPoint.argtypes = [wintypes.POINT]
+            user32.WindowFromPoint.restype = ctypes.c_void_p
+            user32.GetAncestor.argtypes = [ctypes.c_void_p, ctypes.c_uint]
+            user32.GetAncestor.restype = ctypes.c_void_p
+            user32.GetWindowThreadProcessId.argtypes = [
+                ctypes.c_void_p,
+                ctypes.POINTER(wintypes.DWORD),
+            ]
+            user32.GetWindowThreadProcessId.restype = wintypes.DWORD
+            user32.GetClassNameW.argtypes = [
+                ctypes.c_void_p,
+                wintypes.LPWSTR,
+                ctypes.c_int,
+            ]
+            user32.GetClassNameW.restype = ctypes.c_int
+            user32.IsWindowVisible.argtypes = [ctypes.c_void_p]
+            user32.IsWindowVisible.restype = wintypes.BOOL
+            user32.IsWindowEnabled.argtypes = [ctypes.c_void_p]
+            user32.IsWindowEnabled.restype = wintypes.BOOL
+            user32.GetWindowRect.argtypes = [ctypes.c_void_p, ctypes.POINTER(wintypes.RECT)]
+            user32.GetWindowRect.restype = wintypes.BOOL
+
+            foreground = int(user32.GetForegroundWindow() or 0)
+            target = int(user32.WindowFromPoint(wintypes.POINT(int(x), int(y))) or 0)
+            target_root = int(user32.GetAncestor(target, 2) or 0) if target else 0
+            target_owner = int(user32.GetAncestor(target, 3) or 0) if target else 0
+
+            def describe(prefix: str, hwnd: int) -> dict[str, int | str | bool]:
+                if not hwnd:
+                    return {
+                        f"{prefix}_hwnd": 0,
+                        f"{prefix}_pid": 0,
+                        f"{prefix}_class": "",
+                        f"{prefix}_visible": False,
+                        f"{prefix}_enabled": False,
+                    }
+                pid = wintypes.DWORD()
+                user32.GetWindowThreadProcessId(hwnd, ctypes.byref(pid))
+                class_name = ctypes.create_unicode_buffer(256)
+                user32.GetClassNameW(hwnd, class_name, len(class_name))
+                return {
+                    f"{prefix}_hwnd": hwnd,
+                    f"{prefix}_pid": int(pid.value),
+                    f"{prefix}_class": class_name.value,
+                    f"{prefix}_visible": bool(user32.IsWindowVisible(hwnd)),
+                    f"{prefix}_enabled": bool(user32.IsWindowEnabled(hwnd)),
+                }
+
+            fields: dict[str, int | str | bool] = {"x": int(x), "y": int(y)}
+            fields.update(describe("foreground", foreground))
+            fields.update(describe("target", target))
+            fields.update(describe("target_root", target_root))
+            fields.update(describe("target_owner", target_owner))
+            root_rect = wintypes.RECT()
+            if target_root and user32.GetWindowRect(target_root, ctypes.byref(root_rect)):
+                fields.update(
+                    {
+                        "target_root_left": int(root_rect.left),
+                        "target_root_top": int(root_rect.top),
+                        "target_root_right": int(root_rect.right),
+                        "target_root_bottom": int(root_rect.bottom),
+                    }
+                )
+            fields["foreground_matches_target_root"] = bool(
+                foreground and foreground == target_root
+            )
+            fields["foreground_matches_target_owner"] = bool(
+                foreground and foreground == target_owner
+            )
+            return fields
+        except Exception as exc:  # diagnostics must not affect pen delivery
+            return {"x": int(x), "y": int(y), "error": type(exc).__name__}
+
+    def _note_contact_window_geometry(
+        self, route: dict[str, int | str | bool]
+    ) -> bool:
+        """Return whether the active target was resized since its last contact."""
+
+        if not bool(route.get("foreground_matches_target_root", False)):
+            return False
+        hwnd = int(route.get("target_root_hwnd", 0) or 0)
+        rect_values = (
+            route.get("target_root_left"),
+            route.get("target_root_top"),
+            route.get("target_root_right"),
+            route.get("target_root_bottom"),
+        )
+        if not hwnd or any(value is None for value in rect_values):
+            return False
+        rect = tuple(int(value) for value in rect_values)
+        changed = bool(
+            hwnd == self._last_contact_target_root_hwnd
+            and self._last_contact_target_root_rect is not None
+            and rect != self._last_contact_target_root_rect
+        )
+        self._last_contact_target_root_hwnd = hwnd
+        self._last_contact_target_root_rect = rect
+        if changed:
+            # A completed synthetic contact that also maximizes/restores a Qt
+            # window invalidates its next pen lifecycle. Consume that lifecycle
+            # invisibly before delivering the user's next canvas stroke.
+            self._native_contact_prime_pending = True
+            self._native_contact_prime_delay_s = max(
+                self._native_contact_prime_delay_s, 1.0 / 60.0
+            )
+        return changed
 
     def _flush_pending_native_timing(self) -> None:
         trace = self._trace
@@ -2261,7 +2960,7 @@ class _StrokePlanner:
         self._event_driven_movement = callback is not None
 
     def _button_down_wake_enabled(self, button: str) -> bool:
-        if self._output_target(button) != "pressure":
+        if self._output_target(button) not in {"pressure", "mouse_sensitivity"}:
             return False
         if button == "right":
             configured = self.config.right_immediate_button_wake
@@ -2283,7 +2982,7 @@ class _StrokePlanner:
     def release(self) -> None:
         if self.state == "contact":
             x, y = self.pen.get_cursor_pos()
-            self._emit_release_teardown(
+            self._emit_release(
                 x=x,
                 y=y,
                 final_contact_pressure=self.prev_contact_pressure,
@@ -2314,7 +3013,9 @@ class _StrokePlanner:
 
     def _read_button(self, button: str) -> bool:
         if button == "right":
-            if self._suppressor is not None and getattr(self._suppressor, "enabled", True):
+            if self._suppressor is not None and getattr(
+                self._suppressor, "enabled", True
+            ):
                 reader = getattr(self._suppressor, "is_rmb_down", None)
                 return bool(reader()) if callable(reader) else False
             reader = getattr(self.pen, "is_rmb_down", None)
@@ -2334,7 +3035,9 @@ class _StrokePlanner:
         right_value = getattr(self.config, right_name)
         return left_value if right_value is None else right_value
 
-    def _trace_setting(self, left_name: str, right_name: str) -> int | float | str | None:
+    def _trace_setting(
+        self, left_name: str, right_name: str
+    ) -> int | float | str | None:
         left_value = getattr(self.config, left_name)
         if self.active_button != "right":
             return left_value
@@ -2423,10 +3126,14 @@ class _StrokePlanner:
             return clamp_i(int(round(value)), 0, 1023)
 
         duration = max(0.0001, self._pressure_interp_duration_s)
-        progress = clamp_f((now - self._pressure_interp_started_at) / duration, 0.0, 1.0)
-        current = self._pressure_interp_start_value + (
-            self._pressure_interp_target - self._pressure_interp_start_value
-        ) * progress
+        progress = clamp_f(
+            (now - self._pressure_interp_started_at) / duration, 0.0, 1.0
+        )
+        current = (
+            self._pressure_interp_start_value
+            + (self._pressure_interp_target - self._pressure_interp_start_value)
+            * progress
+        )
         self._pressure_interp_value = current
 
         if pressure_fresh:
@@ -2476,14 +3183,16 @@ class _StrokePlanner:
     def _reset_path_stabilizer(self) -> None:
         self._stabilized_position = None
         self._stabilizer_last_raw = None
+        self._stabilizer_last_observed_at = None
 
     def _stabilize_contact_path(
         self,
         points: list[tuple[int, int]],
         *,
         strength: int | None = None,
+        observed_times: list[float] | None = None,
     ) -> list[tuple[int, int]]:
-        """Remove small path reversals with a causal filter and bounded lag."""
+        """Remove small path reversals with a causal, time-normalized filter."""
         strength = clamp_i(
             int(self.config.path_stabilization if strength is None else strength),
             0,
@@ -2496,9 +3205,15 @@ class _StrokePlanner:
         max_lag = 2.0 + strength * 0.12
         filtered = self._stabilized_position
         previous_raw = self._stabilizer_last_raw
+        previous_observed_at = self._stabilizer_last_observed_at
         out: list[tuple[int, int]] = []
 
-        for raw_x, raw_y in points:
+        for index, (raw_x, raw_y) in enumerate(points):
+            observed_at = (
+                float(observed_times[index])
+                if observed_times is not None and index < len(observed_times)
+                else None
+            )
             if filtered is None:
                 filtered = (float(raw_x), float(raw_y))
             else:
@@ -2507,10 +3222,30 @@ class _StrokePlanner:
                     if previous_raw is not None
                     else 0.0
                 )
+                interval_s = PATH_STABILIZER_REFERENCE_INTERVAL_S
+                if (
+                    observed_at is not None
+                    and previous_observed_at is not None
+                    and observed_at > previous_observed_at
+                ):
+                    interval_s = min(
+                        PATH_STABILIZER_MAX_INTERVAL_S,
+                        observed_at - previous_observed_at,
+                    )
                 # Track large intentional moves more closely while smoothing
                 # the small alternating deviations that make handwriting look
-                # wobbly. The hard lag bound prevents a cursor/pen snap.
-                alpha = min(1.0, base_alpha + min(0.15, raw_step / 300.0))
+                # wobbly. Normalize the response to elapsed time so the same
+                # strength behaves consistently across mouse polling rates.
+                reference_step = (
+                    raw_step * PATH_STABILIZER_REFERENCE_INTERVAL_S / interval_s
+                )
+                reference_alpha = min(
+                    1.0,
+                    base_alpha + min(0.15, reference_step / 300.0),
+                )
+                alpha = 1.0 - (1.0 - reference_alpha) ** (
+                    interval_s / PATH_STABILIZER_REFERENCE_INTERVAL_S
+                )
                 filtered = (
                     filtered[0] + (raw_x - filtered[0]) * alpha,
                     filtered[1] + (raw_y - filtered[1]) * alpha,
@@ -2526,9 +3261,12 @@ class _StrokePlanner:
             if not out or stabilized != out[-1]:
                 out.append(stabilized)
             previous_raw = (int(raw_x), int(raw_y))
+            if observed_at is not None:
+                previous_observed_at = observed_at
 
         self._stabilized_position = filtered
         self._stabilizer_last_raw = previous_raw
+        self._stabilizer_last_observed_at = previous_observed_at
         if self._trace is not None:
             for point in out:
                 self._trace.record("stabilized_motion", x=point[0], y=point[1])
@@ -2605,7 +3343,9 @@ class _StrokePlanner:
         return output
 
     @staticmethod
-    def _limit_path(points: list[tuple[int, int]], max_points: int = 32) -> list[tuple[int, int]]:
+    def _limit_path(
+        points: list[tuple[int, int]], max_points: int = 32
+    ) -> list[tuple[int, int]]:
         """Uniformly downsample a path while preserving both endpoints."""
         max_points = max(1, int(max_points))
         if len(points) <= max_points:
@@ -2638,19 +3378,22 @@ class _StrokePlanner:
         geometry_points = max(1, math.ceil(distance / TARGET_CONTACT_SPACING_PX))
         pressure_points = max(
             1,
-            math.ceil(abs(int(pressure_end) - int(pressure_start)) / TARGET_CONTACT_PRESSURE_STEP),
+            math.ceil(
+                abs(int(pressure_end) - int(pressure_start))
+                / TARGET_CONTACT_PRESSURE_STEP
+            ),
         )
         # Preserve every observed corner when it fits. Interpolation is only
         # between measured positions; the budget never predicts ahead.
         return min(cap, max(len(points), geometry_points, pressure_points))
 
-    def _drain_movement_path(self) -> list[tuple[int, int]]:
+    def _drain_movement_path(self) -> tuple[list[tuple[int, int]], list[float]]:
         suppressor = self._suppressor
         if suppressor is None:
-            return []
+            return [], []
         drain = getattr(suppressor, "drain_hardware_positions", None)
         if not callable(drain):
-            return []
+            return [], []
         cutoff = time.perf_counter() - 0.05
         try:
             # Dense pen injection can take several milliseconds. Drain every
@@ -2670,9 +3413,17 @@ class _StrokePlanner:
                     y=int(y),
                 )
             self._record_motion_diagnostic_batch()
-        return self._dedupe_path(
-            [(int(x), int(y)) for ts, x, y in captured if float(ts) >= cutoff]
-        )
+        points: list[tuple[int, int]] = []
+        observed_times: list[float] = []
+        for ts, x, y in captured:
+            if float(ts) < cutoff:
+                continue
+            point = (int(x), int(y))
+            if points and point == points[-1]:
+                continue
+            points.append(point)
+            observed_times.append(float(ts))
+        return points, observed_times
 
     def _motion_diagnostic_snapshot(self) -> dict[str, float | int]:
         suppressor = self._suppressor
@@ -2759,7 +3510,9 @@ class _StrokePlanner:
                 incoming = (point[0] - previous[0], point[1] - previous[1])
                 outgoing = (following[0] - point[0], following[1] - point[1])
                 dot = incoming[0] * outgoing[0] + incoming[1] * outgoing[1]
-                direct_sq = (following[0] - previous[0]) ** 2 + (following[1] - previous[1]) ** 2
+                direct_sq = (following[0] - previous[0]) ** 2 + (
+                    following[1] - previous[1]
+                ) ** 2
                 incoming_sq = incoming[0] ** 2 + incoming[1] ** 2
                 outgoing_sq = outgoing[0] ** 2 + outgoing[1] ** 2
                 if dot < 0 and direct_sq < max(incoming_sq, outgoing_sq):
@@ -2923,9 +3676,7 @@ class _StrokePlanner:
     ) -> tuple[bool, int]:
         """Inject one report, retrying timestamp collisions without dropping it."""
         last_error = 0
-        native_frame_pacing = bool(
-            getattr(self.pen, "manages_frame_spacing", False)
-        )
+        native_frame_pacing = bool(getattr(self.pen, "manages_frame_spacing", False))
         for attempt in range(3):
             if self._last_pointer_injection_at > 0.0 and not native_frame_pacing:
                 self._wait_for_pointer_frame_slot()
@@ -2955,9 +3706,7 @@ class _StrokePlanner:
                     x=int(x),
                     y=int(y),
                     pressure=int(pressure_1024),
-                    rotation=int(
-                        self._aux_rotation if self._has_aux_rotation() else 0
-                    ),
+                    rotation=int(self._aux_rotation if self._has_aux_rotation() else 0),
                     tilt_x=int(self._aux_tilt_x if self._has_aux_xtilt() else 0),
                     tilt_y=int(self._aux_tilt_y if self._has_aux_ytilt() else 0),
                     flags=int(flags),
@@ -2965,11 +3714,7 @@ class _StrokePlanner:
                     attempt=attempt + 1,
                     ok=bool(ok),
                     error=int(last_error),
-                    submission_token=(
-                        int(token)
-                        if token is not None
-                        else None
-                    ),
+                    submission_token=(int(token) if token is not None else None),
                     call_duration_us=round(
                         (completed_at - submitted_at) * 1_000_000.0,
                         1,
@@ -2978,7 +3723,9 @@ class _StrokePlanner:
             if ok or last_error != ERROR_NOT_READY:
                 return ok, last_error
             if attempt == 0:
-                self.log("INJECT frame timestamp collision; retrying without dropping path point")
+                self.log(
+                    "INJECT frame timestamp collision; retrying without dropping path point"
+                )
         return False, last_error
 
     def _inject_pen_batch(
@@ -3028,7 +3775,14 @@ class _StrokePlanner:
                 )
         return bool(ok), int(error)
 
-    def _prime_first_native_contact(self, *, flags: int, x: int, y: int) -> None:
+    def _prime_first_native_contact(
+        self,
+        *,
+        flags: int,
+        x: int,
+        y: int,
+        target_is_foreground: bool = True,
+    ) -> None:
         """Complete the native pen's first contact before exposing real ink.
 
         Krita accepts every report in the first synthetic contact lifecycle but
@@ -3037,18 +3791,19 @@ class _StrokePlanner:
         then renders normally. Hover-only priming is not sufficient.
         """
         if (
-            not self._startup_contact_prime_pending
+            not self._native_contact_prime_pending
             or self.config.output_backend != "native_synthetic"
+            or not target_is_foreground
         ):
             return
-        self._startup_contact_prime_pending = False
+        self._native_contact_prime_pending = False
         prime_reports: list[dict[str, int | str | None]] = [
             {
                 "flags": int(flags),
                 "x": int(x),
                 "y": int(y),
                 "pressure_1024": 0,
-                "tag": "startup_contact_prime_down",
+                "tag": "native_contact_prime_down",
                 "rotation": None,
                 "tilt_x": None,
                 "tilt_y": None,
@@ -3058,7 +3813,7 @@ class _StrokePlanner:
                 "x": int(x),
                 "y": int(y),
                 "pressure_1024": 0,
-                "tag": "startup_contact_prime_up",
+                "tag": "native_contact_prime_up",
                 "rotation": None,
                 "tilt_x": None,
                 "tilt_y": None,
@@ -3073,11 +3828,14 @@ class _StrokePlanner:
                 f"error={error} drained={int(drained)}"
             )
             return
-        # Let Windows finish routing the completed zero-pressure lifecycle
-        # before the real DOWN. This is paid once per Start session.
-        time.sleep(0.002)
+        # Let Windows and the target finish routing the completed lifecycle
+        # before the real DOWN. A resized Qt surface needs one presentation
+        # frame; normal startup only needs the shorter routing delay.
+        delay_s = self._native_contact_prime_delay_s
+        self._native_contact_prime_delay_s = 0.002
+        time.sleep(delay_s)
 
-    def _emit_release_teardown(
+    def _emit_release(
         self,
         *,
         x: int,
@@ -3103,45 +3861,17 @@ class _StrokePlanner:
                 tag="release_final_contact",
             )
 
-        # The normal release ends contact and range together. Leaving INRANGE on
-        # the UP report lets Windows retain a hover pointer at this coordinate;
-        # subsequent physical mouse movement can then snap back to it.
-        if not self.config.release_teardown:
-            ok, _ = self._inject_pen(
-                flags=POINTER_FLAG_UP | POINTER_FLAG_PRIMARY,
-                x=x,
-                y=y,
-                pressure_1024=0,
-                tag="release_up",
-            )
-            all_ok = final_ok and ok
-            return all_ok, not all_ok
-
-        # Experimental compatibility sequence for apps that otherwise keep a
-        # lingering stroke: UP|INRANGE -> hover -> out-of-range.
-        ok1, _ = self._inject_pen(
-            flags=POINTER_FLAG_UP | POINTER_FLAG_INRANGE | POINTER_FLAG_PRIMARY,
+        # End contact and range together. Leaving INRANGE on UP lets Windows
+        # retain a hover pointer that can later snap back to this coordinate.
+        ok, _ = self._inject_pen(
+            flags=POINTER_FLAG_UP | POINTER_FLAG_PRIMARY,
             x=x,
             y=y,
             pressure_1024=0,
             tag="release_up",
         )
-        ok2, _ = self._inject_pen(
-            flags=POINTER_FLAG_UPDATE | POINTER_FLAG_INRANGE | POINTER_FLAG_PRIMARY,
-            x=x,
-            y=y,
-            pressure_1024=0,
-            tag="release_hover",
-        )
-        ok3, _ = self._inject_pen(
-            flags=POINTER_FLAG_UPDATE | POINTER_FLAG_PRIMARY,
-            x=x,
-            y=y,
-            pressure_1024=0,
-            tag="release_endhover",
-        )
-        ok = final_ok and ok1 and ok2 and ok3
-        return ok, not ok
+        all_ok = final_ok and ok
+        return all_ok, not all_ok
 
     def advance(
         self,
@@ -3159,15 +3889,17 @@ class _StrokePlanner:
             interval = update_at - self._last_update_at
             if 0.00005 <= interval <= 0.05:
                 self._update_interval_ema = (
-                    self._update_interval_ema * 0.9
-                    + interval * 0.1
+                    self._update_interval_ema * 0.9 + interval * 0.1
                 )
         self._last_update_at = update_at
         prev_state = self.state
         left_down = self._read_button("left")
         right_down = self._read_button("right")
         if self._suppressor is not None:
-            if left_raw is not None and self.config.left_output_target == "pressure":
+            if left_raw is not None and self.config.left_output_target in {
+                "pressure",
+                "mouse_sensitivity",
+            }:
                 left_activation_raw = self.config.trace_raw_min
                 self._suppressor.note_precontact_pressure(
                     "left",
@@ -3178,7 +3910,10 @@ class _StrokePlanner:
                     button_down=bool(left_down),
                     observed_at=update_at,
                 )
-            if right_raw is not None and self.config.right_output_target == "pressure":
+            if right_raw is not None and self.config.right_output_target in {
+                "pressure",
+                "mouse_sensitivity",
+            }:
                 right_activation_raw = self.config.right_trace_raw_min
                 self._suppressor.note_precontact_pressure(
                     "right",
@@ -3201,50 +3936,54 @@ class _StrokePlanner:
             if callable(anchor_ready) and getattr(self._suppressor, "enabled", False):
                 if (
                     left_down
-                    and self.config.left_output_target == "pressure"
+                    and self.config.left_output_target
+                    in {"pressure", "mouse_sensitivity"}
                     and not anchor_ready("left")
                 ):
                     left_down = False
                 if (
                     right_down
-                    and self.config.right_output_target == "pressure"
+                    and self.config.right_output_target
+                    in {"pressure", "mouse_sensitivity"}
                     and not anchor_ready("right")
                 ):
                     right_down = False
-        auxiliary_x_mapped = (
-            left_mapped
-            if self.config.left_output_target == "x_tilt"
-            else right_mapped
-            if self.config.right_output_target == "x_tilt"
-            else 0
-        )
-        self._aux_tilt_x = round(
-            clamp_i(int(auxiliary_x_mapped), 0, 1023) * 60 / 1023
-        )
-        auxiliary_y_mapped = (
-            left_mapped
-            if self.config.left_output_target == "y_tilt"
-            else right_mapped
-            if self.config.right_output_target == "y_tilt"
-            else 0
-        )
-        self._aux_tilt_y = round(
-            clamp_i(int(auxiliary_y_mapped), 0, 1023) * 60 / 1023
-        )
-        auxiliary_rotation_mapped = (
-            left_mapped
-            if self.config.left_output_target == "rotation"
-            else right_mapped
-            if self.config.right_output_target == "rotation"
-            else 0
-        )
-        self._aux_rotation = round(
-            clamp_i(int(auxiliary_rotation_mapped), 0, 1023) * 359 / 1023
-        )
+        if self.config.left_output_target == "x_tilt":
+            self._aux_tilt_x = self._map_auxiliary_output("left", "x_tilt", left_mapped)
+        elif self.config.right_output_target == "x_tilt":
+            self._aux_tilt_x = self._map_auxiliary_output(
+                "right", "x_tilt", right_mapped
+            )
+        else:
+            self._aux_tilt_x = 0
+        if self.config.left_output_target == "y_tilt":
+            self._aux_tilt_y = self._map_auxiliary_output("left", "y_tilt", left_mapped)
+        elif self.config.right_output_target == "y_tilt":
+            self._aux_tilt_y = self._map_auxiliary_output(
+                "right", "y_tilt", right_mapped
+            )
+        else:
+            self._aux_tilt_y = 0
+        if self.config.left_output_target == "rotation":
+            self._aux_rotation = self._map_auxiliary_output(
+                "left", "rotation", left_mapped
+            )
+        elif self.config.right_output_target == "rotation":
+            self._aux_rotation = self._map_auxiliary_output(
+                "right", "rotation", right_mapped
+            )
+        else:
+            self._aux_rotation = 0
         if self.active_button is None:
-            if left_down and self.config.left_output_target == "pressure":
+            if left_down and self.config.left_output_target in {
+                "pressure",
+                "mouse_sensitivity",
+            }:
                 self.active_button = "left"
-            elif right_down and self.config.right_output_target == "pressure":
+            elif right_down and self.config.right_output_target in {
+                "pressure",
+                "mouse_sensitivity",
+            }:
                 self.active_button = "right"
         selected_button = self.active_button or "left"
         lmb_down = bool(
@@ -3295,23 +4034,18 @@ class _StrokePlanner:
             0
             if true_low_latency
             else int(
-                self._channel_setting(
-                    "path_stabilization", "right_path_stabilization"
-                )
+                self._channel_setting("path_stabilization", "right_path_stabilization")
             )
         )
         pressure_influence = int(
             self._channel_setting("pressure_influence", "right_pressure_influence")
         )
-        onset_buffer = (
-            not true_low_latency
-            and bool(self._channel_setting("onset_buffer", "right_onset_buffer"))
+        onset_buffer = not true_low_latency and bool(
+            self._channel_setting("onset_buffer", "right_onset_buffer")
         )
         immediate_button_wake = self._button_down_wake_enabled(selected_button)
         clean_stroke_endings = bool(
-            self._channel_setting(
-                "clean_stroke_endings", "right_clean_stroke_endings"
-            )
+            self._channel_setting("clean_stroke_endings", "right_clean_stroke_endings")
         )
         if lmb_down and self._trace is not None and not self._trace.active:
             self._trace_submission_tokens.clear()
@@ -3345,13 +4079,14 @@ class _StrokePlanner:
             )
             self._flush_pending_native_timing()
             self._last_motion_diag = {}
-        movement_path = self._drain_movement_path()
+        movement_path, movement_times = self._drain_movement_path()
         if self.state == "contact" and movement_path:
             self._last_contact_motion_at = update_at
         if movement_path and (lmb_down or self.state == "contact"):
             movement_path = self._stabilize_contact_path(
                 movement_path,
                 strength=path_stabilization,
+                observed_times=movement_times,
             )
         elif self.state not in {"contact", "hovering"} and not lmb_down:
             self._reset_path_stabilizer()
@@ -3431,9 +4166,10 @@ class _StrokePlanner:
             visible_floor_mapped = map_1024_to_1023(min_contact_pressure)
             if self.config.pressure_mode == "stroke_relative":
                 denom = max(1, 1023 - self.stroke_base_mapped)
-                visible_floor_mapped = self.stroke_base_mapped + (
-                    visible_floor_mapped * denom + 1022
-                ) // 1023
+                visible_floor_mapped = (
+                    self.stroke_base_mapped
+                    + (visible_floor_mapped * denom + 1022) // 1023
+                )
             if interpolated_mapped < visible_floor_mapped:
                 interpolated_mapped = visible_floor_mapped
                 self._pressure_interp_value = float(visible_floor_mapped)
@@ -3452,7 +4188,9 @@ class _StrokePlanner:
                 pressure_mapped = 0
             else:
                 denom = max(1, 1023 - self.stroke_base_mapped)
-                pressure_mapped = ((pressure_mapped - self.stroke_base_mapped) * 1023) // denom
+                pressure_mapped = (
+                    (pressure_mapped - self.stroke_base_mapped) * 1023
+                ) // denom
         actual_pen_pressure = map_1023_to_1024(pressure_mapped)
         if self._trace is not None:
             self._trace.record(
@@ -3548,7 +4286,7 @@ class _StrokePlanner:
                 self._last_meaningful_contact_pressure = 0
                 self._buffered_contact_path.clear()
                 self._stationary_dab_emitted = False
-                ok, fail = self._emit_release_teardown(
+                ok, fail = self._emit_release(
                     x=release_x,
                     y=release_y,
                     final_contact_pressure=final_contact_pressure,
@@ -3559,7 +4297,9 @@ class _StrokePlanner:
                 self._contact_path_direction = None
             else:
                 self.contact_frame_no += 1
-                moved_from_contact = abs(x - self.contact_start_x) + abs(y - self.contact_start_y)
+                moved_from_contact = abs(x - self.contact_start_x) + abs(
+                    y - self.contact_start_y
+                )
 
                 if self.onset_catchup_pending:
                     # The DOWN was emitted at the buffered first-contact point.
@@ -3585,7 +4325,10 @@ class _StrokePlanner:
                     self._buffered_contact_path.clear()
                     if injection_path:
                         inject_x, inject_y = injection_path[-1]
-                    if not injection_path and (x, y) != (self.contact_start_x, self.contact_start_y):
+                    if not injection_path and (x, y) != (
+                        self.contact_start_x,
+                        self.contact_start_y,
+                    ):
                         if path_stabilization <= 0:
                             injection_path = [(x, y)]
                         else:
@@ -3711,9 +4454,10 @@ class _StrokePlanner:
                     visible_start_mapped = map_1024_to_1023(inject_pressure)
                     if self.config.pressure_mode == "stroke_relative":
                         denom = max(1, 1023 - self.precontact_mapped)
-                        visible_start_mapped = self.precontact_mapped + (
-                            visible_start_mapped * denom + 1022
-                        ) // 1023
+                        visible_start_mapped = (
+                            self.precontact_mapped
+                            + (visible_start_mapped * denom + 1022) // 1023
+                        )
                     self.prev_contact_pressure = inject_pressure
                     self._last_meaningful_contact_pressure = inject_pressure
                     self.contact_start_x = self.precontact_x
@@ -3776,12 +4520,31 @@ class _StrokePlanner:
                 self._contact_path_direction = None
                 next_state = "idle"
 
+        contact_window_route: dict[str, int | str | bool] | None = None
         if inject_flags is not None:
+            if bool(inject_flags & POINTER_FLAG_DOWN) and (
+                self.config.output_backend == "native_synthetic"
+                or (self._trace is not None and self._trace.active)
+            ):
+                contact_window_route = self._contact_window_route(
+                    inject_x, inject_y
+                )
+                window_geometry_changed = self._note_contact_window_geometry(
+                    contact_window_route
+                )
+                if self._trace is not None and self._trace.active:
+                    self._trace.record("contact_window_route", **contact_window_route)
+                    if window_geometry_changed:
+                        self._trace.record("target_window_geometry_changed")
             status = inject_flags
             points = [(inject_x, inject_y)]
             stationary_dab_update = False
-            if (inject_flags & POINTER_FLAG_UPDATE) and (inject_flags & POINTER_FLAG_INCONTACT):
-                candidate_path = injection_path if injection_path is not None else movement_path
+            if (inject_flags & POINTER_FLAG_UPDATE) and (
+                inject_flags & POINTER_FLAG_INCONTACT
+            ):
+                candidate_path = (
+                    injection_path if injection_path is not None else movement_path
+                )
                 direct_path = path_stabilization <= 0
                 if direct_path:
                     prepared_path = self._prepare_direct_contact_path(
@@ -3849,7 +4612,9 @@ class _StrokePlanner:
                         dense_points=len(dense_points),
                         budget=int(point_budget),
                         emitted_points=len(points),
-                        pressure_delta=abs(int(inject_pressure) - int(pressure_before_update)),
+                        pressure_delta=abs(
+                            int(inject_pressure) - int(pressure_before_update)
+                        ),
                     )
                 # A real pen need not resend an identical position and pressure
                 # every scheduler tick. Avoid building up a visible dab while
@@ -3859,8 +4624,7 @@ class _StrokePlanner:
                 )
                 tilt_changed_enough = (
                     abs(int(self._aux_tilt_x) - int(self._last_sent_tilt_x)) >= 2
-                    or abs(int(self._aux_tilt_y) - int(self._last_sent_tilt_y))
-                    >= 2
+                    or abs(int(self._aux_tilt_y) - int(self._last_sent_tilt_y)) >= 2
                 )
                 rotation_changed_enough = (
                     abs(int(self._aux_rotation) - int(self._last_sent_rotation)) >= 2
@@ -3889,10 +4653,7 @@ class _StrokePlanner:
                                 )
                                 or (
                                     auxiliary_stationary_updates
-                                    and (
-                                        tilt_changed_enough
-                                        or rotation_changed_enough
-                                    )
+                                    and (tilt_changed_enough or rotation_changed_enough)
                                 )
                             )
                         )
@@ -3923,7 +4684,9 @@ class _StrokePlanner:
                     pressure_fractions.append(cumulative)
                     previous_point = point
                 if cumulative > 0.0:
-                    pressure_fractions = [distance / cumulative for distance in pressure_fractions]
+                    pressure_fractions = [
+                        distance / cumulative for distance in pressure_fractions
+                    ]
                 else:
                     pressure_fractions.clear()
             last_sent_pressure: int | None = None
@@ -3954,16 +4717,10 @@ class _StrokePlanner:
                             else next_state
                         ),
                         "rotation": (
-                            self._aux_rotation
-                            if self._has_aux_rotation()
-                            else None
+                            self._aux_rotation if self._has_aux_rotation() else None
                         ),
-                        "tilt_x": (
-                            self._aux_tilt_x if self._has_aux_xtilt() else None
-                        ),
-                        "tilt_y": (
-                            self._aux_tilt_y if self._has_aux_ytilt() else None
-                        ),
+                        "tilt_x": (self._aux_tilt_x if self._has_aux_xtilt() else None),
+                        "tilt_y": (self._aux_tilt_y if self._has_aux_ytilt() else None),
                     }
                 )
             native_batch = callable(getattr(self.pen, "inject_batch", None))
@@ -3976,6 +4733,13 @@ class _StrokePlanner:
                     flags=int(inject_flags),
                     x=int(points[0][0]),
                     y=int(points[0][1]),
+                    target_is_foreground=bool(
+                        True
+                        if contact_window_route is None
+                        else contact_window_route.get(
+                            "foreground_matches_target_root", True
+                        )
+                    ),
                 )
             if scheduled_reports and native_batch:
                 ok, _err = self._inject_pen_batch(scheduled_reports)
@@ -4100,7 +4864,9 @@ class _StrokePlanner:
             x=x,
             y=y,
             mapped_1023=mapped,
-            pen_1024=inject_pressure if inject_flags is not None else actual_pen_pressure,
+            pen_1024=inject_pressure
+            if inject_flags is not None
+            else actual_pen_pressure,
             state=self.state,
             lmb_down=lmb_down,
             lmb_physical=lmb_physical,
@@ -4132,8 +4898,31 @@ class SyntheticPenEmitter:
             suppress_right=config.suppress_rmb,
             debug_mode=config.debug_mode,
             allow_raw_direct_motion=config.allow_raw_direct_motion,
-            left_button_owns_contact=(config.left_output_target == "pressure"),
-            right_button_owns_contact=(config.right_output_target == "pressure"),
+            left_button_owns_contact=(
+                config.left_output_target in {"pressure", "mouse_sensitivity"}
+            ),
+            right_button_owns_contact=(
+                config.right_output_target in {"pressure", "mouse_sensitivity"}
+            ),
+            remap_mode=config.remap_mode,
+            remap_hold_hotkey=config.remap_hold_hotkey,
+            left_sensitivity_enabled=(config.left_output_target == "mouse_sensitivity"),
+            left_sensitivity_light=config.sensitivity_light,
+            left_sensitivity_firm=config.sensitivity_firm,
+            right_sensitivity_enabled=(
+                config.right_output_target == "mouse_sensitivity"
+            ),
+            right_sensitivity_light=(
+                config.right_sensitivity_light
+                if config.right_sensitivity_light is not None
+                else config.sensitivity_light
+            ),
+            right_sensitivity_firm=(
+                config.right_sensitivity_firm
+                if config.right_sensitivity_firm is not None
+                else config.sensitivity_firm
+            ),
+            deactivation_hotkey=config.deactivation_hotkey,
         )
         object.__setattr__(self, "_pen", pen)
         object.__setattr__(self, "_suppressor_adapter", suppressor)
@@ -4186,13 +4975,11 @@ class SyntheticPenEmitter:
         """Arm only after the click that started the application is released."""
         deadline = time.perf_counter() + max(0.0, float(timeout_s))
         while True:
-            left_down = (
-                self.config.left_output_target != "off"
-                and bool(self._pen.is_lmb_down())
+            left_down = self.config.left_output_target != "off" and bool(
+                self._pen.is_lmb_down()
             )
-            right_down = (
-                self.config.right_output_target != "off"
-                and bool(self._pen.is_rmb_down())
+            right_down = self.config.right_output_target != "off" and bool(
+                self._pen.is_rmb_down()
             )
             if not left_down and not right_down:
                 return
@@ -4243,8 +5030,30 @@ class SyntheticPenEmitter:
     def sync_button_modes(self) -> None:
         if self._suppressor is not None:
             self._suppressor.set_button_ownership(
-                left=self.config.left_output_target == "pressure",
-                right=self.config.right_output_target == "pressure",
+                left=self.config.left_output_target
+                in {"pressure", "mouse_sensitivity"},
+                right=self.config.right_output_target
+                in {"pressure", "mouse_sensitivity"},
+            )
+            self._suppressor.configure_remap(
+                mode=self.config.remap_mode,
+                hold_hotkey=self.config.remap_hold_hotkey,
+            )
+            self._suppressor.configure_pressure_sensitivity(
+                left_enabled=self.config.left_output_target == "mouse_sensitivity",
+                left_light=self.config.sensitivity_light,
+                left_firm=self.config.sensitivity_firm,
+                right_enabled=self.config.right_output_target == "mouse_sensitivity",
+                right_light=(
+                    self.config.right_sensitivity_light
+                    if self.config.right_sensitivity_light is not None
+                    else self.config.sensitivity_light
+                ),
+                right_firm=(
+                    self.config.right_sensitivity_firm
+                    if self.config.right_sensitivity_firm is not None
+                    else self.config.sensitivity_firm
+                ),
             )
 
     def set_movement_callback(self, callback: Callable[[], None] | None) -> None:
@@ -4269,6 +5078,10 @@ class SyntheticPenEmitter:
         right_raw: int | None = None,
     ) -> SyntheticPenSample:
         """Advance stroke planning and synchronously deliver its reports."""
+        if self._suppressor is not None:
+            setter = getattr(self._suppressor, "set_pressure_samples", None)
+            if callable(setter):
+                setter(left_mapped, right_mapped)
         return self._planner.advance(
             left_mapped,
             right_mapped,
@@ -4357,7 +5170,6 @@ def run_synthetic_pen_bridge(
                 f"threshold={emitter_config.contact_threshold}/{emitter_config.release_threshold} "
                 f"suppress_lmb={int(emitter_config.suppress_lmb)} "
                 f"click_through={int(not emitter_config.no_click_through)} "
-                f"release_teardown={int(emitter_config.release_teardown)}"
             )
             while True:
                 now = time.perf_counter()
@@ -4373,7 +5185,9 @@ def run_synthetic_pen_bridge(
                     # bridge tick. Replaying the whole burst can flood Windows'
                     # input queue and cause a delayed release-position snap.
                     latest_raw = decoded_raws[-1]
-                    norm = normalize_raw_pressure(latest_raw, pressure_config.raw_min, pressure_config.raw_max)
+                    norm = normalize_raw_pressure(
+                        latest_raw, pressure_config.raw_min, pressure_config.raw_max
+                    )
                     latest_mapped = map_normalized_pressure(norm, pressure_config)
 
                 sample = emitter.update(
@@ -4390,7 +5204,7 @@ def run_synthetic_pen_bridge(
                 if now - last_status_print >= 1.0:
                     last_status_print = now
                     log(
-                        f"[{now-start:7.3f}s] raw={latest_raw:3d} mapped={latest_mapped:4d} "
+                        f"[{now - start:7.3f}s] raw={latest_raw:3d} mapped={latest_mapped:4d} "
                         f"pen={sample.pen_1024:4d} state={sample.state:8s} "
                         f"lmb={int(sample.lmb_down)} phys={int(sample.lmb_physical)} decoded={frames_decoded} "
                         f"injected={frames_injected} failed={failed_injects}"
@@ -4420,8 +5234,8 @@ def run_synthetic_pen_bridge(
         log("")
         log("SUMMARY")
         log(f"elapsed={elapsed:.3f}s")
-        log(f"decoded_frames={frames_decoded} ({frames_decoded/elapsed:.2f} Hz)")
-        log(f"injected_frames={frames_injected} ({frames_injected/elapsed:.2f} Hz)")
+        log(f"decoded_frames={frames_decoded} ({frames_decoded / elapsed:.2f} Hz)")
+        log(f"injected_frames={frames_injected} ({frames_injected / elapsed:.2f} Hz)")
         log(f"failed_injects={failed_injects}")
         log(f"log_file={log_path}")
     return 0

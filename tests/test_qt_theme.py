@@ -22,4 +22,9 @@ def test_qt_stylesheet_uses_theme_tokens_and_windows_font() -> None:
     assert DARK.terminal_text in dark
     assert "QPushButton#channelSegment:checked" in dark
     assert "QComboBox::down-arrow" in dark
+    assert "QListWidget" in dark
+    assert "QFrame#settingsColumnRule" in dark
+    assert f"background: {DARK.border}" in dark
+    assert f"background: {DARK.surface_alt}" in dark
+    assert f"color: {DARK.text}" in dark
     assert Path("src/mouse_pressure/assets/chevron-down.svg").is_file()
