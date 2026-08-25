@@ -19,6 +19,7 @@ class _Session:
         self.haptics = (4, 2)
         self.actuation = (7, 4)
         self.profile = (True, 2)
+        self.report_rate_hz = 1000
         self.events: list[str] = []
         self.fail_haptics = False
 
@@ -62,6 +63,14 @@ class _Session:
         self.events.append(
             f"profile={active_sector}" if enabled else "profile=host"
         )
+
+    def get_report_rate_hz(self) -> int:
+        return self.report_rate_hz
+
+    def set_report_rate_hz(self, report_rate_hz: int) -> int:
+        self.report_rate_hz = report_rate_hz
+        self.events.append(f"report_rate={report_rate_hz}")
+        return report_rate_hz
 
     def disable_pressure_stream(self) -> None:
         self.events.append("pressure_disable")
@@ -136,6 +145,24 @@ def test_failed_activation_rolls_back_partial_hardware_changes() -> None:
     assert session.haptics == (4, 2)
     assert session.actuation == (7, 4)
     assert session.profile == (True, 2)
+
+
+def test_lease_forces_1000_hz_and_restores_original_report_rate() -> None:
+    session = _Session()
+    session.report_rate_hz = 8000
+    lease = _lease()
+
+    lease.activate(session, _requested())
+
+    assert session.report_rate_hz == 1000
+    assert "report_rate=1000" in session.events
+    assert lease.original is not None
+    assert lease.original.report_rate_hz == 8000
+
+    lease.restore(session)
+
+    assert session.report_rate_hz == 8000
+    assert "report_rate=8000" in session.events
 
 
 def test_live_changes_do_not_replace_the_restore_snapshot() -> None:
@@ -242,5 +269,6 @@ def test_first_live_change_arms_recovery_after_noop_activation(
             "actuation_right": 4,
             "onboard_profiles_enabled": 1,
             "onboard_profile_sector": 2,
+            "report_rate_hz": 1000,
         }
     ]

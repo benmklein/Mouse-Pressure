@@ -25,6 +25,8 @@ from mouse_pressure.ui.hotkeys import (
     MOD_ALT,
     MOD_CONTROL,
     MOD_SHIFT,
+    hotkey_is_down,
+    is_mouse_hotkey,
     parse_global_hotkey,
     parse_hold_hotkey,
 )
@@ -111,13 +113,17 @@ PATH_STABILIZER_MAX_INTERVAL_S = 0.05
 # carry LLMHF_INJECTED.  Match only the immediate, near-identical hook feedback
 # from a report we just wrote; a wider window risks swallowing real mouse input.
 PEN_FEEDBACK_WINDOW_S = 0.008
-PEN_FEEDBACK_TOLERANCE_PX = 2
+# Synthetic pointer promotion reports the exact integer pixel submitted by the
+# relay. A tolerance here mistakes real one-pixel motion from high-polling-rate
+# mice for feedback and lets the physical cursor outrun the pen path.
+PEN_FEEDBACK_TOLERANCE_PX = 0
 # The low-level hook and WM_INPUT are delivered on different queues.  Once a
 # physical Raw Input device owns the contact, its button-up packet is the only
 # event guaranteed to be ordered after that device's final movement packet.
 # Keep the hook as a fail-safe for a lost Raw Input release without letting it
 # cut off the end of ordinary fast strokes.
 RAW_BUTTON_UP_FALLBACK_S = 0.012
+HANDLELESS_UP_RECHECK_TIMEOUT_S = 0.050
 # Raw Input and the low-level button hook are separate queues. Experimental
 # immediate starts wait briefly for the hook's authoritative desktop anchor
 # when WM_INPUT wins that race. The observed tail was 3.1 ms, so 4 ms covers
@@ -176,6 +182,8 @@ class SyntheticPenConfig:
     right_output_target: str = "pressure"
     remap_mode: str = "always"
     remap_hold_hotkey: str = "Mouse 5"
+    remap_toggle_hotkey: str = "Mouse 4"
+    remap_deactivate_hotkey: str = "Mouse 5"
     sensitivity_light: int = 100
     sensitivity_firm: int = 35
     right_sensitivity_light: int | None = None
@@ -391,12 +399,32 @@ def map_1024_to_1023(v: int) -> int:
     return (v * 1023 + 512) // 1024
 
 
+def desktop_to_virtual_pixel(
+    x: int,
+    y: int,
+    *,
+    left: int,
+    top: int,
+    width: int,
+    height: int,
+) -> tuple[int, int]:
+    """Convert Windows desktop coordinates to synthetic-pointer coordinates."""
+    width = max(1, int(width))
+    height = max(1, int(height))
+    return (
+        clamp_i(int(x) - int(left), 0, width - 1),
+        clamp_i(int(y) - int(top), 0, height - 1),
+    )
+
+
 class _SyntheticPenInjector:
     def __init__(self, log: Callable[[str], None]) -> None:
         self.log = log
         self.user32 = ctypes.WinDLL("user32", use_last_error=True)
         self.device = ctypes.c_void_p()
         self.dpi = 96
+        self.screen_left = 0
+        self.screen_top = 0
         self.screen_w = 1
         self.screen_h = 1
         self.pointer_id = 1
@@ -455,10 +483,11 @@ class _SyntheticPenInjector:
             dpi = int(self.user32.GetDpiForSystem())
             if dpi > 0:
                 self.dpi = dpi
-        self.screen_w = max(1, int(self.user32.GetSystemMetrics(0)))
-        self.screen_h = max(1, int(self.user32.GetSystemMetrics(1)))
+        self._refresh_virtual_desktop()
         self.log(
-            f"SYNTH open handle=0x{int(dev):X} screen={self.screen_w}x{self.screen_h} dpi={self.dpi}"
+            f"SYNTH open handle=0x{int(dev):X} "
+            f"virtual=({self.screen_left},{self.screen_top}) "
+            f"{self.screen_w}x{self.screen_h} dpi={self.dpi}"
         )
 
     def close(self) -> None:
@@ -493,6 +522,18 @@ class _SyntheticPenInjector:
     def _to_himetric(self, px: int) -> int:
         return int(round(float(px) * 2540.0 / float(self.dpi)))
 
+    def _refresh_virtual_desktop(self) -> None:
+        self.screen_left = int(self.user32.GetSystemMetrics(SM_XVIRTUALSCREEN))
+        self.screen_top = int(self.user32.GetSystemMetrics(SM_YVIRTUALSCREEN))
+        self.screen_w = max(
+            1,
+            int(self.user32.GetSystemMetrics(SM_CXVIRTUALSCREEN)),
+        )
+        self.screen_h = max(
+            1,
+            int(self.user32.GetSystemMetrics(SM_CYVIRTUALSCREEN)),
+        )
+
     def inject(
         self,
         *,
@@ -505,6 +546,18 @@ class _SyntheticPenInjector:
         tilt_x: int | None = None,
         tilt_y: int | None = None,
     ) -> tuple[bool, int]:
+        # InjectSyntheticPointerInput uses coordinates relative to the
+        # virtual desktop's top-left, unlike GetCursorPos and mouse hooks.
+        # Refresh here so display rearrangement does not require a restart.
+        self._refresh_virtual_desktop()
+        pixel_x, pixel_y = desktop_to_virtual_pixel(
+            x,
+            y,
+            left=self.screen_left,
+            top=self.screen_top,
+            width=self.screen_w,
+            height=self.screen_h,
+        )
         pi = self.pti.penInfo.pointerInfo
         pi.pointerType = PT_PEN
         pi.pointerId = self.pointer_id
@@ -512,10 +565,10 @@ class _SyntheticPenInjector:
         pi.pointerFlags = flags
         pi.sourceDevice = None
         pi.hwndTarget = None
-        pi.ptPixelLocation = wintypes.POINT(x, y)
-        pi.ptPixelLocationRaw = wintypes.POINT(x, y)
-        hx = self._to_himetric(x)
-        hy = self._to_himetric(y)
+        pi.ptPixelLocation = wintypes.POINT(pixel_x, pixel_y)
+        pi.ptPixelLocationRaw = wintypes.POINT(pixel_x, pixel_y)
+        hx = self._to_himetric(pixel_x)
+        hy = self._to_himetric(pixel_y)
         pi.ptHimetricLocation = wintypes.POINT(hx, hy)
         pi.ptHimetricLocationRaw = wintypes.POINT(hx, hy)
         pi.dwTime = 0
@@ -573,6 +626,8 @@ class _MouseLmbSuppressor:
         right_button_owns_contact: bool = True,
         remap_mode: str = "always",
         remap_hold_hotkey: str = "Mouse 5",
+        remap_toggle_hotkey: str = "Mouse 4",
+        remap_deactivate_hotkey: str = "Mouse 5",
         left_sensitivity_enabled: bool = False,
         left_sensitivity_light: int = 100,
         left_sensitivity_firm: int = 35,
@@ -589,6 +644,10 @@ class _MouseLmbSuppressor:
         self._right_button_owns_contact = bool(right_button_owns_contact)
         self._remap_mode = str(remap_mode)
         self._remap_hold_hotkey = parse_hold_hotkey(remap_hold_hotkey)
+        self._remap_toggle_hotkey = parse_hold_hotkey(remap_toggle_hotkey)
+        self._remap_deactivate_hotkey = parse_hold_hotkey(remap_deactivate_hotkey)
+        self._remap_toggle_enabled = True
+        self._remap_key_was_down = False
         self._left_sensitivity_enabled = bool(left_sensitivity_enabled)
         self._left_sensitivity_light = clamp_i(int(left_sensitivity_light), 0, 200)
         self._left_sensitivity_firm = clamp_i(int(left_sensitivity_firm), 0, 200)
@@ -664,6 +723,8 @@ class _MouseLmbSuppressor:
         self._rmb_down = False
         self._hook_lmb_up_pending_at = 0.0
         self._hook_rmb_up_pending_at = 0.0
+        self._handleless_lmb_up_pending_at = 0.0
+        self._handleless_rmb_up_pending_at = 0.0
         self._nonclient_left_passthrough = False
         self._nonclient_right_passthrough = False
         self._idle_raw_position_fresh = False
@@ -676,7 +737,9 @@ class _MouseLmbSuppressor:
         self._recent_injected_positions: deque[tuple[float, int, int]] = deque(
             maxlen=256
         )
-        self._pending_hook_positions: deque[tuple[float, int, int]] = deque(maxlen=64)
+        self._pending_hook_positions: deque[
+            tuple[float, int, int, int, int]
+        ] = deque(maxlen=64)
         self._reset_motion_diagnostics()
 
         self.user32.SetWindowsHookExW.argtypes = [
@@ -848,6 +911,8 @@ class _MouseLmbSuppressor:
         self._right_remap_latched = False
         self._hook_lmb_up_pending_at = 0.0
         self._hook_rmb_up_pending_at = 0.0
+        self._handleless_lmb_up_pending_at = 0.0
+        self._handleless_rmb_up_pending_at = 0.0
         with self._button_anchor_wait_lock:
             self._button_anchor_wait_button = None
             self._button_anchor_wait_started_at = 0.0
@@ -953,6 +1018,28 @@ class _MouseLmbSuppressor:
             self._finish_button_press("right")
             self._hook_rmb_up_pending_at = 0.0
             timed_out = True
+        for button, pending_name, virtual_key in (
+            ("left", "_handleless_lmb_up_pending_at", VK_LBUTTON),
+            ("right", "_handleless_rmb_up_pending_at", VK_RBUTTON),
+        ):
+            pending_at = float(getattr(self, pending_name))
+            if pending_at <= 0.0:
+                continue
+            elapsed = observed_at - pending_at
+            if elapsed < RAW_BUTTON_UP_FALLBACK_S:
+                continue
+            physical_down = bool(
+                int(self.user32.GetAsyncKeyState(virtual_key)) & 0x8000
+            )
+            if not physical_down:
+                self._finish_button_press(button)
+                setattr(self, pending_name, 0.0)
+                timed_out = True
+                self._add_motion_diagnostics(handleless_up_reconciled=1)
+            elif elapsed >= HANDLELESS_UP_RECHECK_TIMEOUT_S:
+                # Pen promotion can emit a handleless UP while the physical
+                # button remains held. Stop reconsidering that false release.
+                setattr(self, pending_name, 0.0)
         if timed_out:
             self._raw_contact_active = self._contact_button_down()
             self._add_motion_diagnostics(hook_up_timeout=1)
@@ -1318,21 +1405,61 @@ class _MouseLmbSuppressor:
             )
         )
 
-    def configure_remap(self, *, mode: str, hold_hotkey: str) -> None:
+    def configure_remap(
+        self,
+        *,
+        mode: str,
+        hold_hotkey: str,
+        toggle_hotkey: str,
+        deactivate_hotkey: str,
+    ) -> None:
         next_mode = str(mode)
         self._remap_mode = next_mode
         self._remap_hold_hotkey = parse_hold_hotkey(hold_hotkey)
+        self._remap_toggle_hotkey = parse_hold_hotkey(toggle_hotkey)
+        self._remap_deactivate_hotkey = parse_hold_hotkey(deactivate_hotkey)
         self._hold_mouse_down = False
+        self._remap_key_was_down = False
+        self._remap_toggle_enabled = True
 
     def _remap_available(self) -> bool:
-        return self._remap_mode == "always" or self._is_hold_hotkey_down()
+        if self._remap_mode == "always":
+            return True
+        if self._remap_mode == "toggle":
+            return self._remap_toggle_enabled
+        held = (
+            self._is_hold_hotkey_down()
+            if self._remap_mode == "hold"
+            else self._is_remap_hotkey_down()
+        )
+        return not held if self._remap_mode == "hold_deactivate" else held
+
+    def _active_remap_hotkey(self):
+        return {
+            "hold": self._remap_hold_hotkey,
+            "toggle": self._remap_toggle_hotkey,
+            "hold_deactivate": self._remap_deactivate_hotkey,
+        }.get(self._remap_mode)
+
+    def _is_remap_hotkey_down(self) -> bool:
+        if not self.enabled or self._remap_mode not in {"hold", "hold_deactivate"}:
+            return False
+        binding = self._active_remap_hotkey()
+        if binding is None:
+            return False
+        if binding.virtual_key in (0x04, 0x05, 0x06):
+            return self._hold_mouse_down and self._remap_modifiers_match(binding)
+        if not self._remap_modifiers_match(binding):
+            return False
+        return bool(int(self.user32.GetAsyncKeyState(binding.virtual_key)) & 0x8000)
 
     def _is_hold_hotkey_down(self) -> bool:
-        if not self.enabled or self._remap_mode != "hold":
-            return False
-        binding = self._remap_hold_hotkey
-        if binding.virtual_key in (0x04, 0x05, 0x06):
-            return self._hold_mouse_down
+        """Return the legacy hold-mode state used by existing adapters/tests."""
+        return self._is_remap_hotkey_down()
+
+    def _remap_modifiers_match(self, binding) -> bool:
+        if not binding.modifiers:
+            return True
         required_modifiers = (
             (MOD_CONTROL, VK_CONTROL),
             (MOD_ALT, VK_MENU),
@@ -1343,7 +1470,7 @@ class _MouseLmbSuppressor:
             pressed = bool(int(self.user32.GetAsyncKeyState(virtual_key)) & 0x8000)
             if pressed != required:
                 return False
-        return bool(int(self.user32.GetAsyncKeyState(binding.virtual_key)) & 0x8000)
+        return True
 
     def _handle_hold_mouse_message(
         self,
@@ -1352,24 +1479,63 @@ class _MouseLmbSuppressor:
         mouse_data: int,
         injected: bool,
     ) -> bool:
-        if not self.enabled or self._remap_mode != "hold" or injected:
+        if (
+            not self.enabled
+            or self._remap_mode not in {"hold", "toggle", "hold_deactivate"}
+            or injected
+        ):
             return False
-        binding = self._remap_hold_hotkey.virtual_key
+        hotkey = self._active_remap_hotkey()
+        if hotkey is None:
+            return False
+        binding = hotkey.virtual_key
         if binding == 0x04:
             if msg not in (WM_MBUTTONDOWN, WM_MBUTTONUP):
                 return False
-            self._hold_mouse_down = msg == WM_MBUTTONDOWN
-            return True
-        if binding not in (0x05, 0x06) or msg not in (
+            is_down = msg == WM_MBUTTONDOWN
+        elif binding in (0x05, 0x06) and msg in (
             WM_XBUTTONDOWN,
             WM_XBUTTONUP,
         ):
+            expected = XBUTTON1 if binding == 0x05 else XBUTTON2
+            if ((int(mouse_data) >> 16) & 0xFFFF) != expected:
+                return False
+            is_down = msg == WM_XBUTTONDOWN
+        else:
             return False
-        expected = XBUTTON1 if binding == 0x05 else XBUTTON2
-        if ((int(mouse_data) >> 16) & 0xFFFF) != expected:
+
+        if not is_down:
+            was_down = self._hold_mouse_down
+            self._hold_mouse_down = False
+            return was_down
+        if not self._remap_modifiers_match(hotkey):
             return False
-        self._hold_mouse_down = msg == WM_XBUTTONDOWN
+        if self._remap_mode == "toggle" and not self._hold_mouse_down:
+            self._remap_toggle_enabled = not self._remap_toggle_enabled
+            self.log(
+                "Remapping enabled"
+                if self._remap_toggle_enabled
+                else "Remapping disabled"
+            )
+        self._hold_mouse_down = True
         return True
+
+    def _poll_remap_toggle_hotkey(self) -> None:
+        if not self.enabled or self._remap_mode != "toggle":
+            self._remap_key_was_down = False
+            return
+        binding = self._remap_toggle_hotkey
+        if binding.virtual_key in (0x04, 0x05, 0x06):
+            return
+        is_down = hotkey_is_down(binding, self.user32.GetAsyncKeyState)
+        if is_down and not self._remap_key_was_down:
+            self._remap_toggle_enabled = not self._remap_toggle_enabled
+            self.log(
+                "Remapping enabled"
+                if self._remap_toggle_enabled
+                else "Remapping disabled"
+            )
+        self._remap_key_was_down = is_down
 
     def _begin_button_press(self, button: str) -> None:
         if button == "right":
@@ -1543,6 +1709,7 @@ class _MouseLmbSuppressor:
                 "duplicate": 0,
                 "hook_up_deferred": 0,
                 "raw_up_received": 0,
+                "handleless_up_reconciled": 0,
                 "hook_up_timeout": 0,
             }
 
@@ -1692,21 +1859,11 @@ class _MouseLmbSuppressor:
                     hook_injected_hint=1 if injected else 0,
                 )
                 return
-            if bridge_feedback:
-                # VMulti promotion moves the system cursor like hardware and
-                # may therefore arrive without LLMHF_INJECTED.  It is an OS
-                # baseline change, not physical mouse motion.  Counting it as
-                # a delta makes the next real move stall or briefly reverse.
-                with self._position_lock:
-                    self._cursor_baseline_x = int(x)
-                    self._cursor_baseline_y = int(y)
-                    self._cursor_baseline_initialized = True
-                self._add_motion_diagnostics(pen_feedback_filtered=1)
-                return
             # Do not trust LLMHF_INJECTED: Logitech can set it on physical
-            # movement, while promoted pen feedback is not always marked. Hold
-            # the transformed hook coordinate until a device-scoped Raw Input
-            # packet proves that real mouse movement occurred.
+            # movement, while promoted pen feedback is not always marked.
+            # Stage the transformed delta without changing the logical path;
+            # the following device-scoped Raw Input packet decides whether to
+            # commit it as physical motion or discard it as pen promotion.
             # Synthetic pen promotion moves the Windows cursor. Absolute hook
             # coordinates therefore drift away from the physical mouse path if
             # they are copied directly. Accumulate only the delta since the
@@ -1721,17 +1878,13 @@ class _MouseLmbSuppressor:
                         int(x) - self._cursor_baseline_x,
                         int(y) - self._cursor_baseline_y,
                     )
-                    self._raw_x += delta_x
-                    self._raw_y += delta_y
-                    self._raw_x, self._raw_y = self._clamp_virtual_desktop(
-                        self._raw_x,
-                        self._raw_y,
-                    )
+                else:
+                    delta_x, delta_y = 0, 0
                 self._cursor_baseline_x = int(x)
                 self._cursor_baseline_y = int(y)
                 self._cursor_baseline_initialized = True
                 self._pending_hook_positions.append(
-                    (float(observed_at), self._raw_x, self._raw_y)
+                    (float(observed_at), delta_x, delta_y, int(x), int(y))
                 )
             self._add_motion_diagnostics(
                 hook_events=1,
@@ -1758,10 +1911,22 @@ class _MouseLmbSuppressor:
             # buffered Raw Input is consumed. Pair them in order instead of
             # collapsing the entire batch to its final coordinate.
             if self._native_input_capture_active:
-                hook_at, x, y = self._pending_hook_positions.popleft()
+                hook_at, delta_x, delta_y, _hook_x, _hook_y = (
+                    self._pending_hook_positions.popleft()
+                )
             else:
-                hook_at, x, y = self._pending_hook_positions[-1]
+                hook_at = self._pending_hook_positions[-1][0]
+                delta_x = sum(item[1] for item in self._pending_hook_positions)
+                delta_y = sum(item[2] for item in self._pending_hook_positions)
                 self._pending_hook_positions.clear()
+            with self._position_lock:
+                self._raw_x += int(delta_x)
+                self._raw_y += int(delta_y)
+                self._raw_x, self._raw_y = self._clamp_virtual_desktop(
+                    self._raw_x,
+                    self._raw_y,
+                )
+                x, y = self._raw_x, self._raw_y
             publish_at = float(hook_at)
             source = "hook_correlated"
         else:
@@ -1785,7 +1950,8 @@ class _MouseLmbSuppressor:
 
     def _cursor_position(self) -> tuple[int, int]:
         point = wintypes.POINT()
-        if not self.user32.GetCursorPos(ctypes.byref(point)):
+        reader = getattr(self.user32, "GetCursorPos", None)
+        if not callable(reader) or not reader(ctypes.byref(point)):
             return self._raw_x, self._raw_y
         return int(point.x), int(point.y)
 
@@ -1816,13 +1982,62 @@ class _MouseLmbSuppressor:
         self._raw_device_identities[int(device_handle)] = identity
         return identity
 
+    def _discard_promoted_hook_position(
+        self,
+        observed_at: float,
+        x: int,
+        y: int,
+    ) -> None:
+        """Discard the hook point paired with handleless pen promotion."""
+        cutoff = float(observed_at) - 0.03
+        while (
+            self._pending_hook_positions
+            and self._pending_hook_positions[0][0] < cutoff
+        ):
+            self._pending_hook_positions.popleft()
+        if not self._pending_hook_positions:
+            return
+        match_index = next(
+            (
+                index
+                for index, item in enumerate(self._pending_hook_positions)
+                if abs(item[3] - int(x)) <= 2 and abs(item[4] - int(y)) <= 2
+            ),
+            0,
+        )
+        del self._pending_hook_positions[match_index]
+        self._add_motion_diagnostics(pen_feedback_filtered=1)
+
     def _handle_raw_mouse(self, device_handle: int, mouse: RAWMOUSE) -> None:
         observed_at = time.perf_counter()
         flags = int(mouse.usButtonFlags)
-        # Synthetic pen promotion can re-enter Raw Input with hDevice == 0
-        # and mouse-button flags. Those packets are not attributable to the
-        # supported physical mouse and must never mutate managed-button state.
-        device_button_flags = flags if int(device_handle) != 0 else 0
+        # Synthetic pen promotion can re-enter Raw Input with hDevice == 0.
+        # Never accept a handleless DOWN, but reconcile an UP when the matching
+        # managed contact is latched and Windows independently confirms that
+        # the physical button is no longer held. Some mouse report-rate modes
+        # expose the physical release only through this promoted packet.
+        handleless_release_flags = 0
+        if int(device_handle) == 0:
+            if (
+                flags & RI_MOUSE_LEFT_BUTTON_UP
+                and self.is_lmb_down()
+                and not bool(int(self.user32.GetAsyncKeyState(VK_LBUTTON)) & 0x8000)
+            ):
+                handleless_release_flags |= RI_MOUSE_LEFT_BUTTON_UP
+            elif flags & RI_MOUSE_LEFT_BUTTON_UP and self.is_lmb_down():
+                self._handleless_lmb_up_pending_at = float(observed_at)
+            if (
+                flags & RI_MOUSE_RIGHT_BUTTON_UP
+                and self.is_rmb_down()
+                and not bool(int(self.user32.GetAsyncKeyState(VK_RBUTTON)) & 0x8000)
+            ):
+                handleless_release_flags |= RI_MOUSE_RIGHT_BUTTON_UP
+            elif flags & RI_MOUSE_RIGHT_BUTTON_UP and self.is_rmb_down():
+                self._handleless_rmb_up_pending_at = float(observed_at)
+        device_button_flags = (
+            flags if int(device_handle) != 0 else handleless_release_flags
+        )
+
         if self._nonclient_left_passthrough:
             device_button_flags &= ~(
                 RI_MOUSE_LEFT_BUTTON_DOWN | RI_MOUSE_LEFT_BUTTON_UP
@@ -1850,6 +2065,8 @@ class _MouseLmbSuppressor:
                 and abs(dx - self._raw_x) <= 2
                 and abs(dy - self._raw_y) <= 2
             )
+        if int(device_handle) == 0 and (dx != 0 or dy != 0):
+            self._discard_promoted_hook_position(observed_at, dx, dy)
         if int(mouse.usFlags) & MOUSE_MOVE_ABSOLUTE or coordinate_echo:
             # Promoted synthetic/VMulti pen motion can re-enter Raw Input as an
             # absolute mouse packet. Its lLastX/lLastY values are coordinates,
@@ -1876,20 +2093,24 @@ class _MouseLmbSuppressor:
         if device_button_flags & RI_MOUSE_LEFT_BUTTON_DOWN:
             self._begin_button_press("left")
             self._hook_lmb_up_pending_at = 0.0
+            self._handleless_lmb_up_pending_at = 0.0
         if device_button_flags & RI_MOUSE_RIGHT_BUTTON_DOWN:
             self._begin_button_press("right")
             self._hook_rmb_up_pending_at = 0.0
+            self._handleless_rmb_up_pending_at = 0.0
         # Auxiliary or non-remapped buttons do not own the Raw Input contact.
         if device_button_flags & RI_MOUSE_LEFT_BUTTON_UP and (
             not self._left_button_owns_contact or not self._raw_contact_active
         ):
             self._finish_button_press("left")
             self._hook_lmb_up_pending_at = 0.0
+            self._handleless_lmb_up_pending_at = 0.0
         if device_button_flags & RI_MOUSE_RIGHT_BUTTON_UP and (
             not self._right_button_owns_contact or not self._raw_contact_active
         ):
             self._finish_button_press("right")
             self._hook_rmb_up_pending_at = 0.0
+            self._handleless_rmb_up_pending_at = 0.0
 
         button_down_flags = 0
         if self._left_button_owns_contact and self._left_remap_latched:
@@ -2106,16 +2327,22 @@ class _MouseLmbSuppressor:
                 self._publish_raw_correlated_position(observed_at)
 
         button_up_flags = RI_MOUSE_LEFT_BUTTON_UP | RI_MOUSE_RIGHT_BUTTON_UP
-        if (
+        authoritative_up = bool(
             device_button_flags & button_up_flags
-            and int(device_handle) == self._raw_device_handle
-        ):
+            and (
+                int(device_handle) == self._raw_device_handle
+                or (int(device_handle) == 0 and handleless_release_flags)
+            )
+        )
+        if authoritative_up:
             if device_button_flags & RI_MOUSE_LEFT_BUTTON_UP:
                 self._finish_button_press("left")
                 self._hook_lmb_up_pending_at = 0.0
+                self._handleless_lmb_up_pending_at = 0.0
             if device_button_flags & RI_MOUSE_RIGHT_BUTTON_UP:
                 self._finish_button_press("right")
                 self._hook_rmb_up_pending_at = 0.0
+                self._handleless_rmb_up_pending_at = 0.0
             with self._button_anchor_wait_lock:
                 self._button_anchor_wait_button = None
                 self._button_anchor_wait_started_at = 0.0
@@ -2127,6 +2354,8 @@ class _MouseLmbSuppressor:
                 self._contact_anchor_ready = False
                 self._reset_motion_carry()
             self._add_motion_diagnostics(raw_up_received=1)
+            if handleless_release_flags:
+                self._add_motion_diagnostics(handleless_up_reconciled=1)
             callback = self._movement_callback
             if callback is not None:
                 try:
@@ -2569,7 +2798,8 @@ class _MouseLmbSuppressor:
         else:
             self.log("Mouse input monitor active (no buttons suppressed)")
         hotkey = self._deactivation_hotkey
-        hotkey_registered = bool(
+        mouse_hotkey = is_mouse_hotkey(hotkey)
+        hotkey_registered = mouse_hotkey or bool(
             self.user32.RegisterHotKey(
                 None,
                 EMERGENCY_HOTKEY_ID,
@@ -2584,6 +2814,7 @@ class _MouseLmbSuppressor:
         self._ready.set()
 
         msg = wintypes.MSG()
+        mouse_hotkey_was_down = False
         while not self._stop.is_set():
             while self.user32.PeekMessageW(ctypes.byref(msg), None, 0, 0, PM_REMOVE):
                 if (
@@ -2600,6 +2831,21 @@ class _MouseLmbSuppressor:
                     continue
                 self.user32.TranslateMessage(ctypes.byref(msg))
                 self.user32.DispatchMessageW(ctypes.byref(msg))
+            if mouse_hotkey:
+                mouse_hotkey_down = hotkey_is_down(
+                    hotkey,
+                    self.user32.GetAsyncKeyState,
+                )
+                if mouse_hotkey_down and not mouse_hotkey_was_down:
+                    reason = f"Stop hotkey {hotkey.label} pressed"
+                    self.fail_open(reason)
+                    if not self._force_stop_requested:
+                        self._force_stop_requested = True
+                        callback = self._force_stop_callback
+                        if callback is not None:
+                            callback(reason)
+                mouse_hotkey_was_down = mouse_hotkey_down
+            self._poll_remap_toggle_hotkey()
             if (
                 self.enabled
                 and time.perf_counter() - self._last_heartbeat
@@ -2621,7 +2867,7 @@ class _MouseLmbSuppressor:
                 MWMO_INPUTAVAILABLE,
             )
 
-        if hotkey_registered:
+        if hotkey_registered and not mouse_hotkey:
             self.user32.UnregisterHotKey(None, EMERGENCY_HOTKEY_ID)
         if self._raw_input_active:
             remove_device = RAWINPUTDEVICE(
@@ -4906,6 +5152,8 @@ class SyntheticPenEmitter:
             ),
             remap_mode=config.remap_mode,
             remap_hold_hotkey=config.remap_hold_hotkey,
+            remap_toggle_hotkey=config.remap_toggle_hotkey,
+            remap_deactivate_hotkey=config.remap_deactivate_hotkey,
             left_sensitivity_enabled=(config.left_output_target == "mouse_sensitivity"),
             left_sensitivity_light=config.sensitivity_light,
             left_sensitivity_firm=config.sensitivity_firm,
@@ -5038,6 +5286,8 @@ class SyntheticPenEmitter:
             self._suppressor.configure_remap(
                 mode=self.config.remap_mode,
                 hold_hotkey=self.config.remap_hold_hotkey,
+                toggle_hotkey=self.config.remap_toggle_hotkey,
+                deactivate_hotkey=self.config.remap_deactivate_hotkey,
             )
             self._suppressor.configure_pressure_sensitivity(
                 left_enabled=self.config.left_output_target == "mouse_sensitivity",

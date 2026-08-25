@@ -6,6 +6,7 @@ import asyncio
 import queue
 import threading
 import time
+from pathlib import Path
 from typing import Callable, TypeAlias
 
 from mouse_pressure.bridge.config import ChannelConfig, LaunchConfig, RuntimeConfig
@@ -29,6 +30,7 @@ from mouse_pressure.runtime.device_settings import (
     validate_device_settings,
 )
 from mouse_pressure.runtime.device_settings_lease import TemporaryDeviceSettingsLease
+from mouse_pressure.runtime.diagnostic_session import DiagnosticSessionCollector
 from mouse_pressure.runtime.log_bus import GLOBAL_LOG_BUS, LogBus
 from mouse_pressure.runtime.models import (
     StreamAlreadyActiveError,
@@ -116,6 +118,12 @@ class RuntimeService:
         self._state_lock = threading.Lock()
         self._device_commands: queue.Queue[_DeviceCommand] = queue.Queue()
         self._device_settings_lease: TemporaryDeviceSettingsLease | None = None
+        config_dir = Path(getattr(config_store, "config_dir", Path.home() / ".mouse-pressure"))
+        trace_dir = Path(launch_config.trace_dir or config_dir / "stroke_traces")
+        self._diagnostics = DiagnosticSessionCollector(
+            config_dir, trace_dir, self.log_bus
+        )
+        self._last_diagnostics_bundle: Path | None = None
 
     async def start_stream(
         self,
@@ -124,6 +132,7 @@ class RuntimeService:
     ) -> None:
         if self._stream_active:
             raise StreamAlreadyActiveError("Stream is already active")
+        self._diagnostics.start(self._config, self.launch_config)
         backend = str(self.launch_config.backend).strip().lower()
         if backend not in {"native_synthetic", "telemetry"}:
             raise RuntimeError(
@@ -211,7 +220,8 @@ class RuntimeService:
                 self.log_bus.info(
                     f"Session mouse settings applied: DPI {applied.dpi}, "
                     f"haptics L{applied.haptic_left}/R{applied.haptic_right}, "
-                    f"actuation L{applied.actuation_left}/R{applied.actuation_right}"
+                    f"actuation L{applied.actuation_left}/R{applied.actuation_right}, "
+                    f"polling {applied.report_rate_hz} Hz"
                 )
             except Exception:
                 try:
@@ -373,6 +383,10 @@ class RuntimeService:
         self._telemetry_ready_event = None
         self._latest_emission_sample = None
         self.log_bus.info("Stream stopped")
+        bundle = await asyncio.to_thread(self._diagnostics.finish)
+        if bundle is not None:
+            self._last_diagnostics_bundle = bundle
+            self.log_bus.info(f"Diagnostics saved {bundle.resolve()}")
 
     def apply_config(
         self, patch: dict, *, replace_existing: bool = False
@@ -511,7 +525,8 @@ class RuntimeService:
         self.log_bus.info(
             f"Mouse settings detected: DPI {settings['dpi']}, "
             f"haptics L{settings['haptic_left']}/R{settings['haptic_right']}, "
-            f"actuation L{settings['actuation_left']}/R{settings['actuation_right']}"
+            f"actuation L{settings['actuation_left']}/R{settings['actuation_right']}, "
+            f"polling {settings['report_rate_hz']} Hz"
         )
         return settings
 
@@ -522,7 +537,8 @@ class RuntimeService:
         self.log_bus.info(
             f"Original mouse settings restored: DPI {restored.dpi}, "
             f"haptics L{restored.haptic_left}/R{restored.haptic_right}, "
-            f"actuation L{restored.actuation_left}/R{restored.actuation_right}"
+            f"actuation L{restored.actuation_left}/R{restored.actuation_right}, "
+            f"polling {restored.report_rate_hz} Hz"
         )
 
     @property
@@ -532,6 +548,14 @@ class RuntimeService:
     @property
     def device_found(self) -> bool:
         return self._device_found
+
+    @property
+    def diagnostics_dir(self) -> Path:
+        return self._diagnostics.output_dir
+
+    @property
+    def last_diagnostics_bundle(self) -> Path | None:
+        return self._last_diagnostics_bundle
 
     def _merge_patch_dict(self, merged: dict, patch: dict) -> None:
         if "linked" in patch:
@@ -562,7 +586,12 @@ class RuntimeService:
                     raise ValidationError(f"{hotkey_name} must be a string")
                 merged[hotkey_name] = hotkey
 
-        for remap_name in ("remap_mode", "remap_hold_hotkey"):
+        for remap_name in (
+            "remap_mode",
+            "remap_hold_hotkey",
+            "remap_toggle_hotkey",
+            "remap_deactivate_hotkey",
+        ):
             if remap_name in patch:
                 value = patch[remap_name]
                 if not isinstance(value, str):
@@ -571,6 +600,7 @@ class RuntimeService:
 
         for integer_name in (
             "session_dpi",
+            "session_report_rate_hz",
             "session_haptic_left",
             "session_haptic_right",
         ):
@@ -612,8 +642,9 @@ class RuntimeService:
             pressure_influence=self._config.left.pressure_influence,
             onset_buffer=self._config.left.onset_buffer,
             true_low_latency=self._config.left.true_low_latency,
-            # Preserve the user's Windows pointer transform. The native relay
-            # correlates device-scoped Raw Input with transformed coordinates.
+            # Preserve Windows' transformed desktop motion. The device is
+            # temporarily limited to 1000 Hz while mapping is active because
+            # its 8 kHz reports overwhelm this hook-correlated path.
             allow_raw_direct_motion=False,
             stationary_pressure_updates=(self._config.left.stationary_pressure_updates),
             immediate_button_wake=True,
@@ -657,6 +688,8 @@ class RuntimeService:
             right_output_target=right_target,
             remap_mode=self._config.remap_mode,
             remap_hold_hotkey=self._config.remap_hold_hotkey,
+            remap_toggle_hotkey=self._config.remap_toggle_hotkey,
+            remap_deactivate_hotkey=self._config.remap_deactivate_hotkey,
             sensitivity_light=self._config.left.sensitivity_light,
             sensitivity_firm=self._config.left.sensitivity_firm,
             right_sensitivity_light=effective_right.sensitivity_light,
@@ -825,7 +858,8 @@ class RuntimeService:
                 self.log_bus.info(
                     f"Device settings applied: DPI {result.dpi}, "
                     f"haptics L{result.haptic_left}/R{result.haptic_right}, "
-                    f"actuation L{result.actuation_left}/R{result.actuation_right}"
+                    f"actuation L{result.actuation_left}/R{result.actuation_right}, "
+                    f"polling {result.report_rate_hz} Hz"
                 )
                 loop.call_soon_threadsafe(
                     self._finish_device_command, future, result, None

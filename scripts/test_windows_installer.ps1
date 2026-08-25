@@ -25,7 +25,22 @@ $installRoot = Join-Path $smokeRoot 'Mouse Pressure'
 $installLog = Join-Path $smokeRoot 'install.log'
 $upgradeLog = Join-Path $smokeRoot 'upgrade.log'
 $uninstallLog = Join-Path $smokeRoot 'uninstall.log'
+$uninstallRegistryKey = 'HKCU\Software\Microsoft\Windows\CurrentVersion\Uninstall\{B63841C7-3B13-47CC-A80A-85D44708AF35}_is1'
+$registryBackup = Join-Path $smokeRoot 'existing-uninstall.reg'
+$uninstaller = ''
+$uninstallCompleted = $false
 [void](New-Item -ItemType Directory -Path $smokeRoot -Force)
+
+# A production AppId is required to exercise a real upgrade. Preserve any
+# developer installation that already owns its uninstall registration.
+& reg.exe query $uninstallRegistryKey *> $null
+$hadExistingRegistration = $LASTEXITCODE -eq 0
+if ($hadExistingRegistration) {
+    & reg.exe export $uninstallRegistryKey $registryBackup /y *> $null
+    if ($LASTEXITCODE -ne 0) {
+        throw 'Could not back up the existing Mouse Pressure uninstall registration.'
+    }
+}
 
 function Invoke-CheckedProcess {
     param(
@@ -88,6 +103,7 @@ function Wait-FileUnlocked {
     throw "File remained locked after ${TimeoutSeconds}s: $Path"
 }
 
+try {
 [void](Invoke-CheckedProcess -FilePath $initialInstallerPath -Arguments @(
     '/CURRENTUSER',
     '/VERYSILENT',
@@ -164,8 +180,33 @@ Wait-FileUnlocked -Path $application
     '/NORESTART',
     "/LOG=$uninstallLog"
 ) -Phase 'Silent uninstall')
+$uninstallCompleted = $true
 
 if (Test-Path -LiteralPath $application) {
     throw "Uninstall left the application behind: $application"
+}
+} finally {
+    if (-not $uninstallCompleted -and $uninstaller -and (
+        Test-Path -LiteralPath $uninstaller -PathType Leaf
+    )) {
+        try {
+            [void](Invoke-CheckedProcess -FilePath $uninstaller -Arguments @(
+                '/VERYSILENT',
+                '/SUPPRESSMSGBOXES',
+                '/NORESTART'
+            ) -Phase 'Cleanup uninstall')
+        } catch {
+            Write-Warning "Could not clean up the smoke-test installation: $_"
+        }
+    }
+
+    if ($hadExistingRegistration) {
+        & reg.exe import $registryBackup *> $null
+        if ($LASTEXITCODE -ne 0) {
+            Write-Warning 'Could not restore the existing Mouse Pressure uninstall registration.'
+        }
+    } else {
+        & reg.exe delete $uninstallRegistryKey /f *> $null
+    }
 }
 Write-Host "Installer lifecycle smoke test passed: $InstallerPath"

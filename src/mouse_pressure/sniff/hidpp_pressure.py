@@ -3,6 +3,8 @@
 from __future__ import annotations
 
 import atexit
+import ctypes
+import os
 import signal
 import time
 from dataclasses import dataclass
@@ -34,12 +36,25 @@ PRESSURE_NOTIFICATION_SWID = 0x00
 PRESSURE_MODE3_ADDR = 0x10
 PRESSURE_MODE3_LEFT_PAYLOAD_INDEX = 0
 PRESSURE_MODE3_RIGHT_PAYLOAD_INDEX = 2
+HARDWARE_OWNER_MUTEX = r"Local\MousePressureHardwareOwnerV1"
 MOUSE_BUTTON_SPY_INDEX = 0x0F
 HIDPP_SW_ID = 0x08
 DEVICE_CONFIG_SW_ID = 0x0F
 EXTENDED_DPI_FEATURE_INDEX = 0x09
 ONBOARD_PROFILES_FEATURE_ID = 0x8100
+EXTENDED_REPORT_RATE_FEATURE_ID = 0x8061
 CONFIG_WRAPPER_FEATURE_INDEX = 0x0F
+
+REPORT_RATE_ENUM_TO_HZ = {
+    0: 125,
+    1: 250,
+    2: 500,
+    3: 1000,
+    4: 2000,
+    5: 4000,
+    6: 8000,
+}
+REPORT_RATE_HZ_TO_ENUM = {hz: value for value, hz in REPORT_RATE_ENUM_TO_HZ.items()}
 
 DISABLE_PRESSURE_STREAM_CANDIDATES = [
     [
@@ -226,10 +241,54 @@ def normalize_raw_pressure(raw: int, raw_min: int, raw_max: int) -> float:
     return t
 
 
+class HardwareStreamOwner:
+    """Process-scoped ownership for the compatible pressure HID collection."""
+
+    def __init__(self, name: str = HARDWARE_OWNER_MUTEX) -> None:
+        self.name = name
+        self._handle: int | None = None
+
+    def acquire(self) -> bool:
+        if os.name != "nt":
+            return True
+        kernel32 = ctypes.WinDLL("kernel32", use_last_error=True)
+        kernel32.CreateMutexW.argtypes = [ctypes.c_void_p, ctypes.c_bool, ctypes.c_wchar_p]
+        kernel32.CreateMutexW.restype = ctypes.c_void_p
+        kernel32.WaitForSingleObject.argtypes = [ctypes.c_void_p, ctypes.c_uint32]
+        kernel32.WaitForSingleObject.restype = ctypes.c_uint32
+        kernel32.CloseHandle.argtypes = [ctypes.c_void_p]
+        kernel32.CloseHandle.restype = ctypes.c_bool
+        handle = kernel32.CreateMutexW(None, False, self.name)
+        if not handle:
+            return False
+        wait = kernel32.WaitForSingleObject(handle, 0)
+        if wait not in (0x00000000, 0x00000080):
+            kernel32.CloseHandle(handle)
+            return False
+        self._handle = int(handle)
+        return True
+
+    def release(self) -> None:
+        handle, self._handle = self._handle, None
+        if handle is None or os.name != "nt":
+            return
+        kernel32 = ctypes.WinDLL("kernel32", use_last_error=True)
+        kernel32.ReleaseMutex.argtypes = [ctypes.c_void_p]
+        kernel32.ReleaseMutex.restype = ctypes.c_bool
+        kernel32.CloseHandle.argtypes = [ctypes.c_void_p]
+        kernel32.CloseHandle.restype = ctypes.c_bool
+        kernel32.ReleaseMutex(handle)
+        kernel32.CloseHandle(handle)
+
+
 class PressureHidppSession:
     """HID++ session with mandatory cleanup for pressure stream enablement."""
 
-    def __init__(self, log: Callable[[str], None]) -> None:
+    def __init__(
+        self,
+        log: Callable[[str], None],
+        owner: HardwareStreamOwner | None = None,
+    ) -> None:
         self.log = log
         self.dev: hid.device | None = None
         self.path_col02: bytes | None = None
@@ -242,10 +301,12 @@ class PressureHidppSession:
         self._signal_handlers: dict[signal.Signals, object] = {}
         self.pressure_feature_index = PRESSURE_FEATURE_INDEX
         self.onboard_profiles_feature_index: int | None = None
+        self.extended_report_rate_feature_index: int | None = None
         self._previous_monitoring_flags: int | None = None
         self._active_monitoring_flags: int | None = None
         self.lease_renew_interval_s = PRESSURE_LEASE_RENEW_INTERVAL_S
         self._next_lease_renewal = 0.0
+        self._owner = owner if owner is not None else HardwareStreamOwner()
 
     def discover_col02_candidates(self) -> list[dict]:
         candidates: list[dict] = []
@@ -310,6 +371,7 @@ class PressureHidppSession:
         self.dev = None
         self.pressure_feature_index = PRESSURE_FEATURE_INDEX
         self.onboard_profiles_feature_index = None
+        self.extended_report_rate_feature_index = None
         self._previous_monitoring_flags = None
         self._active_monitoring_flags = None
         self._next_lease_renewal = 0.0
@@ -317,13 +379,19 @@ class PressureHidppSession:
         return True
 
     def open(self) -> None:
-        self._candidates = self.discover_col02_candidates()
-        if not self._candidates:
-            raise RuntimeError(
-                "No supported wired or wireless HID++ command interface was found"
-            )
-        self._open_candidate(0)
-        self._register_cleanup_hooks()
+        if not self._owner.acquire():
+            raise RuntimeError("Another Mouse Pressure publisher owns the pressure stream")
+        try:
+            self._candidates = self.discover_col02_candidates()
+            if not self._candidates:
+                raise RuntimeError(
+                    "No supported wired or wireless HID++ command interface was found"
+                )
+            self._open_candidate(0)
+            self._register_cleanup_hooks()
+        except Exception:
+            self._owner.release()
+            raise
 
     def close(self) -> None:
         try:
@@ -335,6 +403,7 @@ class PressureHidppSession:
                 except OSError:
                     pass
             self._unregister_cleanup_hooks()
+            self._owner.release()
 
     def _register_cleanup_hooks(self) -> None:
         if not self._atexit_registered:
@@ -628,6 +697,47 @@ class PressureHidppSession:
         if actual != dpi:
             raise RuntimeError(
                 f"DPI remained at {actual}; disable the mouse onboard profile or close G HUB"
+            )
+        return actual
+
+    def _report_rate_feature_index(self) -> int:
+        if self.extended_report_rate_feature_index is None:
+            self.extended_report_rate_feature_index = self.discover_feature_index(
+                EXTENDED_REPORT_RATE_FEATURE_ID,
+                label="RATE.discover.0x8061",
+            )
+        return self.extended_report_rate_feature_index
+
+    def get_report_rate_hz(self) -> int:
+        """Read the active HID report rate from feature 0x8061."""
+        connection_type = 0 if self.transport == "wired" else 1
+        values = self.request_long(
+            feature_index=self._report_rate_feature_index(),
+            address=_function_to_address(2, DEVICE_CONFIG_SW_ID),
+            payload=[connection_type],
+            label="RATE.read",
+        )
+        if not values or values[0] not in REPORT_RATE_ENUM_TO_HZ:
+            raise RuntimeError("Extended report-rate response was invalid")
+        return REPORT_RATE_ENUM_TO_HZ[values[0]]
+
+    def set_report_rate_hz(self, report_rate_hz: int) -> int:
+        """Set and verify one rate supported by HID++ feature 0x8061."""
+        rate_enum = REPORT_RATE_HZ_TO_ENUM.get(int(report_rate_hz))
+        if rate_enum is None:
+            supported = ", ".join(str(rate) for rate in REPORT_RATE_HZ_TO_ENUM)
+            raise ValueError(f"Report rate must be one of: {supported} Hz")
+        feature_index = self._report_rate_feature_index()
+        self.request_long(
+            feature_index=feature_index,
+            address=_function_to_address(3, DEVICE_CONFIG_SW_ID),
+            payload=[rate_enum],
+            label=f"RATE.write={report_rate_hz}",
+        )
+        actual = self.get_report_rate_hz()
+        if actual != report_rate_hz:
+            raise RuntimeError(
+                f"Report rate remained at {actual} Hz after requesting {report_rate_hz} Hz"
             )
         return actual
 

@@ -139,10 +139,12 @@ class HoldShortcutEdit(QLineEdit):
         *,
         capture_started: Callable[[], None],
         capture_finished: Callable[[], None],
+        binding_parser: Callable[[str], Any] = parse_hold_hotkey,
     ) -> None:
         super().__init__()
         self._capture_started = capture_started
         self._capture_finished = capture_finished
+        self._binding_parser = binding_parser
         self._binding = ""
         self.setReadOnly(True)
         self.setAlignment(Qt.AlignmentFlag.AlignLeft)
@@ -152,7 +154,7 @@ class HoldShortcutEdit(QLineEdit):
         return self._binding
 
     def set_binding(self, binding: str) -> None:
-        normalized = parse_hold_hotkey(binding).label
+        normalized = self._binding_parser(binding).label
         changed = normalized != self._binding
         self._binding = normalized
         self.setText(normalized)
@@ -196,6 +198,17 @@ class HoldShortcutEdit(QLineEdit):
         if binding is None:
             super().mousePressEvent(event)
             return
+        modifiers = event.modifiers()
+        labels = [
+            label
+            for label, modifier in (
+                ("Ctrl", Qt.KeyboardModifier.ControlModifier),
+                ("Alt", Qt.KeyboardModifier.AltModifier),
+                ("Shift", Qt.KeyboardModifier.ShiftModifier),
+            )
+            if modifiers & modifier
+        ]
+        binding = "+".join((*labels, binding))
         self.setFocus()
         self.set_binding(binding)
         event.accept()
@@ -953,7 +966,7 @@ class MainWindow(QMainWindow):
                 QSizePolicy.Policy.Fixed,
                 QSizePolicy.Policy.Expanding,
             )
-            grid.addWidget(rule, 0, column, 6, 1)
+            grid.addWidget(rule, 0, column, 7, 1)
             self.mouse_settings_rules.append(rule)
         grid.addWidget(
             _label("Off", muted=True),
@@ -978,12 +991,31 @@ class MainWindow(QMainWindow):
         self.dpi.setValue(config.session_dpi)
         self.dpi.setFixedWidth(FORM_COMPACT_WIDTH)
         grid.addWidget(self.dpi, 1, 5, alignment=Qt.AlignmentFlag.AlignRight)
+        grid.addWidget(QLabel("Polling rate"), 2, 0)
+        self.normal_report_rate = _label("Detecting…", muted=True)
+        grid.addWidget(
+            self.normal_report_rate,
+            2,
+            2,
+            alignment=Qt.AlignmentFlag.AlignCenter,
+        )
+        self.report_rate = QComboBox()
+        for rate in (125, 250, 500, 1000, 2000, 4000, 8000):
+            label = f"{rate / 1000:g} kHz" if rate >= 1000 else f"{rate} Hz"
+            self.report_rate.addItem(label, rate)
+        self.report_rate.setCurrentIndex(
+            max(0, self.report_rate.findData(config.session_report_rate_hz))
+        )
+        self.report_rate.setFixedWidth(FORM_COMPACT_WIDTH)
+        grid.addWidget(
+            self.report_rate, 2, 5, alignment=Qt.AlignmentFlag.AlignRight
+        )
         self.haptics: dict[str, SliderField] = {}
         self.normal_haptics: dict[str, QLabel] = {}
         self.actuation: dict[str, SliderField] = {}
         self.normal_actuation: dict[str, QLabel] = {}
         for index, channel in enumerate(("left", "right")):
-            row = 2 + index * 2
+            row = 3 + index * 2
             grid.addWidget(QLabel(f"{channel.title()} haptics"), row, 0)
             normal = _label("—", muted=True)
             self.normal_haptics[channel] = normal
@@ -1033,7 +1065,8 @@ class MainWindow(QMainWindow):
         hardware.content.addWidget(
             _label(
                 "When deactivated, previous settings are restored. "
-                "0 haptics (off) is recommended for digital painting.",
+                "0 haptics (off) is recommended for digital painting. "
+                "Higher polling rates may cause jitter.",
                 muted=True,
                 wrap=True,
             )
@@ -1050,6 +1083,8 @@ class MainWindow(QMainWindow):
         self.remap_mode = QComboBox()
         self.remap_mode.addItem("Always remap", "always")
         self.remap_mode.addItem("Hold to remap", "hold")
+        self.remap_mode.addItem("Toggle remap", "toggle")
+        self.remap_mode.addItem("Hold to deactivate", "hold_deactivate")
         self.remap_mode.setCurrentIndex(
             max(0, self.remap_mode.findData(config.remap_mode))
         )
@@ -1069,21 +1104,44 @@ class MainWindow(QMainWindow):
         shortcut_grid.addWidget(
             self.remap_hold_hotkey, 1, 2, alignment=Qt.AlignmentFlag.AlignRight
         )
+        self.remap_toggle_hotkey = HoldShortcutEdit(
+            config.remap_toggle_hotkey,
+            capture_started=self._suspend_start_hotkey,
+            capture_finished=self._resume_start_hotkey,
+        )
+        self.remap_toggle_hotkey.setFixedWidth(FORM_HOTKEY_WIDTH)
+        shortcut_grid.addWidget(
+            self.remap_toggle_hotkey, 1, 2, alignment=Qt.AlignmentFlag.AlignRight
+        )
+        self.remap_deactivate_hotkey = HoldShortcutEdit(
+            config.remap_deactivate_hotkey,
+            capture_started=self._suspend_start_hotkey,
+            capture_finished=self._resume_start_hotkey,
+        )
+        self.remap_deactivate_hotkey.setFixedWidth(FORM_HOTKEY_WIDTH)
+        shortcut_grid.addWidget(
+            self.remap_deactivate_hotkey,
+            1,
+            2,
+            alignment=Qt.AlignmentFlag.AlignRight,
+        )
         shortcut_grid.addWidget(QLabel("Start"), 2, 0)
-        self.activation_hotkey = HotkeySequenceEdit(
+        self.activation_hotkey = HoldShortcutEdit(
             config.activation_hotkey,
             capture_started=self._suspend_start_hotkey,
             capture_finished=self._resume_start_hotkey,
+            binding_parser=parse_global_hotkey,
         )
         self.activation_hotkey.setFixedWidth(FORM_HOTKEY_WIDTH)
         shortcut_grid.addWidget(
             self.activation_hotkey, 2, 2, alignment=Qt.AlignmentFlag.AlignRight
         )
         shortcut_grid.addWidget(QLabel("Stop"), 3, 0)
-        self.deactivation_hotkey = HotkeySequenceEdit(
+        self.deactivation_hotkey = HoldShortcutEdit(
             config.deactivation_hotkey,
             capture_started=self._suspend_start_hotkey,
             capture_finished=self._resume_start_hotkey,
+            binding_parser=parse_global_hotkey,
         )
         self.deactivation_hotkey.setFixedWidth(FORM_HOTKEY_WIDTH)
         shortcut_grid.addWidget(
@@ -1197,6 +1255,9 @@ class MainWindow(QMainWindow):
         toolbar = QHBoxLayout()
         toolbar.addWidget(_label("Session output", muted=True))
         toolbar.addStretch(1)
+        open_folder = QPushButton("Open log folder")
+        open_folder.clicked.connect(self._open_log_folder)
+        toolbar.addWidget(open_folder)
         clear = QPushButton("Clear")
         clear.clicked.connect(lambda: self.terminal.clear())
         toolbar.addWidget(clear)
@@ -1292,6 +1353,7 @@ class MainWindow(QMainWindow):
     def _connect_non_mapping_controls(self) -> None:
         for signal in (
             self.dpi.valueChanged,
+            self.report_rate.currentIndexChanged,
             self.haptics["left"].valueChanged,
             self.haptics["right"].valueChanged,
             self.debug_mode.toggled,
@@ -1306,8 +1368,10 @@ class MainWindow(QMainWindow):
                 lambda *_args, name=channel: self._mapping_control_changed(name)
             )
         self.remap_hold_hotkey.bindingChanged.connect(self._mark_dirty)
-        self.activation_hotkey.keySequenceChanged.connect(self._mark_dirty)
-        self.deactivation_hotkey.keySequenceChanged.connect(self._mark_dirty)
+        self.remap_toggle_hotkey.bindingChanged.connect(self._mark_dirty)
+        self.remap_deactivate_hotkey.bindingChanged.connect(self._mark_dirty)
+        self.activation_hotkey.bindingChanged.connect(self._mark_dirty)
+        self.deactivation_hotkey.bindingChanged.connect(self._mark_dirty)
         self.debug_mode.toggled.connect(self._set_debug_navigation)
 
     def _mapping_control_changed(self, channel: str) -> None:
@@ -1317,9 +1381,17 @@ class MainWindow(QMainWindow):
         self._redraw_mapping()
 
     def _update_remap_controls(self, *_args: Any) -> None:
-        hold_mode = self.remap_mode.currentData() == "hold"
-        self.remap_hold_label.setVisible(hold_mode)
-        self.remap_hold_hotkey.setVisible(hold_mode)
+        mode = str(self.remap_mode.currentData())
+        labels = {
+            "hold": "Hold",
+            "toggle": "Toggle",
+            "hold_deactivate": "Deactivate",
+        }
+        self.remap_hold_label.setText(labels.get(mode, ""))
+        self.remap_hold_label.setVisible(mode in labels)
+        self.remap_hold_hotkey.setVisible(mode == "hold")
+        self.remap_toggle_hotkey.setVisible(mode == "toggle")
+        self.remap_deactivate_hotkey.setVisible(mode == "hold_deactivate")
 
     def _pressure_options_changed(self, *_args: Any, mark_dirty: bool = True) -> None:
         self._update_channel_tabs()
@@ -1409,6 +1481,7 @@ class MainWindow(QMainWindow):
             debug_mode=self.debug_mode.isChecked(),
             minimize_to_tray=self.minimize_to_tray.isChecked(),
             session_dpi=self.dpi.value(),
+            session_report_rate_hz=int(self.report_rate.currentData()),
             session_haptic_left=self.haptics["left"].value(),
             session_haptic_right=self.haptics["right"].value(),
             session_device_settings_follow_normal=(
@@ -1416,6 +1489,8 @@ class MainWindow(QMainWindow):
             ),
             remap_mode=str(self.remap_mode.currentData()),
             remap_hold_hotkey=self.remap_hold_hotkey.binding(),
+            remap_toggle_hotkey=self.remap_toggle_hotkey.binding(),
+            remap_deactivate_hotkey=self.remap_deactivate_hotkey.binding(),
             activation_hotkey=self._hotkey_text(self.activation_hotkey),
             deactivation_hotkey=self._hotkey_text(self.deactivation_hotkey),
             left=self._channel_config("left"),
@@ -1428,12 +1503,13 @@ class MainWindow(QMainWindow):
         )
 
     @staticmethod
-    def _hotkey_text(editor: QKeySequenceEdit) -> str:
-        return editor.keySequence().toString(QKeySequence.SequenceFormat.PortableText)
+    def _hotkey_text(editor: HoldShortcutEdit) -> str:
+        return editor.binding()
 
     def _device_settings(self) -> dict[str, int]:
         return {
             "dpi": self.dpi.value(),
+            "report_rate_hz": int(self.report_rate.currentData()),
             "haptic_left": self.haptics["left"].value(),
             "haptic_right": self.haptics["right"].value(),
             "actuation_left": self.actuation["left"].value(),
@@ -1612,14 +1688,17 @@ class MainWindow(QMainWindow):
                 max(0, self.remap_mode.findData(config.remap_mode))
             )
             self.remap_hold_hotkey.set_binding(config.remap_hold_hotkey)
+            self.remap_toggle_hotkey.set_binding(config.remap_toggle_hotkey)
+            self.remap_deactivate_hotkey.set_binding(
+                config.remap_deactivate_hotkey
+            )
             self._update_remap_controls()
-            self.activation_hotkey.setKeySequence(
-                QKeySequence(config.activation_hotkey)
-            )
-            self.deactivation_hotkey.setKeySequence(
-                QKeySequence(config.deactivation_hotkey)
-            )
+            self.activation_hotkey.set_binding(config.activation_hotkey)
+            self.deactivation_hotkey.set_binding(config.deactivation_hotkey)
             self.dpi.setValue(config.session_dpi)
+            self.report_rate.setCurrentIndex(
+                max(0, self.report_rate.findData(config.session_report_rate_hz))
+            )
             self.haptics["left"].setValue(config.session_haptic_left)
             self.haptics["right"].setValue(config.session_haptic_right)
         finally:
@@ -2003,6 +2082,8 @@ class MainWindow(QMainWindow):
             editor.calibrate_button.setEnabled(not self.calibrating)
         self.injection_hz.setEnabled(not running)
         self.remap_hold_hotkey.setEnabled(not running)
+        self.remap_toggle_hotkey.setEnabled(not running)
+        self.remap_deactivate_hotkey.setEnabled(not running)
         self.activation_hotkey.setEnabled(not running)
         self.deactivation_hotkey.setEnabled(not running)
         self.mapping_graph.set_live_preview(running)
@@ -2096,6 +2177,12 @@ class MainWindow(QMainWindow):
         MainWindow._set_device_connected(self, True)
         self._normal_device = SessionDeviceSettings.from_mapping(payload)
         self.normal_dpi.setText(str(payload["dpi"]))
+        normal_rate = int(payload.get("report_rate_hz", 1000))
+        self.normal_report_rate.setText(
+            f"{normal_rate / 1000:g} kHz"
+            if normal_rate >= 1000
+            else f"{normal_rate} Hz"
+        )
         self.normal_haptics["left"].setText(str(payload["haptic_left"]))
         self.normal_haptics["right"].setText(str(payload["haptic_right"]))
         self.normal_actuation["left"].setText(str(payload["actuation_left"]))
@@ -2112,7 +2199,8 @@ class MainWindow(QMainWindow):
         self.write_system(
             f"Detected mouse: {payload['dpi']} DPI, "
             f"haptics L{payload['haptic_left']}/R{payload['haptic_right']}, "
-            f"actuation L{payload['actuation_left']}/R{payload['actuation_right']}."
+            f"actuation L{payload['actuation_left']}/R{payload['actuation_right']}, "
+            f"polling {payload.get('report_rate_hz', 1000)} Hz."
         )
 
     def _handle_telemetry(self, payload: dict[str, Any]) -> None:
@@ -2188,6 +2276,14 @@ class MainWindow(QMainWindow):
             and self.pages.currentWidget() is self.analysis_page
         ):
             self._refresh_strokes(select_latest=True)
+
+    def _open_log_folder(self) -> None:
+        directory = self.service.diagnostics_dir
+        directory.mkdir(parents=True, exist_ok=True)
+        try:
+            subprocess.Popen(["explorer.exe", str(directory)])
+        except OSError as exc:
+            self.write_system(f"Could not open log folder: {exc}", level="ERROR")
 
     def write_system(self, message: str, *, level: str = "SYSTEM") -> None:
         self.terminal.appendPlainText(f"> {level}: {message}")

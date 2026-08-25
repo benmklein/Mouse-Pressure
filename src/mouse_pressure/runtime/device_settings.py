@@ -19,6 +19,7 @@ class SessionDeviceSettings:
     haptic_right: int
     actuation_left: int = 5
     actuation_right: int = 5
+    report_rate_hz: int = 1000
 
     @classmethod
     def from_mapping(cls, settings: Mapping[str, int] | Self) -> Self:
@@ -31,6 +32,7 @@ class SessionDeviceSettings:
                 haptic_right=int(settings["haptic_right"]),
                 actuation_left=int(settings.get("actuation_left", 5)),
                 actuation_right=int(settings.get("actuation_right", 5)),
+                report_rate_hz=int(settings.get("report_rate_hz", 1000)),
             )
         except (KeyError, TypeError, ValueError) as exc:
             raise ValidationError(
@@ -44,6 +46,7 @@ class SessionDeviceSettings:
             "haptic_right": int(self.haptic_right),
             "actuation_left": int(self.actuation_left),
             "actuation_right": int(self.actuation_right),
+            "report_rate_hz": int(self.report_rate_hz),
         }
 
 
@@ -54,6 +57,7 @@ class DeviceSettingsSnapshot:
     session: SessionDeviceSettings
     onboard_profiles_enabled: bool | None = None
     onboard_profile_sector: int | None = None
+    report_rate_hz: int | None = None
 
     @classmethod
     def from_mapping(cls, settings: Mapping[str, int] | Self) -> Self:
@@ -62,6 +66,7 @@ class DeviceSettingsSnapshot:
         session = SessionDeviceSettings.from_mapping(settings)
         profiles_enabled = settings.get("onboard_profiles_enabled")
         profile_sector = settings.get("onboard_profile_sector")
+        report_rate_hz = settings.get("report_rate_hz")
         return cls(
             session=session,
             onboard_profiles_enabled=(
@@ -69,6 +74,9 @@ class DeviceSettingsSnapshot:
             ),
             onboard_profile_sector=(
                 int(profile_sector) if profile_sector is not None else None
+            ),
+            report_rate_hz=(
+                int(report_rate_hz) if report_rate_hz is not None else None
             ),
         )
 
@@ -78,6 +86,8 @@ class DeviceSettingsSnapshot:
             result["onboard_profiles_enabled"] = int(self.onboard_profiles_enabled)
         if self.onboard_profile_sector is not None:
             result["onboard_profile_sector"] = int(self.onboard_profile_sector)
+        if self.report_rate_hz is not None:
+            result["report_rate_hz"] = int(self.report_rate_hz)
         return result
 
 
@@ -91,6 +101,8 @@ def validate_device_settings(
         raise ValidationError("Haptic levels must be in 0..5")
     if not 1 <= validated.actuation_left <= 10 or not 1 <= validated.actuation_right <= 10:
         raise ValidationError("Actuation levels must be in 1..10")
+    if validated.report_rate_hz not in {125, 250, 500, 1000, 2000, 4000, 8000}:
+        raise ValidationError("Polling rate is not supported")
     return validated
 
 
@@ -107,11 +119,15 @@ def read_device_settings(
     actuation_left, actuation_right = session.get_actuation_levels()
     profiles_enabled: bool | None = None
     profile_sector: int | None = None
+    report_rate_hz: int | None = None
     profile_reader = getattr(session, "get_onboard_profile_state", None)
     if callable(profile_reader):
         enabled, sector = profile_reader()
         profiles_enabled = bool(enabled)
         profile_sector = int(sector or 0)
+    report_rate_reader = getattr(session, "get_report_rate_hz", None)
+    if callable(report_rate_reader):
+        report_rate_hz = int(report_rate_reader())
     return DeviceSettingsSnapshot(
         session=SessionDeviceSettings(
             dpi=int(dpi),
@@ -119,9 +135,11 @@ def read_device_settings(
             haptic_right=int(right),
             actuation_left=int(actuation_left),
             actuation_right=int(actuation_right),
+            report_rate_hz=int(report_rate_hz or 1000),
         ),
         onboard_profiles_enabled=profiles_enabled,
         onboard_profile_sector=profile_sector,
+        report_rate_hz=report_rate_hz,
     )
 
 
@@ -154,6 +172,7 @@ def apply_device_settings(
     right = current.session.haptic_right
     actuation_left = current.session.actuation_left
     actuation_right = current.session.actuation_right
+    report_rate_hz = current.report_rate_hz or current.session.report_rate_hz
     if settings.dpi != dpi:
         if current.onboard_profiles_enabled:
             profile_writer = getattr(session, "set_onboard_profile_state", None)
@@ -177,12 +196,18 @@ def apply_device_settings(
             left=settings.actuation_left,
             right=settings.actuation_right,
         )
+    if settings.report_rate_hz != report_rate_hz:
+        report_rate_writer = getattr(session, "set_report_rate_hz", None)
+        if not callable(report_rate_writer):
+            raise RuntimeError("Mouse polling rate cannot be changed")
+        report_rate_hz = int(report_rate_writer(settings.report_rate_hz))
     return SessionDeviceSettings(
         dpi=int(dpi),
         haptic_left=int(left),
         haptic_right=int(right),
         actuation_left=int(actuation_left),
         actuation_right=int(actuation_right),
+        report_rate_hz=int(report_rate_hz),
     )
 
 

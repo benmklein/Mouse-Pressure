@@ -1,5 +1,5 @@
 #ifndef MyAppVersion
-  #define MyAppVersion "0.3.0-dev"
+  #define MyAppVersion "0.4.0-dev"
 #endif
 
 #define MyAppName "Mouse Pressure"
@@ -32,6 +32,10 @@ ArchitecturesInstallIn64BitMode=x64compatible
 CloseApplications=yes
 RestartApplications=no
 UsePreviousAppDir=yes
+DisableDirPage=auto
+; The default directory is app-specific. Allow reinstall/upgrade recovery when
+; the uninstall registry entry is missing but the application folder remains.
+DirExistsWarning=no
 
 [InstallDelete]
 ; Replace generated payload directories so removed files do not survive upgrades.
@@ -64,3 +68,79 @@ Name: "desktopicon"; Description: "Create a desktop shortcut"; GroupDescription:
 
 [Run]
 Filename: "{app}\{#MyAppExeName}"; Description: "Launch Mouse Pressure"; Flags: nowait postinstall skipifsilent
+
+[Code]
+const
+  UninstallRegistryKey = 'Software\Microsoft\Windows\CurrentVersion\Uninstall\{B63841C7-3B13-47CC-A80A-85D44708AF35}_is1';
+
+var
+  ExistingInstallPage: TInputOptionWizardPage;
+  ExistingUninstaller: String;
+  ExistingVersion: String;
+  UninstallLaunched: Boolean;
+
+function FindExistingInstall: Boolean;
+begin
+  Result :=
+    RegQueryStringValue(
+      HKCU64, UninstallRegistryKey, 'UninstallString', ExistingUninstaller
+    ) and FileExists(RemoveQuotes(ExistingUninstaller));
+  if Result then begin
+    ExistingUninstaller := RemoveQuotes(ExistingUninstaller);
+    if not RegQueryStringValue(
+      HKCU64, UninstallRegistryKey, 'DisplayVersion', ExistingVersion
+    ) then
+      ExistingVersion := 'an earlier version';
+  end;
+end;
+
+procedure InitializeWizard;
+begin
+  if WizardSilent or not FindExistingInstall then
+    Exit;
+
+  ExistingInstallPage := CreateInputOptionPage(
+    wpWelcome,
+    'Existing installation',
+    'Choose what you want to do.',
+    'Mouse Pressure ' + ExistingVersion + ' is already installed.',
+    True,
+    False
+  );
+  ExistingInstallPage.Add('Update or reinstall Mouse Pressure {#MyAppVersion}');
+  ExistingInstallPage.Add('Uninstall Mouse Pressure ' + ExistingVersion);
+  ExistingInstallPage.SelectedValueIndex := 0;
+end;
+
+function NextButtonClick(CurPageID: Integer): Boolean;
+var
+  ResultCode: Integer;
+begin
+  Result := True;
+  if (ExistingInstallPage = nil) or
+     (CurPageID <> ExistingInstallPage.ID) or
+     (ExistingInstallPage.SelectedValueIndex <> 1) then
+    Exit;
+
+  Result := False;
+  if Exec(
+    ExistingUninstaller,
+    '',
+    ExtractFileDir(ExistingUninstaller),
+    SW_SHOWNORMAL,
+    ewNoWait,
+    ResultCode
+  ) then begin
+    UninstallLaunched := True;
+    WizardForm.Close;
+  end else
+    MsgBox('Mouse Pressure could not start its uninstaller.', mbError, MB_OK);
+end;
+
+procedure CancelButtonClick(
+  CurPageID: Integer; var Cancel, Confirm: Boolean
+);
+begin
+  if UninstallLaunched then
+    Confirm := False;
+end;

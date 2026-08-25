@@ -30,11 +30,14 @@ def _sample_runtime_config() -> RuntimeConfig:
         debug_mode=False,
         minimize_to_tray=False,
         session_dpi=1600,
+        session_report_rate_hz=500,
         session_haptic_left=0,
         session_haptic_right=3,
         session_device_settings_follow_normal=False,
         remap_mode="hold",
         remap_hold_hotkey="Alt+F11",
+        remap_toggle_hotkey="Mouse 4",
+        remap_deactivate_hotkey="Mouse 5",
         activation_hotkey="Ctrl+F11",
         deactivation_hotkey="Ctrl+Shift+F11",
         left=ChannelConfig(
@@ -70,6 +73,9 @@ class ConfigStoreTests(unittest.TestCase):
         self.assertFalse(defaults.debug_mode)
         self.assertEqual(defaults.remap_mode, "always")
         self.assertEqual(defaults.remap_hold_hotkey, "Mouse 5")
+        self.assertEqual(defaults.remap_toggle_hotkey, "Mouse 4")
+        self.assertEqual(defaults.remap_deactivate_hotkey, "Mouse 5")
+        self.assertEqual(defaults.session_report_rate_hz, 1000)
         self.assertEqual(defaults.activation_hotkey, "Ctrl+F12")
         self.assertEqual(defaults.deactivation_hotkey, "Ctrl+Shift+F12")
         self.assertEqual(defaults.left.sensitivity_light, 100)
@@ -141,6 +147,7 @@ class ConfigStoreTests(unittest.TestCase):
             self.assertFalse(loaded.session_device_settings_follow_normal)
             self.assertEqual(loaded.remap_mode, "hold")
             self.assertEqual(loaded.remap_hold_hotkey, "Alt+F11")
+            self.assertEqual(loaded.session_report_rate_hz, 500)
             self.assertEqual(loaded.activation_hotkey, "Ctrl+F11")
             self.assertEqual(loaded.deactivation_hotkey, "Ctrl+Shift+F11")
             self.assertEqual(loaded.left.curve, "soft")

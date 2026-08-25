@@ -140,6 +140,14 @@ int32_t clamp_i32(int32_t value, int32_t low, int32_t high) {
     return value;
 }
 
+int32_t desktop_to_virtual_axis(int32_t coordinate, int origin, int span) {
+    const int safe_span = span > 0 ? span : 1;
+    const int64_t relative = static_cast<int64_t>(coordinate) - origin;
+    if (relative < 0) return 0;
+    if (relative >= safe_span) return safe_span - 1;
+    return static_cast<int32_t>(relative);
+}
+
 uint32_t elapsed_us(const Relay* relay, int64_t start, int64_t end) {
     if (end <= start || relay->qpc_frequency.QuadPart <= 0) return 0;
     const uint64_t ticks = static_cast<uint64_t>(end - start);
@@ -175,13 +183,23 @@ void fill_pointer_info(Relay* relay, const RelayReport& report, POINTER_TYPE_INF
     pointer.pointerType = PT_PEN;
     pointer.pointerId = 1;
     pointer.pointerFlags = report.flags;
-    pointer.ptPixelLocation.x = report.x;
-    pointer.ptPixelLocation.y = report.y;
+    const int virtual_left = GetSystemMetrics(SM_XVIRTUALSCREEN);
+    const int virtual_top = GetSystemMetrics(SM_YVIRTUALSCREEN);
+    const int virtual_width = GetSystemMetrics(SM_CXVIRTUALSCREEN);
+    const int virtual_height = GetSystemMetrics(SM_CYVIRTUALSCREEN);
+    const LONG pixel_x = desktop_to_virtual_axis(
+        report.x, virtual_left, virtual_width
+    );
+    const LONG pixel_y = desktop_to_virtual_axis(
+        report.y, virtual_top, virtual_height
+    );
+    pointer.ptPixelLocation.x = pixel_x;
+    pointer.ptPixelLocation.y = pixel_y;
     pointer.ptPixelLocationRaw = pointer.ptPixelLocation;
     pointer.ptHimetricLocation.x =
-        static_cast<LONG>((static_cast<int64_t>(report.x) * 2540LL) / relay->dpi);
+        static_cast<LONG>((static_cast<int64_t>(pixel_x) * 2540LL) / relay->dpi);
     pointer.ptHimetricLocation.y =
-        static_cast<LONG>((static_cast<int64_t>(report.y) * 2540LL) / relay->dpi);
+        static_cast<LONG>((static_cast<int64_t>(pixel_y) * 2540LL) / relay->dpi);
     pointer.ptHimetricLocationRaw = pointer.ptHimetricLocation;
     pointer.historyCount = 1;
     pointer.dwKeyStates =

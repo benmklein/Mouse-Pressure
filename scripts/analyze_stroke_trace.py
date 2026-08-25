@@ -104,6 +104,20 @@ def analyze(payload: dict[str, Any]) -> dict[str, float | int | str]:
         )
         for previous, current in zip(contact_motions, contact_motions[1:])
     ]
+    correlated_motion_path = sum(motion_distances)
+    motion_summaries = [
+        event for event in events if event.get("kind") == "motion_summary"
+    ]
+    physical_raw_path = (
+        float(motion_summaries[-1].get("raw_distance", 0.0))
+        if motion_summaries
+        else 0.0
+    )
+    motion_path_expansion = (
+        correlated_motion_path / physical_raw_path
+        if physical_raw_path > 0.0
+        else 0.0
+    )
     motion_duration_ms = (
         float(contact_motions[-1]["t_ms"]) - float(contact_motions[0]["t_ms"])
         if len(contact_motions) >= 2
@@ -202,6 +216,9 @@ def analyze(payload: dict[str, Any]) -> dict[str, float | int | str]:
         "injected_contact_points": len(injected),
         "stationary_dab_points": stationary_dab_points,
         "motion_anchor_hz": round(motion_anchor_hz, 2),
+        "physical_raw_path_px": round(physical_raw_path, 2),
+        "correlated_motion_path_px": round(correlated_motion_path, 2),
+        "motion_path_expansion_ratio": round(motion_path_expansion, 2),
         "p95_motion_segment_px": round(_percentile(motion_distances, 0.95), 2),
         "max_motion_segment_px": round(max(motion_distances, default=0.0), 2),
         "injected_contact_hz": round(injected_contact_hz, 2),
@@ -251,6 +268,11 @@ def analyze(payload: dict[str, Any]) -> dict[str, float | int | str]:
         cumulative_distance > 50 and len(motions) < 10
     ):
         diagnosis = "SPATIAL_INPUT_SPARSE: too few movement/injection points for interpolation."
+    elif physical_raw_path >= 10.0 and motion_path_expansion > 2.0:
+        diagnosis = (
+            "MOTION_PATH_EXPANSION: correlated cursor travel greatly exceeds physical "
+            "Raw Input travel; synthetic pointer feedback is contaminating motion."
+        )
     elif reversals >= 3:
         diagnosis = "PATH_BACKTRACKING: injected coordinates repeatedly reverse direction."
     elif (

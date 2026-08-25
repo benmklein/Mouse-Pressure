@@ -36,6 +36,8 @@ devices. Release notes must identify the combinations actually tested.
   Stop and Start are not required; the following strokes normally work.
 - Pressure behavior can differ between Windows Ink applications and brush
   presets.
+- Polling rates above 1000 Hz are experimental. They may cause cursor or stroke
+  jitter, especially at high display resolutions or non-default DPI scaling.
 - Anti-cheat compatibility is untested. Mouse Pressure uses a low-level mouse
   hook and synthetic Windows pointer input. Stop it before launching a game
   protected by anti-cheat software.

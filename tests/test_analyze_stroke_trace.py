@@ -128,6 +128,34 @@ def test_analyzer_identifies_fast_sparse_position_anchors() -> None:
     assert str(result["diagnosis"]).startswith("POSITION_ANCHOR_LIMIT")
 
 
+def test_analyzer_identifies_motion_path_expansion() -> None:
+    analyzer = _load_analyzer()
+    motions = [
+        {"kind": "motion", "t_ms": float(index * 10), "x": index * 10, "y": 0}
+        for index in range(12)
+    ]
+    injected = [
+        {
+            "kind": "inject",
+            "t_ms": float(index * 10),
+            "x": index * 10,
+            "y": 0,
+            "pressure": 500,
+            "flags": 0x00000004,
+            "ok": True,
+        }
+        for index in range(12)
+    ]
+    summary = {"kind": "motion_summary", "raw_distance": 11.0}
+
+    result = analyzer.analyze({"events": motions + injected + [summary]})
+
+    assert result["physical_raw_path_px"] == 11.0
+    assert result["correlated_motion_path_px"] == 110.0
+    assert result["motion_path_expansion_ratio"] == 10.0
+    assert str(result["diagnosis"]).startswith("MOTION_PATH_EXPANSION")
+
+
 def test_analyzer_reports_raw_saturation_latency_and_adaptive_budget() -> None:
     analyzer = _load_analyzer()
     events = []

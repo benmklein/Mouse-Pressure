@@ -65,15 +65,24 @@ class SettingsDraft:
         if not 30.0 <= float(self.injection_hz) <= 500.0:
             errors.append("Pen injection rate must be between 30 and 500 Hz")
         if self.config.remap_mode not in REMAP_MODES:
-            errors.append("Remap mode must be Always remap or Hold to remap")
+            errors.append("Remap mode is unknown")
         try:
             hold = parse_hold_hotkey(self.config.remap_hold_hotkey).label
+            toggle = parse_hold_hotkey(self.config.remap_toggle_hotkey).label
+            deactivate_hold = parse_hold_hotkey(
+                self.config.remap_deactivate_hotkey
+            ).label
             activation = parse_global_hotkey(self.config.activation_hotkey).label
             deactivation = parse_global_hotkey(self.config.deactivation_hotkey).label
             if activation == deactivation:
                 errors.append("Start and Stop shortcuts must be different")
-            if hold in {activation, deactivation}:
-                errors.append("Hold shortcut must differ from Start and Stop")
+            active_remap_hotkey = {
+                "hold": hold,
+                "toggle": toggle,
+                "hold_deactivate": deactivate_hold,
+            }.get(self.config.remap_mode)
+            if active_remap_hotkey in {activation, deactivation}:
+                errors.append("Remap shortcut must differ from Start and Stop")
         except ValueError as exc:
             errors.append(f"Invalid shortcut: {exc}")
         targets = [

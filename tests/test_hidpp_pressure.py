@@ -175,3 +175,54 @@ def test_discovery_prefers_wired_supported_device_without_hardcoded_path() -> No
         wireless_path,
     ]
     assert candidates[0]["device_index"] == WIRED_DEVICE_INDEX
+
+
+def test_session_rejects_duplicate_stream_owner_before_hid_discovery() -> None:
+    class BusyOwner:
+        def acquire(self) -> bool:
+            return False
+
+        def release(self) -> None:
+            raise AssertionError("unacquired ownership must not be released")
+
+    session = PressureHidppSession(log=lambda _line: None, owner=BusyOwner())  # type: ignore[arg-type]
+
+    with patch.object(session, "discover_col02_candidates") as discovery:
+        try:
+            session.open()
+        except RuntimeError as error:
+            assert "owns the pressure stream" in str(error)
+        else:
+            raise AssertionError("duplicate ownership must fail")
+
+    discovery.assert_not_called()
+
+
+def test_extended_report_rate_uses_discovered_feature_and_wire_values() -> None:
+    session = PressureHidppSession(log=lambda _line: None)
+    calls: list[tuple[int, int, list[int], str]] = []
+    current_rate = [0x06]
+
+    def request_long(*, feature_index, address, payload, label, timeout_s=0.12):
+        del timeout_s
+        calls.append((feature_index, address, list(payload), label))
+        if feature_index == 0x00:
+            return [0x0D]
+        if address == 0x3F:
+            current_rate[0] = payload[0]
+            return []
+        if address == 0x2F:
+            return list(current_rate)
+        return []
+
+    session.request_long = request_long  # type: ignore[method-assign]
+    session.transport = "wireless"
+
+    assert session.get_report_rate_hz() == 8000
+    assert session.set_report_rate_hz(1000) == 1000
+    assert calls == [
+        (0x00, 0x08, [0x80, 0x61], "RATE.discover.0x8061"),
+        (0x0D, 0x2F, [0x01], "RATE.read"),
+        (0x0D, 0x3F, [0x03], "RATE.write=1000"),
+        (0x0D, 0x2F, [0x01], "RATE.read"),
+    ]

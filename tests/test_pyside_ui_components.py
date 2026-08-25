@@ -24,6 +24,7 @@ from mouse_pressure.pyside_ui import (  # noqa: E402
     HotkeySequenceEdit,
     MainWindow,
 )
+from mouse_pressure.ui.hotkeys import parse_global_hotkey  # noqa: E402
 from mouse_pressure.ui.qt_widgets import MappingGraph, SliderField  # noqa: E402
 from mouse_pressure.ui.settings_model import (  # noqa: E402
     SettingsDraft,
@@ -215,6 +216,35 @@ def test_hold_shortcut_editor_captures_mouse_side_buttons() -> None:
     app.processEvents()
     assert editor.binding() == "Ctrl+F10"
 
+    QTest.mouseClick(
+        editor,
+        Qt.MouseButton.XButton2,
+        Qt.KeyboardModifier.ShiftModifier,
+    )
+    app.processEvents()
+    assert editor.binding() == "Shift+Mouse 5"
+
+
+def test_global_shortcut_editor_captures_modifier_mouse_chord() -> None:
+    app = _app()
+    editor = HoldShortcutEdit(
+        "Ctrl+F12",
+        capture_started=lambda: None,
+        capture_finished=lambda: None,
+        binding_parser=parse_global_hotkey,
+    )
+    editor.show()
+    app.processEvents()
+
+    QTest.mouseClick(
+        editor,
+        Qt.MouseButton.XButton1,
+        Qt.KeyboardModifier.ControlModifier,
+    )
+    app.processEvents()
+
+    assert editor.binding() == "Ctrl+Mouse 4"
+
 
 def test_mapping_graph_uses_observed_raw_pressure_domain() -> None:
     assert MappingGraph.RAW_MIN == 300
@@ -370,7 +400,8 @@ def test_detected_mapping_off_values_seed_mapping_on_defaults() -> None:
     window = SimpleNamespace(
         detecting=True,
         _normal_device={},
-        normal_dpi=_Text(),
+            normal_dpi=_Text(),
+            normal_report_rate=_Text(),
         normal_haptics={"left": _Text(), "right": _Text()},
         normal_actuation={"left": _Text(), "right": _Text()},
         service=SimpleNamespace(

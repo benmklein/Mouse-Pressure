@@ -4,7 +4,7 @@ from __future__ import annotations
 
 from dataclasses import dataclass, field
 
-REMAP_MODES = ("always", "hold")
+REMAP_MODES = ("always", "hold", "toggle", "hold_deactivate")
 
 
 @dataclass
@@ -61,6 +61,7 @@ class RuntimeConfig:
     # Hide the desktop control panel in the notification area when minimized.
     minimize_to_tray: bool = True
     session_dpi: int = 800
+    session_report_rate_hz: int = 1000
     session_haptic_left: int = 3
     session_haptic_right: int = 3
     # Until a Mapping-on hardware value is intentionally changed, mirror the
@@ -68,6 +69,8 @@ class RuntimeConfig:
     session_device_settings_follow_normal: bool = True
     remap_mode: str = "always"
     remap_hold_hotkey: str = "Mouse 5"
+    remap_toggle_hotkey: str = "Mouse 4"
+    remap_deactivate_hotkey: str = "Mouse 5"
     activation_hotkey: str = "Ctrl+F12"
     deactivation_hotkey: str = "Ctrl+Shift+F12"
     left: ChannelConfig = field(default_factory=ChannelConfig)

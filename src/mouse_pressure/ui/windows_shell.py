@@ -9,7 +9,12 @@ import time
 from pathlib import Path
 from typing import Any
 
-from mouse_pressure.ui.hotkeys import GlobalHotkey, parse_global_hotkey
+from mouse_pressure.ui.hotkeys import (
+    GlobalHotkey,
+    hotkey_is_down,
+    is_mouse_hotkey,
+    parse_global_hotkey,
+)
 
 
 def asset_path(name: str) -> Path:
@@ -100,6 +105,17 @@ class StartHotkeyListener:
         from ctypes import wintypes
 
         user32 = ctypes.WinDLL("user32", use_last_error=True)
+        if is_mouse_hotkey(self.hotkey):
+            self._registered = True
+            self._ready.set()
+            was_down = False
+            while not self._stop.is_set():
+                down = hotkey_is_down(self.hotkey, user32.GetAsyncKeyState)
+                if down and not was_down:
+                    self._callback()
+                was_down = down
+                time.sleep(0.01)
+            return
         self._registered = bool(
             user32.RegisterHotKey(
                 None,

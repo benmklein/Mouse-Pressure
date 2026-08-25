@@ -141,5 +141,11 @@ def test_windows_installer_has_stable_upgrade_policy() -> None:
     )
     assert "AppId={{B63841C7-3B13-47CC-A80A-85D44708AF35}" in installer
     assert "UsePreviousAppDir=yes" in installer
+    assert "DisableDirPage=auto" in installer
+    assert "DirExistsWarning=no" in installer
+    assert "ExistingInstallPage := CreateInputOptionPage(" in installer
+    assert "Update or reinstall Mouse Pressure" in installer
+    assert "Uninstall Mouse Pressure" in installer
+    assert "if WizardSilent or not FindExistingInstall then" in installer
     assert 'Name: "{app}\\_internal"' in installer
     assert 'Name: "{app}\\sandbox"' in installer

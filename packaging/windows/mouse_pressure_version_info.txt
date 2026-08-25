@@ -16,11 +16,11 @@ VSVersionInfo(
         [
           StringStruct('CompanyName', 'Mouse Pressure'),
           StringStruct('FileDescription', 'Mouse Pressure Driver'),
-          StringStruct('FileVersion', '0.3.0'),
+          StringStruct('FileVersion', '0.4.0'),
           StringStruct('InternalName', 'MousePressure'),
           StringStruct('OriginalFilename', 'MousePressure.exe'),
           StringStruct('ProductName', 'Mouse Pressure'),
-          StringStruct('ProductVersion', '0.3.0')
+          StringStruct('ProductVersion', '0.4.0')
         ]
       )
     ]),

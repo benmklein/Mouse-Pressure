@@ -357,7 +357,7 @@ class RuntimeServiceTests(unittest.IsolatedAsyncioTestCase):
         await service.stop_stream()
         self.assertEqual(session.close_calls, 3)
 
-    def test_native_output_preserves_windows_transformed_coordinates(self) -> None:
+    def test_native_output_preserves_windows_transformed_motion(self) -> None:
         service, _, _ = self._service(_FakeSession([]))
 
         native_config = service._emitter_config_from_runtime()  # noqa: SLF001
@@ -733,6 +733,7 @@ class RuntimeServiceTests(unittest.IsolatedAsyncioTestCase):
                 "haptic_right": 3,
                 "actuation_left": 3,
                 "actuation_right": 8,
+                "report_rate_hz": 1000,
             },
         )
         self.assertEqual(session.dpi_calls, [1600])
@@ -816,6 +817,7 @@ class RuntimeServiceTests(unittest.IsolatedAsyncioTestCase):
                 "haptic_right": 4,
                 "actuation_left": 5,
                 "actuation_right": 5,
+                "report_rate_hz": 1000,
             },
         )
         self.assertEqual(session.open_calls, 1)

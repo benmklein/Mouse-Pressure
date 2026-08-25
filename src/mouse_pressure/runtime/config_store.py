@@ -122,6 +122,9 @@ def runtime_config_from_dict(raw: Any) -> RuntimeConfig:
         raise ValidationError("minimize_to_tray must be a boolean")
 
     session_dpi = int(raw.get("session_dpi", RuntimeConfig.session_dpi))
+    session_report_rate_hz = int(
+        raw.get("session_report_rate_hz", RuntimeConfig.session_report_rate_hz)
+    )
     session_haptic_left = int(
         raw.get("session_haptic_left", RuntimeConfig.session_haptic_left)
     )
@@ -130,6 +133,8 @@ def runtime_config_from_dict(raw: Any) -> RuntimeConfig:
     )
     if not 100 <= session_dpi <= 32000 or session_dpi % 50 != 0:
         raise ValidationError("session_dpi must be 100..32000 in 50-DPI increments")
+    if session_report_rate_hz not in {125, 250, 500, 1000, 2000, 4000, 8000}:
+        raise ValidationError("session_report_rate_hz is not supported")
     if not 0 <= session_haptic_left <= 5 or not 0 <= session_haptic_right <= 5:
         raise ValidationError("session haptic levels must be in 0..5")
 
@@ -142,10 +147,18 @@ def runtime_config_from_dict(raw: Any) -> RuntimeConfig:
 
     remap_mode = raw.get("remap_mode", RuntimeConfig.remap_mode)
     if not isinstance(remap_mode, str) or remap_mode not in REMAP_MODES:
-        raise ValidationError("remap_mode must be always or hold")
+        raise ValidationError(
+            "remap_mode must be always, hold, toggle, or hold_deactivate"
+        )
     try:
         remap_hold_hotkey = parse_hold_hotkey(
             raw.get("remap_hold_hotkey", RuntimeConfig.remap_hold_hotkey)
+        ).label
+        remap_toggle_hotkey = parse_hold_hotkey(
+            raw.get("remap_toggle_hotkey", RuntimeConfig.remap_toggle_hotkey)
+        ).label
+        remap_deactivate_hotkey = parse_hold_hotkey(
+            raw.get("remap_deactivate_hotkey", RuntimeConfig.remap_deactivate_hotkey)
         ).label
         activation_hotkey = parse_global_hotkey(
             raw.get("activation_hotkey", RuntimeConfig.activation_hotkey)
@@ -157,8 +170,13 @@ def runtime_config_from_dict(raw: Any) -> RuntimeConfig:
         raise ValidationError(f"Invalid global shortcut: {exc}") from exc
     if activation_hotkey == deactivation_hotkey:
         raise ValidationError("Activation and deactivation shortcuts must be different")
-    if remap_hold_hotkey in {activation_hotkey, deactivation_hotkey}:
-        raise ValidationError("Hold shortcut must differ from Start and Stop")
+    active_remap_hotkey = {
+        "hold": remap_hold_hotkey,
+        "toggle": remap_toggle_hotkey,
+        "hold_deactivate": remap_deactivate_hotkey,
+    }.get(remap_mode)
+    if active_remap_hotkey in {activation_hotkey, deactivation_hotkey}:
+        raise ValidationError("Remap shortcut must differ from Start and Stop")
 
     defaults = RuntimeConfig()
 
@@ -172,11 +190,14 @@ def runtime_config_from_dict(raw: Any) -> RuntimeConfig:
         debug_mode=debug_mode,
         minimize_to_tray=minimize_to_tray,
         session_dpi=session_dpi,
+        session_report_rate_hz=session_report_rate_hz,
         session_haptic_left=session_haptic_left,
         session_haptic_right=session_haptic_right,
         session_device_settings_follow_normal=follow_normal,
         remap_mode=remap_mode,
         remap_hold_hotkey=remap_hold_hotkey,
+        remap_toggle_hotkey=remap_toggle_hotkey,
+        remap_deactivate_hotkey=remap_deactivate_hotkey,
         activation_hotkey=activation_hotkey,
         deactivation_hotkey=deactivation_hotkey,
         left=_channel_from_dict(raw.get("left", {}), defaults.left),
@@ -196,6 +217,7 @@ def runtime_config_to_dict(config: RuntimeConfig) -> dict[str, Any]:
         "debug_mode": config.debug_mode,
         "minimize_to_tray": config.minimize_to_tray,
         "session_dpi": config.session_dpi,
+        "session_report_rate_hz": config.session_report_rate_hz,
         "session_haptic_left": config.session_haptic_left,
         "session_haptic_right": config.session_haptic_right,
         "session_device_settings_follow_normal": (
@@ -203,6 +225,8 @@ def runtime_config_to_dict(config: RuntimeConfig) -> dict[str, Any]:
         ),
         "remap_mode": config.remap_mode,
         "remap_hold_hotkey": config.remap_hold_hotkey,
+        "remap_toggle_hotkey": config.remap_toggle_hotkey,
+        "remap_deactivate_hotkey": config.remap_deactivate_hotkey,
         "activation_hotkey": config.activation_hotkey,
         "deactivation_hotkey": config.deactivation_hotkey,
         "left": asdict(config.left),

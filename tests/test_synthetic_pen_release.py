@@ -27,14 +27,21 @@ from mouse_pressure.bridge.synthetic_pen import (  # noqa: E402
     RI_MOUSE_LEFT_BUTTON_UP,
     RI_MOUSE_RIGHT_BUTTON_DOWN,
     RI_MOUSE_RIGHT_BUTTON_UP,
+    VK_LBUTTON,
+    VK_SHIFT,
     WM_LBUTTONDOWN,
     WM_LBUTTONUP,
     WM_MOUSEMOVE,
     WM_RBUTTONDOWN,
     WM_RBUTTONUP,
+    WM_XBUTTONDOWN,
+    WM_XBUTTONUP,
+    XBUTTON1,
+    XBUTTON2,
     SyntheticPenConfig,
     SyntheticPenEmitter,
     _MouseLmbSuppressor,
+    desktop_to_virtual_pixel,
     map_1024_to_1023,
 )
 
@@ -119,6 +126,26 @@ class _FakePen:
 
 
 class SyntheticPenReleaseTests(unittest.TestCase):
+    def test_desktop_coordinates_are_relative_to_virtual_origin(self) -> None:
+        layouts = (
+            ((-1600, 240), (-1920, 0, 3840, 1080), (320, 240)),
+            ((600, -900), (0, -1080, 1920, 2160), (600, 180)),
+            ((2500, 1400), (0, 0, 3000, 1920), (2500, 1400)),
+            ((-3000, 4000), (-1920, -1080, 3840, 2160), (0, 2159)),
+        )
+        for point, bounds, expected in layouts:
+            with self.subTest(point=point, bounds=bounds):
+                self.assertEqual(
+                    desktop_to_virtual_pixel(
+                        *point,
+                        left=bounds[0],
+                        top=bounds[1],
+                        width=bounds[2],
+                        height=bounds[3],
+                    ),
+                    expected,
+                )
+
     def _mk_emitter(self) -> tuple[SyntheticPenEmitter, _FakePen]:
         cfg = SyntheticPenConfig(
             contact_source="lmb_and_pressure",
@@ -321,6 +348,84 @@ class SyntheticPenReleaseTests(unittest.TestCase):
             )
         )
         self.assertFalse(suppressor._is_hold_hotkey_down())  # noqa: SLF001
+
+    def test_mouse_button_hold_chord_requires_its_modifier(self) -> None:
+        suppressor = _MouseLmbSuppressor(
+            log=lambda _line: None,
+            remap_mode="hold",
+            remap_hold_hotkey="Shift+Mouse 5",
+        )
+        suppressor.enabled = True
+        suppressor.user32 = _KeyStateUser32(set())  # type: ignore[assignment]
+
+        self.assertFalse(
+            suppressor._handle_hold_mouse_message(  # noqa: SLF001
+                WM_XBUTTONDOWN,
+                mouse_data=XBUTTON2 << 16,
+                injected=False,
+            )
+        )
+        suppressor.user32.pressed.add(VK_SHIFT)
+        self.assertTrue(
+            suppressor._handle_hold_mouse_message(  # noqa: SLF001
+                WM_XBUTTONDOWN,
+                mouse_data=XBUTTON2 << 16,
+                injected=False,
+            )
+        )
+        self.assertTrue(suppressor._is_hold_hotkey_down())  # noqa: SLF001
+        suppressor.user32.pressed.clear()
+        self.assertTrue(
+            suppressor._handle_hold_mouse_message(  # noqa: SLF001
+                WM_XBUTTONUP,
+                mouse_data=XBUTTON2 << 16,
+                injected=False,
+            )
+        )
+        self.assertFalse(suppressor._is_hold_hotkey_down())  # noqa: SLF001
+
+    def test_mouse_toggle_switches_future_presses_and_consumes_binding(self) -> None:
+        suppressor = _MouseLmbSuppressor(
+            log=lambda _line: None,
+            remap_mode="toggle",
+            remap_toggle_hotkey="Mouse 4",
+        )
+        suppressor.enabled = True
+
+        self.assertTrue(suppressor._remap_available())  # noqa: SLF001
+        self.assertTrue(
+            suppressor._handle_hold_mouse_message(  # noqa: SLF001
+                WM_XBUTTONDOWN,
+                mouse_data=XBUTTON1 << 16,
+                injected=False,
+            )
+        )
+        self.assertFalse(suppressor._remap_available())  # noqa: SLF001
+        self.assertTrue(
+            suppressor._handle_hold_mouse_message(  # noqa: SLF001
+                WM_XBUTTONUP,
+                mouse_data=XBUTTON1 << 16,
+                injected=False,
+            )
+        )
+
+    def test_hold_to_deactivate_inverts_hold_state(self) -> None:
+        suppressor = _MouseLmbSuppressor(
+            log=lambda _line: None,
+            remap_mode="hold_deactivate",
+            remap_deactivate_hotkey="Mouse 5",
+        )
+        suppressor.enabled = True
+
+        self.assertTrue(suppressor._remap_available())  # noqa: SLF001
+        self.assertTrue(
+            suppressor._handle_hold_mouse_message(  # noqa: SLF001
+                WM_XBUTTONDOWN,
+                mouse_data=XBUTTON2 << 16,
+                injected=False,
+            )
+        )
+        self.assertFalse(suppressor._remap_available())  # noqa: SLF001
 
     def test_coordinate_feedback_never_bypasses_button_suppression(self) -> None:
         """A rapid physical press must not be mistaken for pen promotion."""
@@ -1738,6 +1843,95 @@ class SyntheticPenReleaseTests(unittest.TestCase):
         self.assertFalse(suppressor.is_lmb_down())
         self.assertFalse(suppressor._raw_contact_active)  # noqa: SLF001
 
+    def test_handleless_up_releases_latched_contact_when_physical_button_is_up(
+        self,
+    ) -> None:
+        suppressor = _MouseLmbSuppressor(log=lambda _line: None)
+        suppressor.enabled = True
+        suppressor.user32 = _KeyStateUser32(set())
+        suppressor._raw_input_active = True  # noqa: SLF001
+        suppressor._raw_contact_active = True  # noqa: SLF001
+        suppressor._raw_device_handle = 0xA1  # noqa: SLF001
+        suppressor._lmb_down = True  # noqa: SLF001
+
+        up = RAWMOUSE()
+        up.usButtonFlags = RI_MOUSE_LEFT_BUTTON_UP
+        suppressor._handle_raw_mouse(0, up)  # noqa: SLF001
+
+        self.assertFalse(suppressor.is_lmb_down())
+        self.assertFalse(suppressor._raw_contact_active)  # noqa: SLF001
+        self.assertEqual(
+            suppressor.motion_diagnostics()["handleless_up_reconciled"],
+            1,
+        )
+
+    def test_handleless_up_does_not_release_while_physical_button_is_down(
+        self,
+    ) -> None:
+        suppressor = _MouseLmbSuppressor(log=lambda _line: None)
+        suppressor.enabled = True
+        suppressor.user32 = _KeyStateUser32({VK_LBUTTON})
+        suppressor._raw_input_active = True  # noqa: SLF001
+        suppressor._raw_contact_active = True  # noqa: SLF001
+        suppressor._raw_device_handle = 0xA1  # noqa: SLF001
+        suppressor._lmb_down = True  # noqa: SLF001
+
+        up = RAWMOUSE()
+        up.usButtonFlags = RI_MOUSE_LEFT_BUTTON_UP
+        suppressor._handle_raw_mouse(0, up)  # noqa: SLF001
+
+        self.assertTrue(suppressor.is_lmb_down())
+        self.assertTrue(suppressor._raw_contact_active)  # noqa: SLF001
+
+    def test_handleless_up_rechecks_a_lagging_physical_button_state(self) -> None:
+        suppressor = _MouseLmbSuppressor(log=lambda _line: None)
+        suppressor.enabled = True
+        key_state = _KeyStateUser32({VK_LBUTTON})
+        suppressor.user32 = key_state
+        suppressor._raw_input_active = True  # noqa: SLF001
+        suppressor._raw_contact_active = True  # noqa: SLF001
+        suppressor._raw_device_handle = 0xA1  # noqa: SLF001
+        suppressor._lmb_down = True  # noqa: SLF001
+
+        up = RAWMOUSE()
+        up.usButtonFlags = RI_MOUSE_LEFT_BUTTON_UP
+        suppressor._handle_raw_mouse(0, up)  # noqa: SLF001
+        self.assertTrue(suppressor.is_lmb_down())
+
+        key_state.pressed.clear()
+        suppressor._resolve_deferred_hook_releases(  # noqa: SLF001
+            time.perf_counter() + 0.02
+        )
+
+        self.assertFalse(suppressor.is_lmb_down())
+        self.assertFalse(suppressor._raw_contact_active)  # noqa: SLF001
+
+    def test_handleless_right_up_releases_latched_contact_when_physical_button_is_up(
+        self,
+    ) -> None:
+        suppressor = _MouseLmbSuppressor(
+            log=lambda _line: None,
+            suppress_right=True,
+        )
+        suppressor.enabled = True
+        suppressor.user32 = _KeyStateUser32(set())
+        suppressor._raw_input_active = True  # noqa: SLF001
+        suppressor._raw_contact_active = True  # noqa: SLF001
+        suppressor._raw_device_handle = 0xA1  # noqa: SLF001
+        suppressor._rmb_down = True  # noqa: SLF001
+        suppressor._right_remap_latched = True  # noqa: SLF001
+
+        up = RAWMOUSE()
+        up.usButtonFlags = RI_MOUSE_RIGHT_BUTTON_UP
+        suppressor._handle_raw_mouse(0, up)  # noqa: SLF001
+
+        self.assertFalse(suppressor.is_rmb_down())
+        self.assertFalse(suppressor._raw_contact_active)  # noqa: SLF001
+        self.assertEqual(
+            suppressor.motion_diagnostics()["handleless_up_reconciled"],
+            1,
+        )
+
     def test_late_hook_down_reconciles_raw_input_contact_before_motion(self) -> None:
         suppressor = _MouseLmbSuppressor(log=lambda _line: None)
         suppressor._raw_input_active = True  # noqa: SLF001
@@ -1924,6 +2118,88 @@ class SyntheticPenReleaseTests(unittest.TestCase):
         positions = suppressor.drain_hardware_positions()
         self.assertEqual([(x, y) for _ts, x, y in positions], [(410, 305)])
 
+    def test_high_rate_one_pixel_motion_does_not_stall_near_pen_feedback(
+        self,
+    ) -> None:
+        suppressor = _MouseLmbSuppressor(log=lambda _line: None)
+        suppressor._raw_input_active = True  # noqa: SLF001
+        suppressor._native_input_capture_active = True  # noqa: SLF001
+        suppressor._raw_direct_mode = False  # noqa: SLF001
+        suppressor._lmb_down = True  # noqa: SLF001
+        suppressor._raw_contact_active = True  # noqa: SLF001
+        suppressor._raw_device_handle = 0xA1  # noqa: SLF001
+        suppressor._raw_motion_device_handle = 0xA1  # noqa: SLF001
+        suppressor._raw_x = 500  # noqa: SLF001
+        suppressor._raw_y = 400  # noqa: SLF001
+        suppressor._logical_position_initialized = True  # noqa: SLF001
+        suppressor._cursor_baseline_x = 500  # noqa: SLF001
+        suppressor._cursor_baseline_y = 400  # noqa: SLF001
+        suppressor._cursor_baseline_initialized = True  # noqa: SLF001
+
+        for _ in range(8):
+            suppressor.mark_injected_position(  # noqa: SLF001
+                suppressor._raw_x,  # noqa: SLF001
+                suppressor._raw_y,  # noqa: SLF001
+            )
+            suppressor._handle_native_mouse_move(  # noqa: SLF001
+                time.perf_counter(),
+                suppressor._raw_x + 1,  # noqa: SLF001
+                suppressor._raw_y,  # noqa: SLF001
+                injected=False,
+            )
+            raw = RAWMOUSE()
+            raw.lLastX = 1
+            suppressor._handle_raw_mouse(0xA1, raw)  # noqa: SLF001
+
+        positions = suppressor.drain_hardware_positions()
+        self.assertEqual(positions[-1][1:], (508, 400))
+
+    def test_high_rate_rounded_pen_feedback_is_not_committed_as_mouse_motion(
+        self,
+    ) -> None:
+        suppressor = _MouseLmbSuppressor(log=lambda _line: None)
+        suppressor._raw_input_active = True  # noqa: SLF001
+        suppressor._native_input_capture_active = True  # noqa: SLF001
+        suppressor._raw_direct_mode = False  # noqa: SLF001
+        suppressor._lmb_down = True  # noqa: SLF001
+        suppressor._raw_contact_active = True  # noqa: SLF001
+        suppressor._raw_device_handle = 0xA1  # noqa: SLF001
+        suppressor._raw_motion_device_handle = 0xA1  # noqa: SLF001
+        suppressor._raw_x = 500  # noqa: SLF001
+        suppressor._raw_y = 400  # noqa: SLF001
+        suppressor._logical_position_initialized = True  # noqa: SLF001
+        suppressor._cursor_baseline_x = 500  # noqa: SLF001
+        suppressor._cursor_baseline_y = 400  # noqa: SLF001
+        suppressor._cursor_baseline_initialized = True  # noqa: SLF001
+
+        for step in range(8):
+            logical_x = 500 + step
+            suppressor.mark_injected_position(logical_x, 400)
+
+            # Windows can promote our pen point back to the mouse hook rounded
+            # by a pixel. Its handleless absolute Raw Input packet—not spatial
+            # proximity—must identify this candidate as virtual feedback.
+            now = time.perf_counter()
+            suppressor._handle_native_mouse_move(  # noqa: SLF001
+                now, logical_x + 1, 401, injected=False
+            )
+            promoted = RAWMOUSE()
+            promoted.usFlags = MOUSE_MOVE_ABSOLUTE
+            promoted.lLastX = logical_x + 1
+            promoted.lLastY = 401
+            suppressor._handle_raw_mouse(0, promoted)  # noqa: SLF001
+
+            # One real physical pixel follows from that OS cursor baseline.
+            suppressor._handle_native_mouse_move(  # noqa: SLF001
+                now + 0.001, logical_x + 2, 401, injected=False
+            )
+            physical = RAWMOUSE()
+            physical.lLastX = 1
+            suppressor._handle_raw_mouse(0xA1, physical)  # noqa: SLF001
+
+        positions = suppressor.drain_hardware_positions()
+        self.assertEqual(positions[-1][1:], (508, 400))
+
     def test_synthetic_cursor_jump_does_not_displace_logical_physical_path(
         self,
     ) -> None:
@@ -1984,17 +2260,17 @@ class SyntheticPenReleaseTests(unittest.TestCase):
         suppressor._cursor_baseline_y = 500  # noqa: SLF001
         suppressor._cursor_baseline_initialized = True  # noqa: SLF001
 
-        # The VMulti report is promoted as an unmarked hardware hook event,
-        # rounded by one pixel. It must update only the OS baseline.
+        # The synthetic report is promoted as an unmarked hardware hook event.
+        # It must update only the OS baseline.
         suppressor.mark_injected_position(320, 520)
         suppressor._handle_native_mouse_move(  # noqa: SLF001
-            time.perf_counter(), 321, 519, injected=False
+            time.perf_counter(), 320, 520, injected=False
         )
         self.assertEqual((suppressor._raw_x, suppressor._raw_y), (300, 500))  # noqa: SLF001
 
         # The next verified physical move is upward and must remain upward.
         suppressor._handle_native_mouse_move(  # noqa: SLF001
-            time.perf_counter(), 321, 509, injected=False
+            time.perf_counter(), 320, 510, injected=False
         )
         raw = RAWMOUSE()
         raw.lLastY = -10
